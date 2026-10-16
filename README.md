@@ -14,6 +14,9 @@ Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egu
 - **Notifications** de bureau (SMS, appel entrant avec boutons Décrocher / Refuser), même fenêtre fermée.
 - **Historique local** SQLite, suppression locale, réactions, interface traduisible (anglais, français).
 
+![Conversation](docs/bmessage-conversation.png)
+![Paramètres](docs/bmessage-settings.png)
+
 > Limites connues : iOS n'expose pas les iMessage par MAP (seulement les SMS/MMS texte) ; les dossiers
 > MAP `sent`/`outbox` sont vides côté iPhone, les envois de l'app sont donc consignés localement ; les
 > réactions (tapbacks) sont envoyées sous forme de SMS texte (« Liked “…” »).
