@@ -23,7 +23,7 @@ optdepends=(
 makedepends=('cargo')
 install=bluez-message.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('3a245c7d18e30ae71b31d3824148a78f88baa937ce350f89861b17fc010a47ff')
 
 prepare() {
   cd "$pkgname-$pkgver"

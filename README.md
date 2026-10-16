@@ -37,13 +37,15 @@ Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egu
 
 ## Installation
 
-### Arch Linux (AUR)
+### Arch Linux
+
+Paquet précompilé (x86_64), depuis les [releases](https://github.com/morganorix/bluez-message/releases) :
 
 ```sh
-yay -S bluez-message
+sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.0/bluez-message-0.1.0-1-x86_64.pkg.tar.zst
 ```
 
-Ou depuis une copie du dépôt :
+Ou compilé depuis une copie du dépôt :
 
 ```sh
 cd packaging/arch
