@@ -52,9 +52,9 @@ package() {
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   cd packaging/arch
   install -Dm644 bluez-messaged.service "$pkgdir/usr/lib/systemd/user/bluez-messaged.service"
-  # Enabled for every user's graphical session; opt out with: systemctl --user mask bluez-messaged.
-  install -dm755 "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
-  ln -s ../bluez-messaged.service "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/bluez-messaged.service"
+  # Enabled for every user session; opt out with: systemctl --user mask bluez-messaged.
+  install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../bluez-messaged.service "$pkgdir/usr/lib/systemd/user/default.target.wants/bluez-messaged.service"
   install -Dm644 bluez-message.desktop "$pkgdir/usr/share/applications/bluez-message.desktop"
   install -Dm644 bluez-message.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/bluez-message.svg"
   install -Dm644 -t "$pkgdir/usr/share/wireplumber/wireplumber.conf.d" 52-bluez-message-roles.conf 53-bluez-message-call-gain.conf

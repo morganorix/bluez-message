@@ -66,11 +66,13 @@ pub struct Settings {
     /// SMS et appels plus anciens effacés de l'historique local ; `None` : tout garder.
     pub retention_days: Option<u32>,
     pub text_size: TextSize,
+    /// iPhone non relié : le démon relance la connexion Bluetooth régulièrement.
+    pub auto_connect: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal }
+        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true }
     }
 }
 

@@ -2,9 +2,12 @@
 //! des commandes entrent par [`Engine::submit`], des événements [`Out`] sortent par un canal.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -243,8 +246,20 @@ pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
     Ok(cmd)
 }
 
+/// Réveil de la session MAP en attente de reconnexion (iPhone revenu).
+#[derive(Clone, Default)]
+pub struct Nudge(Arc<Notify>);
+
+impl Nudge {
+    /// Nouvel essai MAP immédiat, backoff remis à zéro ; sans effet notable si la session est ouverte.
+    pub fn nudge(&self) {
+        self.0.notify_one();
+    }
+}
+
 pub struct Engine {
     send_tx: mpsc::Sender<(String, String)>,
+    nudge: Nudge,
     hf_tx: mpsc::Sender<HfCmd>,
     map_task: JoinHandle<()>,
     hfp_task: JoinHandle<()>,
@@ -259,7 +274,8 @@ impl Engine {
         let (send_tx, send_rx) = mpsc::channel(8);
         let (hf_tx, hf_rx) = mpsc::channel(8);
 
-        let map_task = tokio::spawn(map_loop(addr.clone(), interval, send_rx, out_tx.clone()));
+        let nudge = Nudge::default();
+        let map_task = tokio::spawn(map_loop(addr.clone(), interval, send_rx, out_tx.clone(), nudge.clone()));
         let hfp_task = tokio::spawn(async move {
             let (out, warn) = (out_tx.clone(), out_tx.clone());
             let mut hf_rx = hf_rx;
@@ -285,7 +301,7 @@ impl Engine {
                 tokio::time::sleep(backoff.next()).await;
             }
         });
-        (Self { send_tx, hf_tx, map_task, hfp_task }, out_rx)
+        (Self { send_tx, nudge, hf_tx, map_task, hfp_task }, out_rx)
     }
 
     /// Transmet une commande (non bloquant). `Quit` est à traiter par l'appelant via [`Engine::shutdown`].
@@ -316,6 +332,12 @@ impl Engine {
         }
     }
 
+    /// Poignée de réveil de la session MAP, pour la surveillance de la liaison.
+    #[must_use]
+    pub fn nudger(&self) -> Nudge {
+        self.nudge.clone()
+    }
+
     fn call(&self, cmd: HfCmd) -> std::result::Result<(), String> {
         self.hf_tx.try_send(cmd).map_err(|_| t!("HFP busy").to_owned())
     }
@@ -334,7 +356,7 @@ impl Engine {
 
 /// Session MAP tenue ouverte : état initial, puis polling et envois ; reconnexion avec backoff.
 /// L'état du lien n'est émis qu'à ses changements.
-async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(String, String)>, out: UnboundedSender<Out>) {
+async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(String, String)>, out: UnboundedSender<Out>, nudge: Nudge) {
     let mut seen: [Option<HashSet<String>>; 2] = [None, None];
     let mut backoff = Backoff::new();
     let mut last: Option<bool> = None;
@@ -349,10 +371,12 @@ async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(S
             Err(e) => {
                 tracing::warn!("MAP: {e}");
                 set_up(&mut last, false);
-                if wait_or_refuse(&mut sends, backoff.next(), &out).await { return; }
+                if wait_or_refuse(&mut sends, &mut backoff, &out, &nudge).await { return; }
             }
             Ok(client) => {
                 set_up(&mut last, true);
+                // Réveil émis pendant la connexion : déjà satisfait, ne doit pas écourter le prochain backoff.
+                let _ = nudge.0.notified().now_or_never();
                 let started = tokio::time::Instant::now();
                 let r = session(&client, &mut seen, interval, &mut sends, &out).await;
                 let _ = client.close().await;
@@ -365,7 +389,7 @@ async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(S
                         if started.elapsed() >= BACKOFF_MAX {
                             backoff.reset();
                         }
-                        if wait_or_refuse(&mut sends, backoff.next(), &out).await { return; }
+                        if wait_or_refuse(&mut sends, &mut backoff, &out, &nudge).await { return; }
                     }
                 }
             }
@@ -373,13 +397,18 @@ async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(S
     }
 }
 
-/// Attend `d` en refusant les envois (pas de session) ; vrai si le canal est fermé.
-async fn wait_or_refuse(sends: &mut mpsc::Receiver<(String, String)>, d: Duration, out: &UnboundedSender<Out>) -> bool {
-    let deadline = tokio::time::sleep(d);
+/// Attend le délai du backoff en refusant les envois (pas de session) ; un réveil l'écourte et remet le
+/// backoff à zéro. Vrai si le canal est fermé.
+async fn wait_or_refuse(sends: &mut mpsc::Receiver<(String, String)>, backoff: &mut Backoff, out: &UnboundedSender<Out>, nudge: &Nudge) -> bool {
+    let deadline = tokio::time::sleep(backoff.next());
     tokio::pin!(deadline);
     loop {
         tokio::select! {
             () = &mut deadline => return false,
+            () = nudge.0.notified() => {
+                backoff.reset();
+                return false;
+            }
             s = sends.recv() => match s {
                 None => return true,
                 Some((to, text)) => {

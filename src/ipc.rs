@@ -379,6 +379,7 @@ pub async fn client(path: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, mut o
             Err(e) if !reported => {
                 reported = true;
                 on(Link::Down(t!("bluez-messaged daemon unreachable: {0}", e)));
+                tokio::spawn(start_daemon());
             }
             Err(_) => {}
         }
@@ -389,6 +390,24 @@ pub async fn client(path: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, mut o
                 Some(_) => on(Link::Down(t!("bluez-messaged daemon unreachable: command ignored").into())),
             },
         }
+    }
+}
+
+/// Démarre le service du démon (non activé, ou lancé avant que sa cible ne soit atteinte) ; sans attente :
+/// la reconnexion périodique du client le trouvera. Service absent (installation manuelle) : sans effet.
+async fn start_daemon() {
+    let r = tokio::process::Command::new("systemctl")
+        .args(["--user", "start", "--no-block", "bluez-messaged.service"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    match tokio::time::timeout(Duration::from_secs(5), r).await {
+        Err(_) => tracing::debug!("systemctl start bluez-messaged: timed out"),
+        Ok(Ok(st)) if st.success() => tracing::info!("bluez-messaged service start requested"),
+        Ok(Ok(st)) => tracing::debug!("systemctl start bluez-messaged: {st}"),
+        Ok(Err(e)) => tracing::debug!("systemctl: {e}"),
     }
 }
 

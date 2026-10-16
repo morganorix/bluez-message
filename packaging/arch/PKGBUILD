@@ -1,6 +1,6 @@
 # Paquet local : construit depuis l'arbre du dépôt (pas d'archive source), voir README.md.
 pkgname=bluez-message
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="bmessage : SMS et appels de l'iPhone sur le PC (relais Bluetooth MAP/PBAP/HFP)"
 arch=('x86_64')
@@ -50,8 +50,8 @@ package() {
   cd "$startdir"
   install -Dm644 bluez-messaged.service "$pkgdir/usr/lib/systemd/user/bluez-messaged.service"
   # Activé pour tous les utilisateurs (comme gnupg) ; refus individuel : systemctl --user mask bluez-messaged.
-  install -dm755 "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
-  ln -s ../bluez-messaged.service "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/bluez-messaged.service"
+  install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../bluez-messaged.service "$pkgdir/usr/lib/systemd/user/default.target.wants/bluez-messaged.service"
   install -Dm644 bluez-message.desktop "$pkgdir/usr/share/applications/bluez-message.desktop"
   install -Dm644 bluez-message.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/bluez-message.svg"
   install -Dm644 -t "$pkgdir/usr/share/wireplumber/wireplumber.conf.d" 52-bluez-message-roles.conf 53-bluez-message-call-gain.conf

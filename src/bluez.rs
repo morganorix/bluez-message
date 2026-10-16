@@ -74,6 +74,27 @@ impl Phone {
         Ok(self.dev.connect().await?)
     }
 
+    /// Changements de `Connected` ou `ServicesResolved` signalés par BlueZ (`PropertiesChanged`) ;
+    /// le flux reste muet si l'appareil disparaît.
+    ///
+    /// # Errors
+    /// Abonnement au signal refusé.
+    pub async fn link_changes(&self) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
+        let props = zbus::fdo::PropertiesProxy::builder(self.dev.inner().connection())
+            .destination("org.bluez")?
+            .path(self.dev.inner().path().clone())?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        let changes = props.receive_properties_changed().await?;
+        Ok(futures_util::StreamExt::filter_map(changes, |sig| {
+            let link = sig.args().is_ok_and(|a| {
+                a.interface_name() == "org.bluez.Device1" && ["Connected", "ServicesResolved"].iter().any(|k| a.changed_properties().contains_key(k))
+            });
+            std::future::ready(link.then_some(()))
+        }))
+    }
+
     /// Déconnecte l'appareil.
     ///
     /// # Errors

@@ -48,14 +48,14 @@ Prebuilt package (x86_64) from the [releases](https://github.com/morganorix/blue
 signed with key `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Once, trust the key:
 
 ```sh
-curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.1/morganorix.asc | sudo pacman-key --add -
+curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.2/morganorix.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
 ```
 
 Then install:
 
 ```sh
-sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.1/bluez-message-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.2/bluez-message-0.1.2-1-x86_64.pkg.tar.zst
 ```
 
 Or build it from a clone of the repository:
@@ -65,7 +65,7 @@ cd packaging/arch
 makepkg -si
 ```
 
-The package installs the four binaries, the `bluez-messaged` service (enabled for every graphical
+The package installs the four binaries, the `bluez-messaged` service (enabled for every user
 session), the **bmessage** menu entry, the icon and the WirePlumber configuration. Details (French):
 [`packaging/arch/README.md`](packaging/arch/README.md).
 

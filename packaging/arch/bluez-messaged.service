@@ -1,7 +1,8 @@
 [Unit]
 Description=Relais SMS/appels iPhone (bluez-messaged)
-After=graphical-session.target pipewire.service wireplumber.service
-PartOf=graphical-session.target
+# default.target et non graphical-session.target : sous Hyprland/sway, cette cible
+# (RefuseManualStart=yes) reste souvent inactive et le démon ne démarrait jamais.
+After=pipewire.service wireplumber.service
 
 [Service]
 ExecStart=/usr/bin/bluez-messaged
@@ -9,4 +10,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

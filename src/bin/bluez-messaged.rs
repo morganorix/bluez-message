@@ -12,11 +12,12 @@ use bluez_message::addr::BtAddr;
 use bluez_message::app::notify;
 use bluez_message::app::state::{Effect, Phase, State};
 use bluez_message::config;
-use bluez_message::engine::{Cmd, Engine, Item, Out};
+use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out};
 use bluez_message::history::History;
 use bluez_message::settings::Settings;
 use bluez_message::{bluez, i18n, ipc, pbap, t};
 use clap::Parser;
+use futures_util::StreamExt;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, watch};
 
@@ -42,6 +43,8 @@ const WATCH_PAUSE: Duration = Duration::from_secs(120);
 const WATCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Pause entre `Disconnect` et `Connect` d'une liaison refaite.
 const WATCH_RESET_GAP: Duration = Duration::from_secs(2);
+/// Intervalle des `Connect` quand l'iPhone n'est pas relié (réglage `auto_connect`).
+const WATCH_CONNECT_EVERY: Duration = Duration::from_secs(60);
 /// Relances sans retour à la normale avant abandon (HFP volontairement absent, iPhone pris ailleurs…).
 const WATCH_TRIES: u32 = 3;
 const WPCTL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -118,11 +121,12 @@ async fn run(args: Args) -> Result<Exit, String> {
         popin: Popin::default(),
         reconnecting: Arc::default(),
     };
+    d.sync_links();
     d.start().await?;
     let mut daily = tokio::time::interval_at(tokio::time::Instant::now() + RETENTION_EVERY, RETENTION_EVERY);
     let (ct_tx, mut contacts) = mpsc::channel(1);
     tokio::spawn(sync_contacts(d.addr.clone(), ct_tx));
-    tokio::spawn(link_watch(d.addr.clone(), links_rx));
+    tokio::spawn(link_watch(d.addr.clone(), links_rx, d.engine.nudger()));
     let r = loop {
         tokio::select! {
             o = events.recv() => {
@@ -247,7 +251,12 @@ impl Daemon {
             self.state.apply(log.clone());
             self.hub.publish(log, true);
         }
-        let now = Links { hfp: self.state.hfp_up, call: !self.state.call.is_idle() };
+        self.sync_links();
+    }
+
+    /// Transmet à la surveillance de liaison ce qu'elle doit savoir (appel, HFP, réglage).
+    fn sync_links(&self) {
+        let now = Links { hfp: self.state.hfp_up, call: !self.state.call.is_idle(), auto_connect: self.settings.auto_connect };
         self.links_tx.send_if_modified(|l| std::mem::replace(l, now) != now);
     }
 
@@ -340,6 +349,7 @@ impl Daemon {
             i18n::set_lang(new.lang.as_deref());
         }
         self.settings = new;
+        self.sync_links();
         self.publish(settings_out(&self.settings, &self.addr).await);
         if purge {
             self.apply_retention();
@@ -517,6 +527,7 @@ async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Vec<(String, String)>>) {
 struct Links {
     hfp: bool,
     call: bool,
+    auto_connect: bool,
 }
 
 /// Compteurs de la surveillance de liaison.
@@ -551,10 +562,12 @@ impl LinkWatch {
     }
 }
 
-/// Après une reconnexion spontanée, l'iPhone reste parfois relié sans ses profils (pas de HFP ni de MAP) :
-/// la connexion est relancée (`Connect`), puis refaite (`Disconnect` + `Connect`) si les profils ne
-/// reviennent toujours pas. Rien n'est tenté si l'iPhone n'est pas relié (il revient seul) ni pendant un appel.
-async fn link_watch(addr: BtAddr, links: watch::Receiver<Links>) {
+/// Surveillance de la liaison, à chaque changement signalé par BlueZ et toutes les [`WATCH_EVERY`] :
+/// - iPhone non relié et `auto_connect` : `Connect` toutes les [`WATCH_CONNECT_EVERY`] (hors de portée : échec silencieux) ;
+/// - iPhone revenu (relié, profils résolus) : la session MAP est réveillée sans attendre son backoff ;
+/// - relié sans ses profils (pas de HFP ni de MAP, fréquent après une reconnexion spontanée) : `Connect`, puis
+///   liaison refaite (`Disconnect` + `Connect`) si les profils ne reviennent toujours pas. Rien pendant un appel.
+async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudge) {
     let phone = loop {
         match bluez::Phone::new(&addr).await {
             Ok(p) => break p,
@@ -564,46 +577,100 @@ async fn link_watch(addr: BtAddr, links: watch::Receiver<Links>) {
             }
         }
     };
+    let mut changes = match phone.link_changes().await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("Bluetooth watch: {e}; polling only");
+            None
+        }
+    };
     let mut w = LinkWatch::default();
+    let mut up = None;
+    let mut last_connect: Option<Instant> = None;
+    let mut tick = false;
     loop {
-        tokio::time::sleep(WATCH_EVERY).await;
-        let l = *links.borrow();
+        let l = *links.borrow_and_update();
         let link = match phone.link().await {
             Ok(link) => link,
             Err(e) => {
                 tracing::debug!("Bluetooth watch: {e}");
+                tick = wait_link(&mut changes, &mut links).await;
                 continue;
             }
         };
-        if !link.connected || l.call || (link.resolved && l.hfp) {
+        let now_up = link.connected && link.resolved;
+        if now_up && up == Some(false) {
+            tracing::info!("iPhone connected: MAP session woken up");
+            nudge.nudge();
+        }
+        up = Some(now_up);
+        if !link.connected {
             w.healthy();
-            continue;
-        }
-        if !w.strike() {
-            continue;
-        }
-        if w.tries == WATCH_TRIES {
-            tracing::warn!("iPhone link still incomplete: last retry until the iPhone reconnects");
-        }
-        // Profils toujours absents après un `Connect` : la liaison est refaite. Avec les profils résolus
-        // (HFP seul absent), seulement `Connect` : couper casserait l'audio A2DP en cours.
-        let reset = w.connected_once && !link.resolved;
-        tracing::info!(resolved = link.resolved, hfp = l.hfp, reset, "iPhone link incomplete: retrying");
-        let r = tokio::time::timeout(WATCH_TIMEOUT, async {
-            if reset {
-                phone.disconnect().await?;
-                tokio::time::sleep(WATCH_RESET_GAP).await;
+            if l.auto_connect && !l.call && last_connect.is_none_or(|t| t.elapsed() >= WATCH_CONNECT_EVERY) {
+                last_connect = Some(Instant::now());
+                match tokio::time::timeout(WATCH_TIMEOUT, phone.connect()).await {
+                    Ok(Ok(())) => tracing::info!("iPhone connected automatically"),
+                    Ok(Err(e)) => tracing::debug!("automatic connection: {e}"),
+                    Err(_) => tracing::debug!("automatic connection: timed out"),
+                }
+                // Résultat (profils résolus ou non) relu tout de suite.
+                tick = false;
+                continue;
             }
-            phone.connect().await
-        })
-        .await;
-        match r {
-            Ok(Ok(())) => tracing::info!("iPhone link restarted"),
-            Ok(Err(e)) => tracing::warn!("iPhone link restart: {e}"),
-            Err(_) => tracing::warn!("iPhone link restart: timed out"),
+        } else if l.call || (link.resolved && l.hfp) {
+            w.healthy();
+        } else if tick && w.strike() {
+            // Seuls les constats périodiques comptent : un signal précède souvent de peu les profils.
+            retry_link(&phone, &mut w, link, l).await;
         }
-        w.retried(reset);
+        tick = wait_link(&mut changes, &mut links).await;
     }
+}
+
+/// Attend un changement de liaison, de réglage ou d'appel, au plus [`WATCH_EVERY`] ; vrai : délai écoulé.
+async fn wait_link(changes: &mut Option<impl futures_util::Stream<Item = ()> + Unpin>, links: &mut watch::Receiver<Links>) -> bool {
+    let signal = async {
+        match changes.as_mut() {
+            Some(c) => c.next().await.is_some(),
+            None => std::future::pending().await,
+        }
+    };
+    let ended = tokio::select! {
+        () = tokio::time::sleep(WATCH_EVERY) => return true,
+        alive = signal => !alive,
+        Ok(()) = links.changed() => false,
+    };
+    if ended {
+        // Flux terminé (appareil disparu) : attente périodique seule, sans le relire.
+        tracing::debug!("Bluetooth watch: BlueZ signal stream ended");
+        *changes = None;
+    }
+    false
+}
+
+/// Relance la liaison incomplète : `Connect`, ou liaison refaite si un `Connect` n'a pas suffi.
+async fn retry_link(phone: &bluez::Phone, w: &mut LinkWatch, link: bluez::Link, l: Links) {
+    if w.tries == WATCH_TRIES {
+        tracing::warn!("iPhone link still incomplete: last retry until the iPhone reconnects");
+    }
+    // Profils toujours absents après un `Connect` : la liaison est refaite. Avec les profils résolus
+    // (HFP seul absent), seulement `Connect` : couper casserait l'audio A2DP en cours.
+    let reset = w.connected_once && !link.resolved;
+    tracing::info!(resolved = link.resolved, hfp = l.hfp, reset, "iPhone link incomplete: retrying");
+    let r = tokio::time::timeout(WATCH_TIMEOUT, async {
+        if reset {
+            phone.disconnect().await?;
+            tokio::time::sleep(WATCH_RESET_GAP).await;
+        }
+        phone.connect().await
+    })
+    .await;
+    match r {
+        Ok(Ok(())) => tracing::info!("iPhone link restarted"),
+        Ok(Err(e)) => tracing::warn!("iPhone link restart: {e}"),
+        Err(_) => tracing::warn!("iPhone link restart: timed out"),
+    }
+    w.retried(reset);
 }
 
 /// Fenêtre de l'appel en cours (`bluez-msg-call`, installée à côté du démon) : une instance au plus,
@@ -616,21 +683,46 @@ impl Popin {
         if self.0.swap(true, Ordering::AcqRel) {
             return;
         }
-        let exe = std::env::current_exe().map(|p| p.with_file_name("bluez-msg-call"));
-        match exe.and_then(|p| std::process::Command::new(p).stdin(std::process::Stdio::null()).spawn()) {
-            Ok(mut c) => {
-                let running = Arc::clone(&self.0);
-                std::thread::spawn(move || {
+        let running = Arc::clone(&self.0);
+        // Fil dédié : `systemctl` et l'attente de la fenêtre ne bloquent pas la boucle du démon.
+        std::thread::spawn(move || {
+            let exe = std::env::current_exe().map(|p| p.with_file_name("bluez-msg-call"));
+            let child = exe.and_then(|p| std::process::Command::new(p).envs(display_env()).stdin(std::process::Stdio::null()).spawn());
+            match child {
+                Ok(mut c) => {
                     let _ = c.wait();
-                    running.store(false, Ordering::Release);
-                });
+                }
+                Err(e) => tracing::warn!("call window: {e}"),
             }
-            Err(e) => {
-                tracing::warn!("call window: {e}");
-                self.0.store(false, Ordering::Release);
-            }
-        }
+            running.store(false, Ordering::Release);
+        });
     }
+}
+
+/// Variables d'affichage absentes de l'environnement du démon (lancé avant la session graphique) :
+/// reprises de l'environnement du gestionnaire systemd, importé par le compositeur.
+fn display_env() -> Vec<(String, String)> {
+    const KEYS: [&str; 4] = ["WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some() {
+        return vec![];
+    }
+    let out = match std::process::Command::new("systemctl").args(["--user", "show-environment"]).stdin(std::process::Stdio::null()).output() {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(o) => {
+            tracing::warn!("systemctl show-environment: {}", o.status);
+            return vec![];
+        }
+        Err(e) => {
+            tracing::warn!("systemctl show-environment: {e}");
+            return vec![];
+        }
+    };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| KEYS.contains(k))
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
 }
 
 /// Micro coupé par la bulle : nœud visé (la source par défaut peut changer en cours d'appel) et état d'avant.

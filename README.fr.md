@@ -48,14 +48,14 @@ Paquet précompilé (x86_64), depuis les [releases](https://github.com/morganori
 signé par la clé `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Une seule fois, approuver la clé :
 
 ```sh
-curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.1/morganorix.asc | sudo pacman-key --add -
+curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.2/morganorix.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
 ```
 
 Puis installer :
 
 ```sh
-sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.1/bluez-message-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.2/bluez-message-0.1.2-1-x86_64.pkg.tar.zst
 ```
 
 Ou compilé depuis une copie du dépôt :
@@ -66,7 +66,7 @@ makepkg -si
 ```
 
 Le paquet installe les quatre binaires, le service `bluez-messaged` (activé pour toutes les sessions
-graphiques), l'entrée de menu **bmessage**, l'icône et la configuration WirePlumber. Détails :
+utilisateur), l'entrée de menu **bmessage**, l'icône et la configuration WirePlumber. Détails :
 [`packaging/arch/README.md`](packaging/arch/README.md).
 
 ### Autres distributions (manuel)

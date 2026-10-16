@@ -62,6 +62,7 @@ enum Act {
     Preview,
     Device(BtAddr),
     Reconnect,
+    AutoConnect,
     Retention(Option<u32>),
     Purge,
     Clear,
@@ -206,6 +207,7 @@ impl View {
         devs.insert(0, Item { row: row("󰏳", p.device.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(p.device.clone()) });
     }
     devs.push(Item { row: row("󰑐", t!("Reconnect"), "", false), ctl: Ctl::None, act: Act::Reconnect });
+    devs.push(Item { row: row("󰂱", t!("Connect automatically"), "", false), ctl: Ctl::Switch(s.auto_connect), act: Act::AutoConnect });
     sections.push((t!("Bluetooth device"), devs));
     let mut hist = vec![Item { row: row("󰋚", t!("Keep everything"), "", s.retention_days.is_none()), ctl: Ctl::None, act: Act::Retention(None) }];
     for d in RETENTIONS {
@@ -298,6 +300,7 @@ impl View {
             Act::Preview => with(&|n| n.hide_preview = !n.hide_preview),
             Act::Retention(d) => with(&|n| n.retention_days = d),
             Act::Reconnect => vec![Cmd::Reconnect],
+            Act::AutoConnect => with(&|n| n.auto_connect = !n.auto_connect),
             Act::Purge => vec![Cmd::PurgeHidden],
             Act::Device(a) if a == *device => vec![],
             Act::Device(a) => self.confirm(Armed::Device(a.clone()), Cmd::SetDevice { addr: a }),
