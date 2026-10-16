@@ -189,7 +189,7 @@ src/
 ├── bluez.rs             état et reconnexion de l'appareil (org.bluez)
 ├── ipc.rs               protocole JSON lignes démon ↔ clients
 ├── history.rs           base SQLite (migrations user_version)
-├── settings.rs, config.rs, i18n.rs, phone.rs, stamp.rs, addr.rs, error.rs
+├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
 ├── app/                 état partagé (conversations, appel), notifications, réactions
 └── gui/                 thème, widgets, emojis, démarrage egui
 locales/                 fr.json (embarqué), template.json, README
