@@ -34,7 +34,7 @@ impl Composer {
         ui.horizontal(|ui| {
             let mut act = None;
             let w_field = ui.available_width() - size::BUTTON_W - 40.0 - 2.0 * ui.spacing().item_spacing.x;
-            let r = ui.add(w::field(&mut self.draft, t!("Message, then Enter  (Esc: list)")).desired_width(w_field.max(100.0)));
+            let r = emojis.field(ui, &mut self.draft, t!("Message, then Enter  (Esc: list)"), w_field.max(100.0));
             if std::mem::take(&mut self.focus) {
                 r.request_focus();
             }

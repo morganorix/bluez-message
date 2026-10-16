@@ -33,6 +33,8 @@ pub struct View {
     armed: Option<(Armed, Instant)>,
     /// Drop-down list open, with its row chosen with the keyboard.
     menu: Option<(Menu, usize)>,
+    /// The list scrolls to its keyboard row (just opened or moved).
+    follow: bool,
 }
 
 /// Settings chosen from a drop-down list.
@@ -136,6 +138,7 @@ impl View {
             if up {
                 *c = c.saturating_sub(1);
             }
+            self.follow |= down || up;
             if go {
                 pick = Some((*m, *c));
             }
@@ -160,7 +163,7 @@ impl View {
         }
         if let (Some((m, c)), Some(a)) = (self.menu, anchor) {
             let (choices, current) = lists(m);
-            let (clicked, inside) = list(ui, pal, a, choices, c, current);
+            let (clicked, inside) = list(ui, pal, a, choices, c, current, std::mem::take(&mut self.follow));
             if let Some(i) = clicked {
                 pick = Some((m, i));
             } else if !inside && fire.is_none() && ui.input(|i| i.pointer.any_click()) {
@@ -184,7 +187,10 @@ impl View {
             }
         }
         match fire {
-            Some(Act::Menu(m)) => self.menu = if self.menu.is_some_and(|(o, _)| o == m) { None } else { Some((m, lists(m).1)) },
+            Some(Act::Menu(m)) => {
+                self.menu = if self.menu.is_some_and(|(o, _)| o == m) { None } else { Some((m, lists(m).1)) };
+                self.follow = self.menu.is_some();
+            }
             Some(a) => {
                 self.menu = None;
                 cmds.extend(self.run(a, s, &p.device));
@@ -365,10 +371,13 @@ impl View {
     }
 }
 
-/// Drop-down list under `anchor` (bar menu: surface, `line` border), in the foreground.
+/// Drop-down list under `anchor` (bar menu: surface, `line` border), in the foreground, as high as
+/// the window allows below it then scrolling; `follow`: brings the `cursor` row into view.
 /// Returns the clicked row and whether the pointer is over it.
-fn list(ui: &egui::Ui, pal: &Palette, anchor: egui::Rect, choices: &[(Option<&str>, &str)], cursor: usize, current: usize) -> (Option<usize>, bool) {
-    let area = egui::Area::new(ui.id().with("menu_list")).order(egui::Order::Foreground).fixed_pos(anchor.left_bottom() + egui::vec2(0.0, 4.0));
+fn list(ui: &egui::Ui, pal: &Palette, anchor: egui::Rect, choices: &[(Option<&str>, &str)], cursor: usize, current: usize, follow: bool) -> (Option<usize>, bool) {
+    let top = anchor.left_bottom() + egui::vec2(0.0, 4.0);
+    let max_h = (ui.ctx().content_rect().bottom() - top.y - 16.0).max(120.0);
+    let area = egui::Area::new(ui.id().with("menu_list")).order(egui::Order::Foreground).fixed_pos(top);
     let r = area.show(ui.ctx(), |ui| {
         egui::Frame::new()
             .fill(pal.surface(0.06))
@@ -377,16 +386,24 @@ fn list(ui: &egui::Ui, pal: &Palette, anchor: egui::Rect, choices: &[(Option<&st
             .inner_margin(egui::Margin::same(4))
             .show(ui, |ui| {
                 ui.set_width(anchor.width() - 8.0);
-                ui.spacing_mut().item_spacing.y = w::ROW_GAP;
-                let mut hit = None;
-                for (i, (code, name)) in choices.iter().enumerate() {
-                    let icon = if i == current { "󰄬" } else { "" };
-                    let r = w::row(ui, pal, &w::Row { selected: i == cursor, ..row(icon, name, code.unwrap_or(""), i == current) });
-                    if r.clicked() {
-                        hit = Some(i);
-                    }
-                }
-                hit
+                ScrollArea::vertical()
+                    .max_height(max_h)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = w::ROW_GAP;
+                        let mut hit = None;
+                        for (i, (code, name)) in choices.iter().enumerate() {
+                            let icon = if i == current { "󰄬" } else { "" };
+                            let r = w::row(ui, pal, &w::Row { selected: i == cursor, ..row(icon, name, code.unwrap_or(""), i == current) });
+                            if follow && i == cursor {
+                                r.scroll_to_me(None);
+                            }
+                            if r.clicked() {
+                                hit = Some(i);
+                            }
+                        }
+                        hit
+                    })
+                    .inner
             })
             .inner
     });

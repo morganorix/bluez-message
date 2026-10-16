@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "bluez-message"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "clap",
  "eframe",
@@ -422,6 +422,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-properties",
+ "unicode-segmentation",
  "winit",
  "zbus",
 ]

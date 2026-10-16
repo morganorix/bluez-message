@@ -10,27 +10,32 @@ use std::sync::{Arc, OnceLock};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{self, Color32, ColorImage, FontId, Pos2, TextFormat, TextureFilter, TextureHandle, TextureOptions};
 use rustybuzz::ttf_parser::{GlyphId, RasterImageFormat};
+use unicode_properties::{EmojiStatus, UnicodeEmoji};
+use unicode_segmentation::UnicodeSegmentation;
 
+use super::theme::font;
 use super::widgets as w;
 
-/// Role of a character in a run of emojis.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// Emoji (or regional flag indicator).
-    Base,
-    /// Skin tone, ZWJ, variation selector, keycap, tag: extends the previous emoji.
-    Modifier,
-    Other,
+/// Character displayed as an emoji by default (`Emoji_Presentation`), skin tones and regional indicators included.
+fn presentation(c: char) -> bool {
+    use EmojiStatus as S;
+    matches!(
+        c.emoji_status(),
+        S::EmojiPresentation | S::EmojiPresentationAndModifierBase | S::EmojiPresentationAndEmojiComponent | S::EmojiPresentationAndModifierAndEmojiComponent
+    )
 }
 
-fn kind(c: char) -> Kind {
-    match u32::from(c) {
-        0x200D | 0x20E3 | 0xFE0E | 0xFE0F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F => Kind::Modifier,
-        // Only symbols that have an emoji form: an arrow or ⌘ stays text.
-        0x203C | 0x2049 | 0x2194..=0x2199 | 0x21A9 | 0x21AA | 0x231A | 0x231B | 0x2328 | 0x23CF | 0x23E9..=0x23F3 | 0x23F8..=0x23FA
-        | 0x2600..=0x27BF | 0x2B05..=0x2B07 | 0x2B1B | 0x2B1C | 0x2B50 | 0x2B55 | 0x1F000..=0x1FAFF => Kind::Base,
-        _ => Kind::Other,
-    }
+/// Grapheme cluster (UAX #29) shown as an emoji (UTS #51): an `Emoji` character by default in emoji
+/// presentation, or made one by VS16, a keycap or a skin tone; VS15 asks for text (`☀︎`, `#`, `©` stay text).
+fn is_emoji(g: &str) -> bool {
+    let mut cs = g.chars();
+    let Some(first) = cs.next() else { return false };
+    first.is_emoji_char() && !g.contains('\u{FE0E}') && (presentation(first) || cs.any(|c| c == '\u{FE0F}' || c == '\u{20E3}' || presentation(c)))
+}
+
+/// `text` contains at least one emoji.
+fn any(text: &str) -> bool {
+    !text.is_ascii() && text.graphemes(true).any(is_emoji)
 }
 
 /// Piece of a text: plain text or a run of stuck-together emojis.
@@ -40,17 +45,13 @@ pub enum Piece<'a> {
     Emoji(&'a str),
 }
 
-/// Splits `text` into text and emoji runs; a modifier extends the current run.
+/// Splits `text` into text and emoji runs, by grapheme cluster.
 #[must_use]
 pub fn split(text: &str) -> Vec<Piece<'_>> {
     let piece = |emoji, s| if emoji { Piece::Emoji(s) } else { Piece::Text(s) };
     let (mut out, mut start, mut emoji) = (vec![], 0, false);
-    for (i, c) in text.char_indices() {
-        let e = match kind(c) {
-            Kind::Base => true,
-            Kind::Modifier => emoji,
-            Kind::Other => false,
-        };
+    for (i, g) in text.grapheme_indices(true) {
+        let e = is_emoji(g);
         if e != emoji && i > start {
             out.push(piece(emoji, &text[start..i]));
             start = i;
@@ -64,16 +65,15 @@ pub fn split(text: &str) -> Vec<Piece<'_>> {
 }
 
 /// Message made of 1 to 3 emojis (and spaces): displayed large, without a bubble, like Messages.
-/// Modifiers not counted; a flag counts as two.
+/// A sequence (skin tone, family, flag) counts as one.
 #[must_use]
 pub fn only(text: &str) -> bool {
     let mut n = 0;
-    for c in text.chars() {
-        match kind(c) {
-            Kind::Base => n += 1,
-            Kind::Modifier => {}
-            Kind::Other if c.is_whitespace() => {}
-            Kind::Other => return false,
+    for g in text.graphemes(true) {
+        if is_emoji(g) {
+            n += 1;
+        } else if !g.chars().all(char::is_whitespace) {
+            return false;
         }
     }
     (1..=3).contains(&n)
@@ -172,7 +172,7 @@ impl Emojis {
     /// `text` at `size` and `ink`, colour emojis; wraps like a label.
     pub fn label(&mut self, ui: &mut egui::Ui, text: &str, size: f32, ink: Color32) -> egui::Response {
         let absent = self.font.as_ref().is_some_and(|f| matches!(f.get(), Some(None)));
-        if absent || !text.chars().any(|c| kind(c) == Kind::Base) {
+        if absent || !any(text) {
             return ui.label(w::text(text, size, ink));
         }
         ui.vertical(|ui| {
@@ -207,7 +207,7 @@ impl Emojis {
     pub fn paint_line(&mut self, ui: &egui::Ui, text: &str, p: Pos2, font: &FontId, c: Color32, max_w: f32) -> bool {
         // A single line never shows more than this: the rest of a long message is not split.
         let text = text.get(..text.floor_char_boundary(PAINT_MAX)).unwrap_or(text);
-        if !text.chars().any(|c| kind(c) == Kind::Base) {
+        if !any(text) {
             return false;
         }
         let h = font.size * EMOJI_SCALE;
@@ -241,6 +241,53 @@ impl Emojis {
             }
         }
         true
+    }
+
+    /// Input field (`w::field`) of width `max_w`, with colour emojis: each run is laid out
+    /// transparent, widened to its images, which are painted over it.
+    pub fn field(&mut self, ui: &mut egui::Ui, text: &mut String, hint: &str, max_w: f32) -> egui::Response {
+        let font = &w::regular(font::BODY);
+        let h = font.size * EMOJI_SCALE;
+        // Colour of `TextEdit` when none is given.
+        let ink = ui.visuals().override_text_color.unwrap_or_else(|| ui.visuals().widgets.inactive.text_color());
+        let mut lay = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+            let mut job = LayoutJob::default();
+            for piece in split(buf.as_str()) {
+                let fmt = TextFormat::simple(font.clone(), ink);
+                match piece {
+                    Piece::Emoji(e) if let Some(w) = self.width(ui.ctx(), e, h) => {
+                        let plain = ui.fonts_mut(|f| f.layout_no_wrap(e.to_owned(), font.clone(), ink)).size().x;
+                        // The run takes exactly `w`: widened, or shrunk when egui lays out each part of
+                        // a sequence (family, ZWJ) as its own glyph.
+                        let (lead, size) = if plain > w { (0.0, font.size * w / plain) } else { (w - plain, font.size) };
+                        let font_id = FontId::new(size, font.family.clone());
+                        job.append(e, lead, TextFormat { font_id, color: Color32::TRANSPARENT, ..fmt });
+                    }
+                    Piece::Text(s) | Piece::Emoji(s) => job.append(s, 0.0, fmt),
+                }
+            }
+            job.wrap.max_width = wrap;
+            ui.fonts_mut(|f| f.layout_job(job))
+        };
+        let out = w::field(text, hint).desired_width(max_w).layouter(&mut lay).show(ui);
+        let painter = ui.painter_at(out.text_clip_rect);
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        let mut end = 0;
+        for piece in split(out.galley.text()) {
+            let (Piece::Text(s) | Piece::Emoji(s)) = piece;
+            end += s.chars().count();
+            let Piece::Emoji(e) = piece else { continue };
+            let Some(imgs) = self.images(ui.ctx(), e) else { continue };
+            // The run, as wide as its images (laid out as above), ends at `r`.
+            let r = out.galley.pos_from_cursor(egui::text::CCursor::new(end)).translate(out.galley_pos.to_vec2());
+            let mut x = r.max.x - imgs.iter().map(|t| width(t, h)).sum::<f32>();
+            for t in &imgs {
+                let w = width(t, h);
+                painter.image(t.id(), egui::Rect::from_min_size(egui::pos2(x, r.center().y - h / 2.0), egui::vec2(w, h)), uv, Color32::WHITE);
+                x += w;
+            }
+        }
+        out.response.response
     }
 
     /// Button of the emoji `emoji` at height `h`, in colour if the font has it (otherwise as text).
@@ -321,10 +368,10 @@ mod tests {
 
     #[test]
     fn emoji_only_messages() {
-        for t in ["😊", " 👍🏽 ", "❤️", "🎉🎉🎉", "👨‍👩‍👧", "✅", "🇫🇷", "‼️", "↩️"] {
+        for t in ["😊", " 👍🏽 ", "❤️", "🎉🎉🎉", "👨‍👩‍👧", "✅", "🇫🇷🇫🇷🇫🇷", "‼️", "↩️", "1️⃣", "☝🏽"] {
             assert!(only(t), "{t}");
         }
-        for t in ["", "  ", "ok 👍", "😀😀😀😀", "A aimé « 😊 »", "1", "→", "⌘"] {
+        for t in ["", "  ", "ok 👍", "😀😀😀😀", "A aimé « 😊 »", "1", "→", "⌘", "©", "☀", "☀\u{FE0E}", "#"] {
             assert!(!only(t), "{t}");
         }
     }
@@ -335,6 +382,8 @@ mod tests {
         assert_eq!(split("👨‍👩‍👧"), [Piece::Emoji("👨‍👩‍👧")]);
         // Modifier with no emoji before it: stays text.
         assert_eq!(split("\u{FE0F}a"), [Piece::Text("\u{FE0F}a")]);
+        // Text by default without VS16 (☀, ©), emoji with it (☀️).
+        assert_eq!(split("☀ © ☀️"), [Piece::Text("☀ © "), Piece::Emoji("☀️")]);
         assert!(split("").is_empty());
     }
 }

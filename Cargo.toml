@@ -1,6 +1,6 @@
 [package]
 name = "bluez-message"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.91"
 description = "iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
@@ -54,12 +54,15 @@ thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "time", "io-util", "signal", "process", "net", "sync", "io-std"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+# Already pulled in by egui and rustybuzz: grapheme clusters (UAX #29) and emoji properties (UTS #51).
+unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"], optional = true }
+unicode-segmentation = { version = "1.13.3", optional = true }
 winit = { version = "0.30.13", optional = true }
 zbus = "5"
 
 [features]
 notify = ["dep:notify-rust"]
-gui = ["notify", "dep:eframe", "dep:image", "dep:rustybuzz", "dep:winit"]
+gui = ["notify", "dep:eframe", "dep:image", "dep:rustybuzz", "dep:unicode-properties", "dep:unicode-segmentation", "dep:winit"]
 
 [[bin]]
 name = "bluez-msg"
