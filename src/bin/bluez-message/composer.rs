@@ -1,5 +1,5 @@
-//! Saisie du message, comme le mot de passe wifi : champ 34 de haut, `fg` 10 %, texte 12 à 10 du bord ;
-//! choix d'emojis ; bouton 120 × 34. Ne fait qu'éditer le brouillon : l'envoi revient à la fenêtre.
+//! Message input, like the wifi password: field 34 high, `fg` 10 %, text 12 to 10 from the edge;
+//! emoji picker; button 120 × 34. Only edits the draft: sending goes back to the window.
 
 use bluez_message::gui::emoji::Emojis;
 use bluez_message::gui::theme::{Palette, size};
@@ -12,19 +12,19 @@ const EMOJIS: [&str; 40] = [
     "👌", "👏", "💪", "🤝", "👋", "❤\u{FE0F}", "💔", "🔥", "✨", "🎉", "🎂", "☀\u{FE0F}", "🌙", "⭐", "✅", "❌", "⚠\u{FE0F}", "📞", "📍", "🚗",
 ];
 
-/// Demande de la saisie à la fenêtre.
+/// Input request to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerAction {
-    /// Envoyer le brouillon (Entrée ou bouton).
+    /// Send the draft (Enter or button).
     Send,
-    /// Échap : retour à la recherche et à la liste.
+    /// Escape: back to the search and the list.
     Leave,
 }
 
 #[derive(Default)]
 pub struct Composer {
     pub draft: String,
-    /// Curseur à placer dans la saisie à la prochaine image.
+    /// Cursor to place in the input at the next frame.
     pub focus: bool,
 }
 

@@ -1,3 +1,4 @@
+use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -23,7 +24,7 @@ enum Cmd {
     Send { addr: BtAddr, to: String, text: String },
     /// Watch the inbox by polling, one JSON per line
     Watch { addr: BtAddr, #[arg(long, default_value_t = 5)] interval: u64 },
-    /// Raw RFCOMM hands-free unit (no audio), one JSON per line; requires hfp_hf disabled in WirePlumber
+    /// Raw RFCOMM hands-free unit (no audio), one JSON per line; requires `hfp_hf` disabled in WirePlumber
     Hfp { addr: BtAddr, #[arg(long)] answer: bool },
     /// MAP + HFP daemon driven by JSON lines (stdin/stdout), for the bar
     Serve { addr: BtAddr, #[arg(long, default_value_t = 5)] interval: u64 },
@@ -43,18 +44,19 @@ enum LocaleCmd {
 }
 
 #[tokio::main]
-async fn main() -> std::process::ExitCode {
+async fn main() -> ExitCode {
     bluez_message::log::init();
     match run(Cli::parse()).await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("{}", t!("error: {0}", e));
-            std::process::ExitCode::FAILURE
+            ExitCode::FAILURE
         }
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+/// `Ok(FAILURE)`: failure already reported (incomplete translation file).
+async fn run(cli: Cli) -> Result<ExitCode> {
     match cli.cmd {
         Cmd::List { addr, folder } => {
             let folder: Folder = folder.parse()?;
@@ -113,14 +115,14 @@ async fn run(cli: Cli) -> Result<()> {
                         println!("{i}");
                     }
                     eprintln!("{}", t!("{0} issue(s)", issues.len()));
-                    std::process::exit(1);
+                    return Ok(ExitCode::FAILURE);
                 }
                 Err(e) => {
                     eprintln!("{}", t!("invalid JSON: {0}", e));
-                    std::process::exit(1);
+                    return Ok(ExitCode::FAILURE);
                 }
             }
         }
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }

@@ -1,9 +1,10 @@
-//! Fil d'une conversation : en-tête (titre, numéro, Appeler), bulles, lignes d'appel, réactions.
-//! Ne modifie ni l'état ni le démon : rend les actions demandées.
+//! Conversation thread: header (title, number, Call), bubbles, call lines, reactions.
+//! Changes neither the state nor the daemon: returns the requested actions.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
-use bluez_message::app::state::{Conv, Delivery, Msg};
+use bluez_message::app::state::{Conv, Delivery, Msg, Rev};
 use bluez_message::app::tapback::{self, Badge};
 use bluez_message::engine::{CallKind, Item};
 use bluez_message::gui::emoji::{self, Emojis};
@@ -12,7 +13,7 @@ use bluez_message::gui::widgets as w;
 use bluez_message::t;
 use eframe::egui::{self, Align, Align2, Frame, Label, Layout, Margin, ScrollArea};
 
-/// Action demandée dans le fil, appliquée par la fenêtre.
+/// Action requested in the thread, applied by the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadAction {
     Resend(String),
@@ -21,24 +22,27 @@ pub enum ThreadAction {
     Dial,
 }
 
-/// Fil de la conversation `c`.
-pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, c: &Conv) -> Vec<ThreadAction> {
-    let (title, sub) = if c.name.is_empty() { (c.number.as_str(), "") } else { (c.name.as_str(), c.number.as_str()) };
-    let dial = header(ui, pal, title, sub);
+/// Thread of conversation `c`, from the state at revision `rev`; `calls_only`: call lines only.
+pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, c: &Conv, rev: Rev, calls_only: bool) -> Vec<ThreadAction> {
+    let dial = header(ui, pal, &c.name, &c.number);
+    if calls_only && c.last_call().is_none() {
+        placeholder(ui, pal, t!("No calls"));
+        return if dial { vec![ThreadAction::Dial] } else { vec![] };
+    }
     let max_w = ui.available_width() * 0.7;
     let mut acts = vec![];
-    // Première image du fil : les emojis déjà présents ne s'animent pas, seuls les nouveaux.
+    // First frame of the thread: emojis already present do not animate, only new ones.
     let now = ui.input(|i| i.time);
     let opened = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(egui::Id::new(("thread", &c.key)), || now));
     ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = w::GAP;
-        // Réactions repliées en badge sur le message visé.
-        let fold = tapback::fold(&c.msgs);
-        // Rang de chaque message d'emojis parmi ceux de même texte et de même sens : identité stable
-        // malgré une suppression, un historique chargé avant ou une bulle en attente remplacée à l'envoi.
+        // Reactions folded into a badge on the targeted message: computed again only when the state changes.
+        let fold = folded(ui, c, rev);
+        // Rank of each emoji message among those with the same text and direction: stable identity
+        // despite a deletion, a history loaded earlier or a pending bubble replaced at send time.
         let mut rank: std::collections::HashMap<(&str, bool), usize> = std::collections::HashMap::new();
         for (i, m) in c.msgs.iter().enumerate() {
-            if fold.folded[i] {
+            if fold.folded[i] || (calls_only && m.call.is_none()) {
                 continue;
             }
             if let Some((kind, secs)) = m.call {
@@ -62,20 +66,32 @@ pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, c: &Conv) -> 
     acts
 }
 
-/// Contact ou numéro sans conversation : en-tête seul ; `true` si Appeler est cliqué.
-pub fn contact(ui: &mut egui::Ui, pal: &Palette, name: &str, number: &str) -> bool {
-    let (title, sub) = if name.is_empty() { (number, "") } else { (name, number) };
-    let dial = header(ui, pal, title, sub);
-    placeholder(ui, pal, t!("No messages yet: write below or call"));
+/// [`tapback::fold`] of `c`, kept in egui's memory as long as the state stays at revision `rev`.
+fn folded(ui: &egui::Ui, c: &Conv, rev: Rev) -> Arc<tapback::Fold> {
+    let id = egui::Id::new(("fold", &c.key));
+    if let Some((r, f)) = ui.data(|d| d.get_temp::<(Rev, Arc<tapback::Fold>)>(id))
+        && r == rev
+    {
+        return f;
+    }
+    let f = Arc::new(tapback::fold(&c.msgs));
+    ui.data_mut(|d| d.insert_temp(id, (rev, Arc::clone(&f))));
+    f
+}
+
+/// Contact or number without a conversation: header only; `true` if Call is clicked.
+pub fn contact(ui: &mut egui::Ui, pal: &Palette, name: &str, number: &str, calls_only: bool) -> bool {
+    let dial = header(ui, pal, name, number);
+    placeholder(ui, pal, if calls_only { t!("No calls yet") } else { t!("No messages yet: write below or call") });
     dial
 }
 
-/// Texte centré dans la zone du fil.
+/// Text centred in the thread area.
 pub fn placeholder(ui: &mut egui::Ui, pal: &Palette, msg: &str) {
     ui.centered_and_justified(|ui| ui.label(w::text(msg, font::BODY, pal.muted())));
 }
 
-/// Ligne d'appel centrée, comme un `Hint` : 11 à 40 % (manqué en danger) ; suppression au clic droit.
+/// Centred call line, like a `Hint`: 11 at 40 % (missed in danger); deletion on right click.
 fn call_line(ui: &mut egui::Ui, pal: &Palette, m: &Msg, kind: CallKind, secs: u64, acts: &mut Vec<ThreadAction>) {
     let color = if kind == CallKind::Missed { pal.danger } else { pal.muted() };
     let r = ui.vertical_centered(|ui| {
@@ -88,16 +104,16 @@ fn call_line(ui: &mut egui::Ui, pal: &Palette, m: &Msg, kind: CallKind, secs: u6
     });
 }
 
-/// Bulle d'un SMS : en attente (barre de progression), en échec (bouton de renvoi), menu au clic droit
-/// (réagir, renvoyer, copier, supprimer) ; réactions en badges sur le coin haut.
+/// SMS bubble: pending (progress bar), failed (resend button), right-click menu
+/// (react, resend, copy, delete); reactions as badges on the top corner.
 fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges: &[Badge], max_w: f32, acts: &mut Vec<ThreadAction>) {
     if !badges.is_empty() {
         ui.add_space(BADGE_R);
     }
     let layout = if m.outgoing { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
-    // Hauteur 0 : la ligne prend la hauteur de la bulle, pas celle de la zone défilante.
+    // Height 0: the row takes the bubble's height, not that of the scrolling area.
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 0.0), layout, |ui| {
-        // Encart de MapInfo (`fg` 4 %, 12 de marge) ; les miens en accent 15 %, comme les puces.
+        // MapInfo inset (`fg` 4 %, 12 margin); mine in accent 15 %, like the chips.
         let fill = match (m.outgoing, m.delivery) {
             (_, Delivery::Failed) => pal.danger.gamma_multiply(0.15),
             (true, _) => pal.accent.gamma_multiply(0.15),
@@ -120,8 +136,8 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges
     });
 }
 
-/// Après la bulle (ou les emojis) de `m` : badges, bouton de renvoi en échec, menu au clic droit
-/// (réagir, renvoyer, copier, supprimer) ; aucun menu pendant l'envoi.
+/// After the bubble (or emojis) of `m`: badges, resend button on failure, right-click menu
+/// (react, resend, copy, delete); no menu while sending.
 fn actions(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, shown: &egui::Response, badges: &[Badge], acts: &mut Vec<ThreadAction>) {
     badges_on(ui, pal, emojis, shown.rect, m.outgoing, badges);
     if m.delivery == Delivery::Failed && w::icon_button(ui, pal, "󰑐").on_hover_text(t!("Resend")).clicked() {
@@ -154,11 +170,11 @@ fn actions(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, shown
     });
 }
 
-/// Durée de l'apparition d'un message d'emojis (rebond puis balancement), en secondes.
+/// Duration of an emoji message's appearance (bounce then sway), in seconds.
 const POP: f64 = 1.2;
 
-/// Message d'emojis seuls : grands, sans cadre, horodatage (ou état d'envoi) dessous ;
-/// `age` : secondes depuis son arrivée à l'écran, `None` s'il était là à l'ouverture du fil.
+/// Emoji-only message: large, frameless, timestamp (or send state) below;
+/// `age`: seconds since it appeared on screen, `None` if it was there when the thread opened.
 fn big(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges: &[Badge], age: Option<f64>, acts: &mut Vec<ThreadAction>) {
     if !badges.is_empty() {
         ui.add_space(BADGE_R);
@@ -166,7 +182,7 @@ fn big(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges: &
     let layout = if m.outgoing { Layout::right_to_left(Align::Min) } else { Layout::left_to_right(Align::Min) };
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 0.0), layout, |ui| {
         let ink = if m.delivery == Delivery::Pending { pal.fg.gamma_multiply(0.6) } else { pal.fg };
-        // Emojis en couleur collés (espaces retirées) ; sans la police, le texte tel quel.
+        // Stuck-together colour emojis (spaces removed); without the font, the text as is.
         let compact: String = m.text.split_whitespace().collect();
         let text = m.text.trim();
         let col = Layout::top_down(if m.outgoing { Align::Max } else { Align::Min });
@@ -175,7 +191,7 @@ fn big(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges: &
                 ui.spacing_mut().item_spacing.y = 3.0;
                 let wide = emojis.width(ui.ctx(), &compact, font::EMOJI);
                 let wide = wide.unwrap_or_else(|| ui.painter().layout_no_wrap(text.to_owned(), w::regular(font::EMOJI), ink).size().x);
-                // Hauteur du glyphe, sans l'interligne de la police : horodatage près des emojis.
+                // Glyph height, without the font's line spacing: timestamp close to the emojis.
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(wide, font::EMOJI), egui::Sense::hover());
                 pop(ui, emojis, rect, &compact, text, ink, age);
                 match m.delivery {
@@ -190,14 +206,14 @@ fn big(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges: &
     });
 }
 
-/// Dessine `compact` en emojis couleur (à défaut `text`) en grand au centre de `rect` ; pendant [`POP`] après son arrivée : surgit en
-/// dépassant un peu sa taille, puis se balance en s'amortissant.
+/// Draws `compact` as colour emojis (otherwise `text`) large at the centre of `rect`; during [`POP`] after its arrival: pops up
+/// slightly overshooting its size, then sways with damping.
 fn pop(ui: &egui::Ui, emojis: &mut Emojis, rect: egui::Rect, compact: &str, text: &str, ink: egui::Color32, age: Option<f64>) {
     let (scale, angle) = match age {
         Some(a) if a < POP => {
             ui.ctx().request_repaint();
             let a = a as f32;
-            // easeOutBack sur 0,45 s : de 0 à 1 en passant par ~1,1.
+            // easeOutBack over 0.45 s: from 0 to 1 passing through ~1.1.
             let (c1, x) = (1.701_58_f32, (a / 0.45).min(1.0) - 1.0);
             let grow = 1.0 + (c1 + 1.0) * x.powi(3) + c1 * x.powi(2);
             let damp = 1.0 - a / POP as f32;
@@ -208,31 +224,31 @@ fn pop(ui: &egui::Ui, emojis: &mut Emojis, rect: egui::Rect, compact: &str, text
     if emojis.paint(ui, compact, rect.center(), font::EMOJI * scale, angle, ink) {
         return;
     }
-    // Taille arrondie à 2 px : peu de tailles distinctes à tramer dans l'atlas des glyphes.
+    // Size rounded to 2 px: few distinct sizes to rasterise in the glyph atlas.
     let size = (font::EMOJI * scale / 2.0).round().max(1.0) * 2.0;
     let g = ui.painter().layout_no_wrap(text.to_owned(), w::regular(size), ink);
-    // Rotation autour du centre : TextShape tourne autour de son coin haut gauche.
+    // Rotation around the centre: TextShape rotates around its top-left corner.
     let pos = rect.center() - egui::emath::Rot2::from_angle(angle) * (g.size() / 2.0);
     ui.painter().add(egui::epaint::TextShape::new(pos, g, ink).with_angle(angle));
 }
 
 const BADGE_R: f32 = 11.0;
-/// Taille d'un emoji de réaction en couleur (un peu sous le diamètre de la pastille).
+/// Size of a colour reaction emoji (slightly under the pill's diameter).
 const BADGE_EMOJI: f32 = 18.0;
 
-/// Badges de réaction à cheval sur le coin haut de la bulle, comme Messages : à droite sur un message
-/// reçu, à gauche sur un message envoyé ; emoji en couleur sans pastille, ou en texte sur une pastille
-/// (les miens en accent, ceux du correspondant en surface).
+/// Reaction badges straddling the bubble's top corner, like Messages: on the right for a received
+/// message, on the left for a sent one; colour emoji without a pill, or as text on a pill
+/// (mine in accent, the correspondent's in surface).
 fn badges_on(ui: &egui::Ui, pal: &Palette, emojis: &mut Emojis, bubble: egui::Rect, outgoing: bool, badges: &[Badge]) {
     let p = ui.painter();
     let surface = pal.bg.lerp_to_gamma(pal.fg, 0.18);
     for (k, b) in badges.iter().enumerate() {
-        // Plusieurs badges se chevauchent un peu vers l'intérieur de la bulle.
+        // Several badges overlap slightly towards the inside of the bubble.
         let dx = 4.0 + k as f32 * (BADGE_R * 2.0 - 4.0);
         let c = egui::pos2(if outgoing { bubble.left() + dx } else { bubble.right() - dx }, bubble.top() - 2.0);
         let (fill, ink) = if b.mine { (pal.accent, pal.on_accent) } else { (surface, pal.fg) };
         let a = if b.pending { 0.5 } else { 1.0 };
-        // Emoji en couleur posé tel quel ; en texte (sans la police), sur une pastille pour rester lisible.
+        // Colour emoji placed as is; as text (without the font), on a pill to stay legible.
         if !emojis.paint(ui, b.emoji, c, BADGE_EMOJI, 0.0, ink.gamma_multiply(a)) {
             p.circle(c, BADGE_R, fill.gamma_multiply(a), egui::Stroke::new(2.0, pal.bg));
             p.text(c, egui::Align2::CENTER_CENTER, b.emoji, egui::FontId::proportional(font::BODY), ink.gamma_multiply(a));
@@ -240,7 +256,7 @@ fn badges_on(ui: &egui::Ui, pal: &Palette, emojis: &mut Emojis, bubble: egui::Re
     }
 }
 
-/// Barre d'envoi indéterminée (3 de haut, accent) : un segment qui défile tant que le transfert dure.
+/// Indeterminate send bar (3 high, accent): a segment that scrolls as long as the transfer lasts.
 fn progress(ui: &mut egui::Ui, pal: &Palette, width: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 3.0), egui::Sense::hover());
     let p = ui.painter();
@@ -252,8 +268,10 @@ fn progress(ui: &mut egui::Ui, pal: &Palette, width: f32) {
     p.rect_filled(bar, 1.5, pal.accent);
 }
 
-/// En-tête du fil, puis filet : titre, numéro et bouton Appeler à droite ; `true` si ce bouton est cliqué.
-fn header(ui: &mut egui::Ui, pal: &Palette, title: &str, sub: &str) -> bool {
+/// Thread header, then rule: the name with the number on the right (or the number alone) and the Call button;
+/// `true` if that button is clicked.
+fn header(ui: &mut egui::Ui, pal: &Palette, name: &str, number: &str) -> bool {
+    let (title, sub) = if name.is_empty() { (number, "") } else { (name, number) };
     let rect = w::header(ui, pal, "󰭹", title);
     let dial = w::header_button(ui, pal, rect, "󰏲").on_hover_text(t!("Call"));
     ui.painter().text(dial.rect.left_center() - egui::vec2(12.0, 0.0), Align2::RIGHT_CENTER, sub, w::regular(font::SMALL), pal.muted());
@@ -262,7 +280,7 @@ fn header(ui: &mut egui::Ui, pal: &Palette, title: &str, sub: &str) -> bool {
     dial.clicked()
 }
 
-/// Aperçu d'une conversation : appel ou réaction en libellé traduit, sinon première ligne du texte.
+/// Conversation preview: call or reaction as a translated label, otherwise the first line of the text.
 pub fn preview(m: &Msg) -> Cow<'_, str> {
     if let Some((k, s)) = m.call {
         return Cow::Owned(call_label(k, s));
@@ -273,7 +291,7 @@ pub fn preview(m: &Msg) -> Cow<'_, str> {
     }
 }
 
-/// « Appel reçu · 2 min 13 », « Appel manqué ».
+/// "Incoming call · 2 min 13", "Missed call".
 fn call_label(kind: CallKind, secs: u64) -> String {
     let what = match kind {
         CallKind::In => t!("Received call"),
@@ -286,10 +304,10 @@ fn call_label(kind: CallKind, secs: u64) -> String {
     }
 }
 
-/// `20261015T103000` → `15/10 10:30` ; autre format rendu tel quel.
+/// `20261015T103000` → `15/10 10:30`; other formats returned as is.
 pub fn short_stamp(t: &str) -> String {
     if t.len() >= 13 && t.is_ascii() && t.as_bytes()[8] == b'T' {
-        // Jour {0}, mois {1}, heure {2}, minutes {3} : ordre selon la langue.
+        // Day {0}, month {1}, hour {2}, minutes {3}: order depends on the language.
         t!("{1}/{0} {2}:{3}", &t[6..8], &t[4..6], &t[9..11], &t[11..13])
     } else {
         t.to_owned()
@@ -301,7 +319,7 @@ mod tests {
     use super::*;
 
     #[test]
-    // Attendus construits avec `t!` : les tests passent quelle que soit la locale.
+    // Expected values built with `t!`: tests pass whatever the locale.
     fn stamps() {
         assert_eq!(short_stamp("20261015T103000"), t!("{1}/{0} {2}:{3}", "15", "10", "10", "30"));
         assert_eq!(short_stamp("hier"), "hier");

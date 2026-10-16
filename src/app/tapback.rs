@@ -1,11 +1,11 @@
-//! Réactions (tapbacks) : iOS ne les transmet pas par MAP. Elles circulent en texte (« A aimé « … » »,
-//! « Liked “…” ») ; on les reconnaît pour les afficher en badge sur le message visé, comme Messages.
+//! Reactions (tapbacks): iOS does not transmit them over MAP. They travel as text ("Liked “…”",
+//! "A aimé « … »"); they are recognised to be shown as a badge on the targeted message, like Messages.
 
 use super::state::{Delivery, Msg};
 use crate::t;
 
-/// Emoji et verbes iOS (français, anglais). L'envoi emploie l'anglais : Google Messages ne convertit
-/// en emoji que le format iOS anglais (`Loved “…”`) ; un iPhone en face reçoit ce texte tel quel.
+/// iOS emoji and verbs (French, English). Sending uses English: Google Messages only converts
+/// the English iOS format (`Loved “…”`) to an emoji; an iPhone on the other end receives this text as is.
 pub const KINDS: [(&str, &[&str]); 6] = [
     ("❤", &["A adoré", "Loved"]),
     ("👍", &["A aimé", "Liked"]),
@@ -15,7 +15,7 @@ pub const KINDS: [(&str, &[&str]); 6] = [
     ("❓", &["A posé une question sur", "Questioned"]),
 ];
 
-/// Libellé de la réaction dans la langue de l'interface.
+/// Label of the reaction in the interface language.
 #[must_use]
 pub fn label(emoji: &str) -> &'static str {
     match emoji {
@@ -28,10 +28,10 @@ pub fn label(emoji: &str) -> &'static str {
     }
 }
 
-/// Extrait cité au plus (en caractères), au-delà terminé par `…`.
+/// Quoted excerpt at most (in characters), ended with `…` beyond that.
 const QUOTE_MAX: usize = 200;
 
-/// Texte d'envoi de la réaction `emoji` à `text`.
+/// Sending text of reaction `emoji` to `text`.
 #[must_use]
 pub fn format(emoji: &str, text: &str) -> Option<String> {
     let verb = KINDS.iter().find(|(e, _)| *e == emoji)?.1[1];
@@ -42,7 +42,7 @@ pub fn format(emoji: &str, text: &str) -> Option<String> {
     Some(format!("{verb} “{quote}”"))
 }
 
-/// Réaction lue dans un texte : emoji, extrait cité, extrait tronqué (`…` final).
+/// Reaction read from a text: emoji, quoted excerpt, truncated excerpt (final `…`).
 #[must_use]
 pub fn parse(text: &str) -> Option<(&'static str, &str, bool)> {
     let text = text.trim();
@@ -60,7 +60,7 @@ pub fn parse(text: &str) -> Option<(&'static str, &str, bool)> {
     (!quote.is_empty()).then_some((emoji, quote, cut))
 }
 
-/// Badge d'un message : emoji, réaction envoyée par moi, encore en cours d'envoi.
+/// Badge of a message: emoji, reaction sent by me, still being sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Badge {
     pub emoji: &'static str,
@@ -68,17 +68,17 @@ pub struct Badge {
     pub pending: bool,
 }
 
-/// Rattachement des réactions d'un fil : `badges[i]` sur le message `i`, `folded[i]` si le message `i`
-/// est une réaction affichée en badge (donc pas en bulle).
+/// Attachment of a thread's reactions: `badges[i]` on message `i`, `folded[i]` if message `i`
+/// is a reaction displayed as a badge (hence not as a bubble).
 #[derive(Debug, Default)]
 pub struct Fold {
     pub badges: Vec<Vec<Badge>>,
     pub folded: Vec<bool>,
 }
 
-/// Chaque réaction se rattache au dernier message antérieur cité (texte égal, ou préfixe si l'extrait
-/// est tronqué) ; une réaction en échec ou sans cible reste une bulle. Comme Messages, une nouvelle
-/// réaction d'un même auteur remplace la précédente.
+/// Each reaction attaches to the last earlier quoted message (equal text, or prefix if the excerpt
+/// is truncated); a failed reaction or one without target stays a bubble. Like Messages, a new
+/// reaction from the same author replaces the previous one.
 #[must_use]
 pub fn fold(msgs: &[Msg]) -> Fold {
     let mut f = Fold { badges: vec![vec![]; msgs.len()], folded: vec![false; msgs.len()] };

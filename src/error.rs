@@ -12,10 +12,11 @@ pub enum Error {
     Dbus(#[from] zbus::Error),
     Fdo(#[from] zbus::fdo::Error),
     Io(#[from] std::io::Error),
+    Db(#[from] rusqlite::Error),
     Hfp(String),
 }
 
-/// Messages traduits (`thiserror` n'accepte que des littéraux) ; détails système laissés tels quels.
+/// Translated messages (`thiserror` only accepts literals); system details left as is.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -27,6 +28,7 @@ impl fmt::Display for Error {
             Self::Dbus(e) => format!("D-Bus: {e}"),
             Self::Fdo(e) => format!("D-Bus: {e}"),
             Self::Io(e) => t!("I/O: {0}", e),
+            Self::Db(e) => format!("SQLite: {e}"),
             Self::Hfp(e) => format!("HFP: {e}"),
         };
         f.write_str(&s)

@@ -1,4 +1,4 @@
-//! Sessions OBEX d'obexd (bus session), communes à MAP et PBAP : ouverture, fermeture, suivi des transferts.
+//! obexd OBEX sessions (session bus), shared by MAP and PBAP: opening, closing, transfer tracking.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -22,17 +22,17 @@ trait Transfer {
     fn status(&self) -> zbus::Result<String>;
 }
 
-/// Session OBEX ouverte vers l'iPhone pour un profil (`map`, `pbap`).
+/// OBEX session opened to the iPhone for a profile (`map`, `pbap`).
 pub struct Session {
     pub(crate) conn: Connection,
     pub(crate) path: OwnedObjectPath,
 }
 
 impl Session {
-    /// Ouvre une session obexd vers `addr` pour le profil `target`.
+    /// Opens an obexd session to `addr` for profile `target`.
     ///
     /// # Errors
-    /// Bus session injoignable ou session refusée.
+    /// Session bus unreachable or session refused.
     pub async fn open(addr: &BtAddr, target: &str) -> Result<Self> {
         let conn = Connection::session().await?;
         let client = ClientProxy::new(&conn).await?;
@@ -40,21 +40,21 @@ impl Session {
         Ok(Self { conn, path })
     }
 
-    /// Ferme la session.
+    /// Closes the session.
     ///
     /// # Errors
-    /// Erreur D-Bus ou d'obexd.
+    /// D-Bus or obexd error.
     pub async fn close(self) -> Result<()> {
         let client = ClientProxy::new(&self.conn).await?;
         client.remove_session(&self.path).await?;
         Ok(())
     }
 
-    /// Attend la fin d'un transfert OBEX (au plus `max`) : succès seulement si `complete` est vu.
-    /// Abonné aux changements avant la première lecture, rien n'est manqué même si l'objet disparaît ensuite.
+    /// Waits for the end of an OBEX transfer (`max` at most): success only if `complete` is seen.
+    /// Subscribed to changes before the first read, nothing is missed even if the object disappears afterwards.
     ///
     /// # Errors
-    /// [`Error::TransferFailed`], [`Error::TransferTimeout`] ou erreur D-Bus.
+    /// [`Error::TransferFailed`], [`Error::TransferTimeout`] or D-Bus error.
     pub async fn wait_transfer(&self, path: OwnedObjectPath, max: Duration) -> Result<()> {
         let transfer = TransferProxy::builder(&self.conn).path(path)?.build().await?;
         let mut changes = transfer.receive_status_changed().await;

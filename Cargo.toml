@@ -1,21 +1,50 @@
 [package]
 name = "bluez-message"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.91"
 description = "iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
 license = "MIT"
 repository = "https://github.com/morganorix/bluez-message"
+readme = "README.md"
+keywords = ["bluetooth", "bluez", "sms", "iphone", "hfp"]
+categories = ["command-line-utilities", "gui", "os::linux-apis"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+# Short names are the local idiom (`n`, `c`, `s`…) in small parsing and drawing functions.
+many_single_char_names = "allow"
+# Flag-style state (call indicators, UI toggles) reads better as plain bools than as enums.
+struct_excessive_bools = "allow"
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+# Pixel coordinates: f64/usize → f32 conversions on small, bounded values.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+# Internal API, always called with the default hasher.
+implicit_hasher = "allow"
+# `assert!(x.is_empty())` reads better in tests than `assert_eq!(x, [] as [T; 0])`.
+assert_is_empty = "allow"
+# Fires inside zbus `#[interface]` expansions on unused D-Bus arguments (`_props`).
+used_underscore_binding = "allow"
+
+[profile.release]
+overflow-checks = true
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
-# Sans `accesskit` (lecteur d'écran) : connexion D-Bus et threads en moins. Le reste = défauts d'eframe ;
-# `winit` direct garde ses défauts (Wayland CSD, chargement dynamique), que `winit/default` d'eframe activait.
+# Without `accesskit` (screen reader): one less D-Bus connection and fewer threads. The rest = eframe defaults;
+# direct `winit` keeps its defaults (Wayland CSD, dynamic loading), which eframe's `winit/default` enabled.
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "links", "wayland", "wgpu", "x11"], optional = true }
 futures-util = "0.3.34"
 image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
 libc = "0.2.190"
 notify-rust = { version = "4.18.2", optional = true }
+phonenumber = "=0.3.10"
 rusqlite = "0.32.1"
 rustybuzz = { version = "0.20.1", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }

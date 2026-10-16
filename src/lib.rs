@@ -13,6 +13,7 @@ pub mod i18n;
 pub mod ipc;
 pub mod log;
 pub mod map;
+pub mod numbering;
 pub mod obex;
 pub mod pbap;
 pub mod phone;

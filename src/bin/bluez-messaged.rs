@@ -1,5 +1,5 @@
-//! `bluez-messaged` : démon SMS/appels de l'iPhone. Tient le moteur MAP + appels, notifie au nom de Navi
-//! (même fenêtre fermée) et sert l'état aux clients (GUI) sur `$XDG_RUNTIME_DIR/bluez-message.sock`.
+//! `bluez-messaged`: the iPhone SMS/calls daemon. Holds the MAP + calls engine, notifies on behalf of Navi
+//! (even with the window closed) and serves the state to clients (GUI) on `$XDG_RUNTIME_DIR/bluez-message.sock`.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -15,37 +15,37 @@ use bluez_message::config;
 use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
 use bluez_message::settings::Settings;
-use bluez_message::{bluez, i18n, ipc, pbap, t};
+use bluez_message::{bluez, i18n, ipc, numbering, pbap, t};
 use clap::Parser;
 use futures_util::StreamExt;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, watch};
 
-/// SMS et appels rejoués au démarrage (les plus récents).
+/// SMS and calls replayed at startup (the most recent ones).
 const HISTORY: usize = 1000;
-/// Fréquence d'application de la durée de conservation.
+/// How often the retention period is applied.
 const RETENTION_EVERY: Duration = Duration::from_hours(24);
-/// Délai pendant lequel un nouvel appel sortant est refusé après une numérotation.
+/// Time during which a new outgoing call is refused after a dial.
 const DIAL_GUARD: Duration = Duration::from_secs(5);
-/// Délai maximal d'une reconnexion demandée depuis les Paramètres.
+/// Maximum time of a reconnection requested from Settings.
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Première lecture du répertoire, après le démarrage des profils.
+/// First contacts read, after the profiles start.
 const CONTACTS_DELAY: Duration = Duration::from_secs(10);
 const CONTACTS_EVERY: Duration = Duration::from_hours(6);
-/// Espacé : chaque essai peut redemander l'autorisation sur l'iPhone.
+/// Spaced out: each attempt may ask for authorisation again on the iPhone.
 const CONTACTS_RETRY: Duration = Duration::from_mins(30);
 const WATCH_EVERY: Duration = Duration::from_secs(20);
-/// Nouvel essai quand l'appareil BlueZ est introuvable au démarrage.
+/// Retry when the BlueZ device is not found at startup.
 const WATCH_INIT_RETRY: Duration = Duration::from_secs(300);
-/// Constats en défaut avant une relance.
+/// Faulty checks before a restart.
 const WATCH_STRIKES: u32 = 2;
 const WATCH_PAUSE: Duration = Duration::from_secs(120);
 const WATCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// Pause entre `Disconnect` et `Connect` d'une liaison refaite.
+/// Pause between `Disconnect` and `Connect` of a rebuilt link.
 const WATCH_RESET_GAP: Duration = Duration::from_secs(2);
-/// Intervalle des `Connect` quand l'iPhone n'est pas relié (réglage `auto_connect`).
+/// Interval of `Connect` attempts when the iPhone is not linked (`auto_connect` setting).
 const WATCH_CONNECT_EVERY: Duration = Duration::from_secs(60);
-/// Relances sans retour à la normale avant abandon (HFP volontairement absent, iPhone pris ailleurs…).
+/// Restarts without return to normal before giving up (HFP deliberately absent, iPhone taken elsewhere…).
 const WATCH_TRIES: u32 = 3;
 const WPCTL_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -65,7 +65,7 @@ async fn main() -> ExitCode {
     let args = Args::parse();
     match run(args).await {
         Ok(Exit::Done) => ExitCode::SUCCESS,
-        // Nouvel iPhone : le même binaire repart (même PID sous systemd) et relit `device`.
+        // New iPhone: the same binary restarts (same PID under systemd) and rereads `device`.
         Ok(Exit::Restart) => {
             use std::os::unix::process::CommandExt;
             let e = std::env::current_exe().map(|exe| std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec());
@@ -79,10 +79,10 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Issue de [`run`].
+/// Outcome of [`run`].
 enum Exit {
     Done,
-    /// Appareil changé : relancer le démon.
+    /// Device changed: restart the daemon.
     Restart,
 }
 
@@ -101,7 +101,10 @@ async fn run(args: Args) -> Result<Exit, String> {
     let hub = ipc::spawn_server(bound, req_tx.clone());
     let (fx_tx, fx_rx) = std_mpsc::channel();
     notify::spawn(fx_rx, move |cmd| {
-        let _ = req_tx.try_send((cmd, None));
+        // Notification action (answer, reply…): lost if the queue is full or the daemon is stopping.
+        if let Err(e) = req_tx.try_send((cmd, None)) {
+            tracing::warn!("notification action dropped: {e}");
+        }
     });
     tracing::info!(socket = %path.display(), "daemon ready");
 
@@ -149,7 +152,7 @@ async fn run(args: Args) -> Result<Exit, String> {
     r
 }
 
-/// Historique SQLite ; base illisible : le démon tourne quand même (historique en mémoire) plutôt que de boucler sous systemd.
+/// SQLite history; unreadable database: the daemon runs anyway (in-memory history) rather than looping under systemd.
 fn open_history() -> Result<History, String> {
     let db = config::data_dir().ok_or(t!("HOME not set"))?.join("bluez-message/history.db");
     History::open(&db)
@@ -160,44 +163,46 @@ fn open_history() -> Result<History, String> {
         .map_err(|e| e.to_string())
 }
 
-/// État du démon : moteur, historique, état d'appel et clients ; une méthode par événement ou commande.
+/// Daemon state: engine, history, call state and clients; one method per event or command.
 struct Daemon {
     addr: BtAddr,
-    /// Adresse donnée en argument : le changement d'appareil est refusé.
+    /// Address given as an argument: changing device is refused.
     fixed_addr: bool,
     settings: Settings,
     history: History,
     state: State,
     hub: ipc::Hub,
     engine: Engine,
-    /// Effets vers les notifications Navi.
+    /// Effects towards Navi notifications.
     fx_tx: std_mpsc::Sender<Effect>,
-    /// État vu par la surveillance de liaison.
+    /// State seen by the link watch.
     links_tx: watch::Sender<Links>,
-    /// Micro du PC coupé par la bulle : restauré en fin d'appel.
+    /// PC microphone muted by the bubble: restored at the end of the call.
     mic: Option<MicHold>,
-    /// Dernière numérotation, pour [`DIAL_GUARD`].
+    /// Last dial, for [`DIAL_GUARD`].
     dialing: Option<Instant>,
     popin: Popin,
-    /// Reconnexion demandée depuis les Paramètres en cours (une seule à la fois).
+    /// Reconnection requested from Settings in progress (only one at a time).
     reconnecting: Arc<AtomicBool>,
 }
 
 impl Daemon {
-    /// Publie aux clients, l'état d'appel courant décidant de ce que l'instantané garde.
+    /// Publishes to the clients, the current call state deciding what the snapshot keeps.
     fn publish(&self, o: Out) {
         self.hub.publish(o, self.state.call.is_idle());
     }
 
-    /// Applique à l'état du démon, puis publie.
+    /// Applies to the daemon state, then publishes.
     fn apply_publish(&mut self, o: Out) {
         self.state.apply(o.clone());
         self.publish(o);
     }
 
-    /// Réglages, rétention, puis l'historique local : l'instantané le rejoue à chaque client.
+    /// Settings, retention, then the local history: the snapshot replays it to each client.
     async fn start(&mut self) -> Result<(), String> {
-        self.hub.publish(settings_out(&self.settings, &self.addr).await, true);
+        self.apply_publish(settings_out(&self.settings, &self.addr).await);
+        // Failure logged: the history keeps its former keys.
+        let _ = self.rekey(self.state.home());
         if let Some(n) = self.purge_old() {
             tracing::info!(rows = n, "history: retention applied");
         }
@@ -210,7 +215,7 @@ impl Daemon {
 
     async fn shutdown(self, socket: &Path) {
         self.engine.shutdown().await;
-        // Socket retiré avant la libération du verrou (détenu par `hub`).
+        // Socket removed before the lock is released (held by `hub`).
         let _ = std::fs::remove_file(socket);
         drop(self.hub);
         if let Some(h) = self.mic {
@@ -254,13 +259,13 @@ impl Daemon {
         self.sync_links();
     }
 
-    /// Transmet à la surveillance de liaison ce qu'elle doit savoir (appel, HFP, réglage).
+    /// Passes to the link watch what it needs to know (call, HFP, setting).
     fn sync_links(&self) {
         let now = Links { hfp: self.state.hfp_up, call: !self.state.call.is_idle(), auto_connect: self.settings.auto_connect };
         self.links_tx.send_if_modified(|l| std::mem::replace(l, now) != now);
     }
 
-    /// `None` : synchronisation échouée (refus, répertoire vide), contacts consignés gardés.
+    /// `None`: synchronisation failed (refusal, empty contacts), recorded contacts kept.
     fn on_contacts(&mut self, list: Option<&[(String, String)]>) {
         let ok = match list.map(|l| self.history.replace_contacts(l)) {
             Some(Ok(names)) => {
@@ -277,7 +282,7 @@ impl Daemon {
         self.apply_publish(Out::Status { link: Profile::Pbap, up: ok });
     }
 
-    /// Commande d'un client (ou d'une notification) ; `Some` : le démon doit s'arrêter ou repartir.
+    /// Command from a client (or a notification); `Some`: the daemon must stop or restart.
     async fn on_request(&mut self, cmd: Cmd, reply: Option<mpsc::Sender<Out>>) -> Option<Exit> {
         let res = match cmd {
             Cmd::Mute => self.mute().await,
@@ -312,9 +317,9 @@ impl Daemon {
         Ok(())
     }
 
-    /// Seulement une conversation connue, jusqu'à son dernier élément au plus : `reads` reste borné.
+    /// Only a known conversation, up to its last item at most: `reads` stays bounded.
     fn mark_read(&mut self, key: String, until: String) -> Result<(), String> {
-        if !self.state.conv(&key).is_some_and(|c| until.get(..15) <= c.last_stamp().get(..15)) {
+        if self.state.conv(&key).is_none_or(|c| until.get(..15) > c.last_stamp().get(..15)) {
             return Err(t!("mark as read: unknown conversation or future date").to_owned());
         }
         if let Err(e) = self.history.mark_read(&key, &until) {
@@ -324,7 +329,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// `phase` reste `Idle` jusqu'au premier événement HFP : une numérotation récente bloque aussi.
+    /// `phase` stays `Idle` until the first HFP event: a recent dial also blocks.
     fn dial(&mut self, cmd: Cmd) -> Result<(), String> {
         if !self.state.hfp_up || !self.state.call.is_idle() || self.dialing.is_some_and(|t| t.elapsed() < DIAL_GUARD) {
             return Err(t!("cannot call: phone not linked or a call is already in progress").to_owned());
@@ -332,7 +337,7 @@ impl Daemon {
         self.engine.submit(cmd).inspect(|()| self.dialing = Some(Instant::now()))
     }
 
-    /// Historique local seulement : rien n'est effacé sur l'iPhone.
+    /// Local history only: nothing is erased on the iPhone.
     fn delete(&mut self, key: String, item: Option<Item>) -> Result<(), String> {
         match self.history.delete(&key, item.as_ref()) {
             Ok(_) => {
@@ -347,8 +352,14 @@ impl Daemon {
     }
 
     async fn set_settings(&mut self, new: Settings) -> Result<(), String> {
+        // Other country: conversations regrouped before anything changes; failure: settings refused.
+        let old_home = self.state.home();
+        let regrouped = self.rekey(numbering::home(new.country.as_deref(), new.lang.as_deref()))?;
         if let Err(e) = new.save() {
             tracing::warn!("settings: {e}");
+            if regrouped {
+                let _ = self.rekey(old_home);
+            }
             return Err(t!("cannot save settings").to_owned());
         }
         let purge = new.retention_days.is_some() && new.retention_days != self.settings.retention_days;
@@ -357,14 +368,33 @@ impl Daemon {
         }
         self.settings = new;
         self.sync_links();
-        self.publish(settings_out(&self.settings, &self.addr).await);
+        self.apply_publish(settings_out(&self.settings, &self.addr).await);
+        if regrouped && let Err(e) = self.reload() {
+            tracing::warn!("history (reload): {e}");
+        }
         if purge {
             self.apply_retention();
         }
         Ok(())
     }
 
-    /// Relance la liaison en tâche de fond ; le résultat va au seul demandeur.
+    /// Grouping keys of the history aligned on the country `home` numbers are read with; `true` if they changed.
+    fn rekey(&mut self, home: Option<numbering::Id>) -> Result<bool, String> {
+        match self.history.rekey(home) {
+            Ok(changed) => {
+                if changed {
+                    tracing::info!(country = home.map(numbering::code).unwrap_or_default(), "history: numbers regrouped");
+                }
+                Ok(changed)
+            }
+            Err(e) => {
+                tracing::error!("history (keys): {e}");
+                Err(t!("history: {0}", e))
+            }
+        }
+    }
+
+    /// Restarts the link in the background; the result goes to the requester only.
     fn reconnect(&self, reply: Option<mpsc::Sender<Out>>) -> Result<(), String> {
         if !self.state.call.is_idle() {
             return Err(t!("not during a call").to_owned());
@@ -390,7 +420,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// Enregistre un autre iPhone appairé ; `Ok(true)` : le démon doit repartir pour le suivre.
+    /// Registers another paired iPhone; `Ok(true)`: the daemon must restart to follow it.
     async fn set_device(&self, new: &BtAddr) -> Result<bool, String> {
         if self.fixed_addr {
             return Err(t!("address set on the command line").to_owned());
@@ -440,7 +470,7 @@ impl Daemon {
         }
     }
 
-    /// Applique la durée de conservation ; `Some(lignes effacées)`, `None` sans durée ou en cas d'erreur.
+    /// Applies the retention period; `Some(rows erased)`, `None` without a period or on error.
     fn purge_old(&mut self) -> Option<usize> {
         let days = self.settings.retention_days?;
         self.history
@@ -449,7 +479,7 @@ impl Daemon {
             .ok()
     }
 
-    /// Rétention appliquée ; si des lignes sont parties, l'historique est republié.
+    /// Retention applied; if rows are gone, the history is republished.
     fn apply_retention(&mut self) {
         if self.purge_old().is_some_and(|n| n > 0)
             && let Err(e) = self.reload()
@@ -458,7 +488,7 @@ impl Daemon {
         }
     }
 
-    /// Republie l'historique après une purge : les clients vident leurs fils puis reçoivent ce qui reste.
+    /// Republishes the history after a purge: clients clear their threads then receive what remains.
     fn reload(&mut self) -> rusqlite::Result<()> {
         let idle = self.state.call.is_idle();
         self.state.apply(Out::Cleared);
@@ -471,16 +501,19 @@ impl Daemon {
     }
 }
 
-/// Réglages publiés aux clients : langues et appareils appairés relus à chaque fois.
+/// Settings published to the clients: languages and paired devices reread each time.
 async fn settings_out(settings: &Settings, addr: &BtAddr) -> Out {
     let devices = bluez::paired().await.unwrap_or_else(|e| {
         tracing::warn!("paired devices: {e}");
         vec![]
     });
-    Out::Settings { settings: settings.clone(), langs: i18n::available(), devices, device: addr.clone() }
+    let lang = settings.lang.as_deref();
+    let home = numbering::home(settings.country.as_deref(), lang).map(numbering::code);
+    let auto = numbering::home(None, lang).map(numbering::code);
+    Out::Settings { settings: settings.clone(), langs: i18n::available(), devices, device: addr.clone(), home, auto }
 }
 
-/// Ce que les réglages laissent passer vers les notifications Navi.
+/// What the settings let through to Navi notifications.
 fn for_notify(fx: Effect, s: &Settings) -> Option<Effect> {
     match fx {
         Effect::Sms { .. } if !s.notify_sms => None,
@@ -490,7 +523,7 @@ fn for_notify(fx: Effect, s: &Settings) -> Option<Effect> {
     }
 }
 
-/// Filtre et consigne : un SMS antérieur à la mise en service de l'historique, ou déjà consigné, n'est pas publié.
+/// Filters and records: an SMS older than the history start, or already recorded, is not published.
 fn admit(h: &History, o: &Out) -> bool {
     let r = match o {
         Out::Sms { sms, new: false, .. } if sms.timestamp.as_str() < h.since() => Ok(false),
@@ -504,9 +537,9 @@ fn admit(h: &History, o: &Out) -> bool {
     })
 }
 
-/// Répertoire de l'iPhone par PBAP : au démarrage, puis toutes les 6 h (30 min après un échec).
-/// Un répertoire vide (refus, transfert sans fichier) ne remplace pas celui déjà consigné.
-/// `None` envoyé à chaque échec, pour l'indicateur PBAP.
+/// iPhone contacts through PBAP: at startup, then every 6 h (30 min after a failure).
+/// An empty contact list (refusal, transfer without a file) does not replace the one already recorded.
+/// `None` sent on every failure, for the PBAP indicator.
 async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Option<Vec<(String, String)>>>) {
     tokio::time::sleep(CONTACTS_DELAY).await;
     loop {
@@ -528,7 +561,7 @@ async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Option<Vec<(String, String
     }
 }
 
-/// Ce que la surveillance de la liaison sait du démon.
+/// What the link watch knows about the daemon.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Links {
     hfp: bool,
@@ -536,14 +569,14 @@ struct Links {
     auto_connect: bool,
 }
 
-/// Compteurs de la surveillance de liaison.
+/// Link watch counters.
 #[derive(Debug, Default)]
 struct LinkWatch {
-    /// Constats en défaut consécutifs.
+    /// Consecutive faulty checks.
     strikes: u32,
-    /// Relances depuis le dernier retour à la normale.
+    /// Restarts since the last return to normal.
     tries: u32,
-    /// Dernière relance limitée à `Connect` : la suivante refait la liaison.
+    /// Last restart limited to `Connect`: the next one rebuilds the link.
     connected_once: bool,
     last: Option<Instant>,
 }
@@ -553,7 +586,7 @@ impl LinkWatch {
         (self.strikes, self.connected_once, self.tries) = (0, false, 0);
     }
 
-    /// Constat en défaut : vrai s'il faut relancer maintenant (seuil atteint, essais restants, pause écoulée).
+    /// Faulty check: true if a restart is needed now (threshold reached, attempts left, pause elapsed).
     fn strike(&mut self) -> bool {
         self.strikes += 1;
         if self.strikes < WATCH_STRIKES || self.tries >= WATCH_TRIES || self.last.is_some_and(|t| t.elapsed() < WATCH_PAUSE) {
@@ -568,11 +601,11 @@ impl LinkWatch {
     }
 }
 
-/// Surveillance de la liaison, à chaque changement signalé par BlueZ et toutes les [`WATCH_EVERY`] :
-/// - iPhone non relié et `auto_connect` : `Connect` toutes les [`WATCH_CONNECT_EVERY`] (hors de portée : échec silencieux) ;
-/// - iPhone revenu (relié, profils résolus) : la session MAP est réveillée sans attendre son backoff ;
-/// - relié sans ses profils (pas de HFP ni de MAP, fréquent après une reconnexion spontanée) : `Connect`, puis
-///   liaison refaite (`Disconnect` + `Connect`) si les profils ne reviennent toujours pas. Rien pendant un appel.
+/// Link watch, on each change signalled by BlueZ and every [`WATCH_EVERY`]:
+/// - iPhone not linked and `auto_connect`: `Connect` every [`WATCH_CONNECT_EVERY`] (out of range: silent failure);
+/// - iPhone back (linked, profiles resolved): the MAP session is woken without waiting for its backoff;
+/// - linked without its profiles (no HFP or MAP, common after a spontaneous reconnection): `Connect`, then
+///   rebuilt link (`Disconnect` + `Connect`) if the profiles still do not come back. Nothing during a call.
 async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudge) {
     let phone = loop {
         match bluez::Phone::new(&addr).await {
@@ -619,21 +652,21 @@ async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudg
                     Ok(Err(e)) => tracing::debug!("automatic connection: {e}"),
                     Err(_) => tracing::debug!("automatic connection: timed out"),
                 }
-                // Résultat (profils résolus ou non) relu tout de suite.
+                // Result (profiles resolved or not) reread right away.
                 tick = false;
                 continue;
             }
         } else if l.call || (link.resolved && l.hfp) {
             w.healthy();
         } else if tick && w.strike() {
-            // Seuls les constats périodiques comptent : un signal précède souvent de peu les profils.
+            // Only periodic checks count: a signal often precedes the profiles by a little.
             retry_link(&phone, &mut w, link, l).await;
         }
         tick = wait_link(&mut changes, &mut links).await;
     }
 }
 
-/// Attend un changement de liaison, de réglage ou d'appel, au plus [`WATCH_EVERY`] ; vrai : délai écoulé.
+/// Waits for a link, setting or call change, at most [`WATCH_EVERY`]; true: delay elapsed.
 async fn wait_link(changes: &mut Option<impl futures_util::Stream<Item = ()> + Unpin>, links: &mut watch::Receiver<Links>) -> bool {
     let signal = async {
         match changes.as_mut() {
@@ -647,20 +680,20 @@ async fn wait_link(changes: &mut Option<impl futures_util::Stream<Item = ()> + U
         Ok(()) = links.changed() => false,
     };
     if ended {
-        // Flux terminé (appareil disparu) : attente périodique seule, sans le relire.
+        // Stream ended (device gone): periodic wait only, without rereading it.
         tracing::debug!("Bluetooth watch: BlueZ signal stream ended");
         *changes = None;
     }
     false
 }
 
-/// Relance la liaison incomplète : `Connect`, ou liaison refaite si un `Connect` n'a pas suffi.
+/// Restarts the incomplete link: `Connect`, or rebuilt link if a `Connect` was not enough.
 async fn retry_link(phone: &bluez::Phone, w: &mut LinkWatch, link: bluez::Link, l: Links) {
     if w.tries == WATCH_TRIES {
         tracing::warn!("iPhone link still incomplete: last retry until the iPhone reconnects");
     }
-    // Profils toujours absents après un `Connect` : la liaison est refaite. Avec les profils résolus
-    // (HFP seul absent), seulement `Connect` : couper casserait l'audio A2DP en cours.
+    // Profiles still absent after a `Connect`: the link is rebuilt. With profiles resolved
+    // (HFP alone missing), only `Connect`: cutting would break the ongoing A2DP audio.
     let reset = w.connected_once && !link.resolved;
     tracing::info!(resolved = link.resolved, hfp = l.hfp, reset, "iPhone link incomplete: retrying");
     let r = tokio::time::timeout(WATCH_TIMEOUT, async {
@@ -679,8 +712,8 @@ async fn retry_link(phone: &bluez::Phone, w: &mut LinkWatch, link: bluez::Link, 
     w.retried(reset);
 }
 
-/// Fenêtre de l'appel en cours (`bluez-msg-call`, installée à côté du démon) : une instance au plus,
-/// elle se ferme d'elle-même en fin d'appel ; un fil l'attend (pas de processus zombie).
+/// Window of the current call (`bluez-msg-call`, installed next to the daemon): one instance at most,
+/// it closes itself at the end of the call; a thread waits for it (no zombie process).
 #[derive(Default)]
 struct Popin(Arc<AtomicBool>);
 
@@ -690,7 +723,7 @@ impl Popin {
             return;
         }
         let running = Arc::clone(&self.0);
-        // Fil dédié : `systemctl` et l'attente de la fenêtre ne bloquent pas la boucle du démon.
+        // Dedicated thread: `systemctl` and the wait for the window do not block the daemon loop.
         std::thread::spawn(move || {
             let exe = std::env::current_exe().map(|p| p.with_file_name("bluez-msg-call"));
             let child = exe.and_then(|p| std::process::Command::new(p).envs(display_env()).stdin(std::process::Stdio::null()).spawn());
@@ -705,8 +738,8 @@ impl Popin {
     }
 }
 
-/// Variables d'affichage absentes de l'environnement du démon (lancé avant la session graphique) :
-/// reprises de l'environnement du gestionnaire systemd, importé par le compositeur.
+/// Display variables missing from the daemon environment (started before the graphical session):
+/// taken from the systemd manager environment, imported by the compositor.
 fn display_env() -> Vec<(String, String)> {
     const KEYS: [&str; 4] = ["WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
     if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some() {
@@ -731,7 +764,7 @@ fn display_env() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Micro coupé par la bulle : nœud visé (la source par défaut peut changer en cours d'appel) et état d'avant.
+/// Microphone muted by the bubble: target node (the default source may change during a call) and previous state.
 struct MicHold {
     node: String,
     was_muted: bool,
@@ -745,7 +778,7 @@ impl MicHold {
     }
 }
 
-/// Muet de l'appel : coupe la source PipeWire par défaut (celle qui alimente l'appel), pas l'iPhone.
+/// Call mute: mutes the default PipeWire source (the one feeding the call), not the iPhone.
 async fn toggle_mute(state: &mut State, mic: &mut Option<MicHold>) -> Result<Vec<Effect>, String> {
     if state.call.is_idle() {
         return Err(t!("microphone: no call in progress").to_owned());

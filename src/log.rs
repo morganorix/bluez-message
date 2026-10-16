@@ -1,19 +1,19 @@
-//! Journalisation commune aux binaires : niveau `info` par défaut (aucun numéro, nom, texte ni
-//! adresse), `BLUEZ_MESSAGE_LOG=debug` pour le diagnostic. Les adresses Bluetooth sont masquées à
-//! l'écriture, y compris dans les erreurs D-Bus (`/org/bluez/hci0/dev_AA_BB_…`).
+//! Logging shared by the binaries: `info` level by default (no number, name, text or
+//! address), `BLUEZ_MESSAGE_LOG=debug` for diagnostics. Bluetooth addresses are masked when
+//! written, including in D-Bus errors (`/org/bluez/hci0/dev_AA_BB_…`).
 
 use std::io::{self, Write};
 use tracing::level_filters::LevelFilter;
 
-/// Variable d'environnement du niveau (`off`, `error`, `warn`, `info`, `debug`, `trace`).
+/// Level environment variable (`off`, `error`, `warn`, `info`, `debug`, `trace`).
 pub const ENV: &str = "BLUEZ_MESSAGE_LOG";
 
-/// Niveau demandé ; `Err` si la valeur est illisible (on retombe alors sur `info`).
+/// Requested level; `Err` if the value is unreadable (falls back to `info`).
 fn level(raw: Option<&str>) -> Result<LevelFilter, ()> {
     raw.map_or(Ok(LevelFilter::INFO), |v| v.trim().parse().map_err(|_| ()))
 }
 
-/// Remplace chaque adresse `AA:BB:CC:DD:EE:FF` ou `AA_BB_CC_DD_EE_FF` par `XX…`, même séparateur.
+/// Replaces each `AA:BB:CC:DD:EE:FF` or `AA_BB_CC_DD_EE_FF` address with `XX…`, same separator.
 fn redact(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -31,7 +31,7 @@ fn redact(s: &str) -> String {
     out
 }
 
-/// Séparateur de l'adresse commençant à `i`, si `b[i..i+17]` en est une (bornée par des non-hexa).
+/// Separator of the address starting at `i`, if `b[i..i+17]` is one (bounded by non-hex characters).
 fn mac_at(b: &[u8], i: usize) -> Option<u8> {
     let w = b.get(i..i + 17)?;
     let sep = w[2];
@@ -41,25 +41,34 @@ fn mac_at(b: &[u8], i: usize) -> Option<u8> {
     w.chunks(3).all(|c| c[0].is_ascii_hexdigit() && c[1].is_ascii_hexdigit() && c.get(2).is_none_or(|&x| x == sep)).then_some(sep)
 }
 
-/// stderr, adresses masquées (une ligne d'événement par `write`).
-struct Redacted;
+/// stderr, addresses masked. A writer is created per event and buffers it whole, written on
+/// drop: an address split across two `write` calls is still masked.
+#[derive(Default)]
+struct Redacted(Vec<u8>);
 
 impl Write for Redacted {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        io::stderr().write_all(redact(&String::from_utf8_lossy(buf)).as_bytes())?;
+        self.0.extend_from_slice(buf);
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        io::stderr().flush()
+        Ok(())
     }
 }
 
-/// Installe l'abonné `tracing` sur stderr (journal systemd pour le démon).
+impl Drop for Redacted {
+    fn drop(&mut self) {
+        // Nowhere to report a stderr failure.
+        let _ = io::stderr().write_all(redact(&String::from_utf8_lossy(&self.0)).as_bytes());
+    }
+}
+
+/// Installs the `tracing` subscriber on stderr (systemd journal for the daemon).
 pub fn init() {
     let raw = std::env::var(ENV).ok();
     let lvl = level(raw.as_deref());
-    let _ = tracing_subscriber::fmt().with_writer(|| Redacted).with_max_level(lvl.unwrap_or(LevelFilter::INFO)).try_init();
+    let _ = tracing_subscriber::fmt().with_writer(Redacted::default).with_max_level(lvl.unwrap_or(LevelFilter::INFO)).try_init();
     if lvl.is_err() {
         tracing::warn!("{ENV}: unreadable value, using info");
     }

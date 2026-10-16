@@ -1,8 +1,11 @@
-//! Colonne de gauche : recherche, conversations, contacts et numéro libre ; parcours au clavier.
-//! Ne modifie ni l'état ni le démon : rend les actions choisies.
+//! Left column: search, conversations, contacts and free number; keyboard navigation.
+//! Changes neither the state nor the daemon: returns the chosen actions.
 
-use bluez_message::app::state::{State, matches};
+use std::sync::Arc;
+
+use bluez_message::app::state::{Conv, Rev, State, matches, shown_number};
 use bluez_message::engine::dial_number;
+use bluez_message::numbering::{self, Id};
 use bluez_message::gui::emoji::Emojis;
 use bluez_message::gui::theme::{Palette, font, size};
 use bluez_message::gui::widgets as w;
@@ -15,37 +18,67 @@ use crate::thread::{preview, short_stamp};
 pub enum Target {
     None,
     Conv(String),
-    /// Contact ou numéro sans conversation (choisi par la recherche) : écrire ou appeler.
+    /// Contact or number without a conversation (chosen through the search): write or call.
     Contact { name: String, number: String },
 }
 
-/// Choix fait dans la liste, appliqué par la fenêtre.
+/// Choice made in the list, applied by the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListAction {
     Open(Target),
-    /// Suppression confirmée d'une conversation.
+    /// Confirmed deletion of a conversation.
     Delete(String),
 }
 
+/// List shown: conversations able to receive an SMS, or the calls only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Sms,
+    Calls,
+}
+
+impl Tab {
+    /// `c` belongs to this list: calls for Calls, numbers able to receive an SMS for SMS.
+    fn lists(self, c: &Conv, home: Option<Id>) -> bool {
+        match self {
+            Self::Sms => c.textable(home),
+            Self::Calls => c.last_call().is_some(),
+        }
+    }
+
+    /// Contact `number` offered by the search: its conversation is not listed here, and the SMS tab
+    /// leaves out landlines.
+    fn offers(self, number: &str, conv: Option<&Conv>, home: Option<Id>) -> bool {
+        !conv.is_some_and(|c| self.lists(c, home)) && (self == Self::Calls || !numbering::is_landline(number, home))
+    }
+}
+
+/// (number, name) pairs matching a search.
+type Found = Arc<Vec<(String, String)>>;
+
 pub struct ConvList {
-    /// Recherche (nom ou numéro).
+    /// Search (name or number).
     query: String,
-    /// Ligne choisie au clavier (conversations, contacts, numéro libre).
+    /// Row chosen with the keyboard (conversations, contacts, free number).
     cursor: usize,
-    /// Liste parcourue au clavier (curseur affiché, Entrée ouvre sa ligne) ; un clic l'interrompt.
+    /// List navigated with the keyboard (cursor shown, Enter opens its row); a click interrupts it.
     kbd: bool,
-    /// Curseur à placer dans la recherche à la prochaine image.
+    /// Cursor to place in the search at the next frame.
     pub focus: bool,
+    /// Contacts found for (query, state revision): the phonebook is not scanned again at each frame.
+    found: Option<(String, Tab, Rev, Found)>,
+    pub tab: Tab,
 }
 
 impl Default for ConvList {
     fn default() -> Self {
-        Self { query: String::new(), cursor: 0, kbd: false, focus: true }
+        Self { query: String::new(), cursor: 0, kbd: false, focus: true, found: None, tab: Tab::Sms }
     }
 }
 
 impl ConvList {
-    /// Après l'ouverture d'une ligne : curseur en tête ; recherche vidée sauf pour une conversation.
+    /// After opening a row: cursor at the top; search cleared except for a conversation.
     pub fn opened(&mut self, t: &Target) {
         if !matches!(t, Target::Conv(_)) {
             self.query.clear();
@@ -53,23 +86,23 @@ impl ConvList {
         (self.cursor, self.kbd) = (0, false);
     }
 
-    /// Flèches dans une liste de `len` lignes (non vide) ; `true` si le curseur a bougé.
+    /// Arrows in a list of `len` rows (non-empty); `true` if the cursor moved.
     fn navigate(&mut self, len: usize, down: bool, up: bool) -> bool {
         let moved = down || up;
         if moved {
-            self.cursor = if down { (self.cursor + 1).min(len - 1) } else { self.cursor.saturating_sub(1) };
+            self.cursor = if down { (self.cursor + 1).min(len.saturating_sub(1)) } else { self.cursor.saturating_sub(1) };
             self.kbd = true;
         }
-        self.cursor = self.cursor.min(len - 1);
+        self.cursor = self.cursor.min(len.saturating_sub(1));
         moved
     }
 
-    /// Entrée ouvre la ligne du curseur : validée dans la recherche, ou liste parcourue au clavier.
+    /// Enter opens the cursor row: validated in the search, or list navigated with the keyboard.
     fn enter_opens(&self, search_left: bool, search_focused: bool) -> bool {
         search_left || (!search_focused && self.kbd)
     }
 
-    /// Champ de recherche (34 de haut) : Échap le vide, toute saisie ramène le curseur en tête.
+    /// Search field (34 high): Escape clears it, any input brings the cursor back to the top.
     fn search_field(&mut self, ui: &mut egui::Ui) -> egui::Response {
         ui.spacing_mut().interact_size.y = size::FIELD_H;
         let r = ui.add(w::field(&mut self.query, &format!("󰍉  {}", t!("Name or number  (Ctrl+F)"))).desired_width(f32::INFINITY));
@@ -86,44 +119,76 @@ impl ConvList {
         r
     }
 
-    /// `keys` : les flèches et Entrée sont pour la liste (pas de saisie de message, de menu ni de Paramètres).
+    /// Contacts matching `q` offered in `tab` (see [`Tab::offers`]), cached per query, tab and revision.
+    fn contacts(&mut self, state: &State, q: &str, tab: Tab, home: Option<Id>) -> Found {
+        let rev = state.rev();
+        match &self.found {
+            Some((fq, ft, fr, hits)) if fq == q && *ft == tab && *fr == rev => Arc::clone(hits),
+            _ => {
+                let hits = state.search(q, 50, |n, c| tab.offers(n, c, home));
+                let hits: Arc<Vec<_>> = Arc::new(hits.into_iter().map(|(a, b)| (a.to_owned(), b.to_owned())).collect());
+                self.found = Some((q.to_owned(), tab, rev, Arc::clone(&hits)));
+                hits
+            }
+        }
+    }
+
+    /// `keys`: arrows and Enter are for the list (no message input, menu or Settings).
     pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, state: &State, target: &Target, keys: bool) -> Vec<ListAction> {
-        if w::section_action(ui, pal, t!("Conversations"), "󰐕").on_hover_text(t!("Write or call: search for a contact")).clicked() {
+        if w::section_action(ui, pal, t!("Contacts"), "󰐕").on_hover_text(t!("Write or call: search for a contact")).clicked() {
             self.focus = true;
+        }
+        let tabs = [Tab::Sms, Tab::Calls];
+        let on = tabs.iter().position(|t| *t == self.tab).unwrap_or_default();
+        if let Some(i) = w::tabs(ui, pal, &[t!("SMS"), t!("Calls")], on) {
+            (self.tab, self.cursor) = (tabs[i], 0);
         }
         ui.add_space(w::GAP);
         let r = self.search_field(ui);
-        // Flèches : hors saisie du message (recherche ou aucun champ actif), elles parcourent la liste.
+        // Arrows: outside message input (search or no active field), they navigate the list.
         let typing = ui.ctx().memory(egui::Memory::focused).is_some_and(|id| id != r.id);
         let nav = keys && !typing && !egui::Popup::is_any_open(ui.ctx());
         let (down, up, enter) = ui.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp), i.key_pressed(Key::Enter)));
         ui.add_space(w::GAP);
         let q = self.query.trim().to_owned();
-        let convs: Vec<_> = state.convs.iter().filter(|c| matches(&q, &c.name, &c.number)).collect();
-        // Contacts sans conversation affichée (celles-ci sont déjà listées) ; numéro libre s'il est composable.
-        let contacts: Vec<_> = state.search(&q, 50);
-        let free = (!q.is_empty() && dial_number(&q).is_ok() && convs.is_empty() && contacts.is_empty()).then_some(q.as_str());
+        let calls = self.tab == Tab::Calls;
+        let home = state.home();
+        let mut convs: Vec<_> = state
+            .convs
+            .iter()
+            .filter(|c| self.tab.lists(c, home))
+            .filter(|c| matches(&q, &c.name, &c.number))
+            .collect();
+        if calls {
+            // Most recent call first (the conversations are sorted by their last item).
+            convs.sort_by(|a, b| b.last_call().map(|m| &m.timestamp).cmp(&a.last_call().map(|m| &m.timestamp)));
+        }
+        // Contacts without a displayed conversation (those are already listed); free number if it can be
+        // dialled (and, for SMS, is not a landline).
+        let contacts = self.contacts(state, &q, self.tab, home);
+        let free = (!q.is_empty() && dial_number(&q).is_ok() && self.tab.offers(&q, None, home) && convs.is_empty() && contacts.is_empty()).then_some(q.as_str());
         if convs.is_empty() && contacts.is_empty() && free.is_none() {
-            w::hint(ui, pal, if q.is_empty() { t!("No conversations") } else { t!("No results") });
+            let empty = if calls { t!("No calls") } else { t!("No conversations") };
+            w::hint(ui, pal, if q.is_empty() { empty } else { t!("No results") });
             return vec![];
         }
-        // Lignes dans l'ordre d'affichage : cible du curseur clavier.
+        // Rows in display order: keyboard cursor target.
         let items: Vec<Target> = convs
             .iter()
             .map(|c| Target::Conv(c.key.clone()))
-            .chain(contacts.iter().map(|(name, number)| Target::Contact { name: (*name).to_owned(), number: (*number).to_owned() }))
+            .chain(contacts.iter().map(|(name, number)| Target::Contact { name: (*name).clone(), number: (*number).clone() }))
             .chain(free.map(|n| Target::Contact { name: String::new(), number: n.to_owned() }))
             .collect();
-        // La recherche garde le focus pendant le parcours : on peut continuer à taper.
+        // The search keeps focus during navigation: typing can continue.
         let moved = self.navigate(items.len(), nav && down, nav && up);
-        // Curseur visible pendant une recherche ou un parcours au clavier.
+        // Cursor visible during a search or keyboard navigation.
         let cursor = (nav && (r.has_focus() || r.lost_focus() || self.kbd || !q.is_empty())).then_some(self.cursor);
         let mut pick = (nav && enter && self.enter_opens(r.lost_focus(), r.has_focus())).then(|| items[self.cursor].clone());
         let mut del: Option<String> = None;
         let mut idx = 0usize;
         let mut line = |ui: &mut egui::Ui, row: &w::Row| {
             let here = cursor == Some(idx);
-            // Aperçus : emojis en couleur, reconnaissables.
+            // Previews: colour emojis, recognisable.
             let resp = w::row_with(ui, pal, &w::Row { selected: row.selected || here, ..*row }, Some(&mut *emojis));
             if here && moved {
                 resp.scroll_to_me(None);
@@ -134,37 +199,47 @@ impl ConvList {
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = w::ROW_GAP;
             for c in convs {
-                let title = if c.name.is_empty() { &c.number } else { &c.name };
-                let last = c.msgs.last();
+                let title = if c.name.is_empty() { shown_number(Some(&c.number)) } else { &c.name };
+                let last = if calls { c.last_call() } else { c.msgs.last() };
                 let preview = last.map(preview).unwrap_or_default();
                 let stamp = last.map(|m| short_stamp(&m.timestamp)).unwrap_or_default();
+                let unread = if calls { state.unread_calls(c) } else { c.unread };
                 let row = w::Row {
-                    icon: if c.unread > 0 { "󰍡" } else { "󰭹" },
+                    icon: if calls {
+                        "󰏲"
+                    } else if unread > 0 {
+                        "󰍡"
+                    } else {
+                        "󰭹"
+                    },
                     label: title,
                     sub: Some(&preview),
                     hint: &stamp,
-                    badge: c.unread,
+                    badge: unread,
                     selected: matches!(target, Target::Conv(k) if *k == c.key),
-                    strong: c.unread > 0,
+                    strong: unread > 0,
                 };
                 let resp = line(ui, &row);
                 if resp.clicked() {
                     pick = Some(Target::Conv(c.key.clone()));
                 }
-                resp.context_menu(|ui| {
-                    ui.menu_button(format!("󰆴  {}", t!("Delete conversation…")), |ui| {
-                        if ui.button(t!("Confirm deletion")).clicked() {
-                            del = Some(c.key.clone());
-                        }
+                // Deleting a conversation would also delete its SMS: calls are deleted one by one in the thread.
+                if !calls {
+                    resp.context_menu(|ui| {
+                        ui.menu_button(format!("󰆴  {}", t!("Delete conversation…")), |ui| {
+                            if ui.button(t!("Confirm deletion")).clicked() {
+                                del = Some(c.key.clone());
+                            }
+                        });
                     });
-                });
+                }
             }
             if !contacts.is_empty() || free.is_some() {
                 ui.add_space(w::GAP * 2.0);
-                ui.label(w::text(t!("Contacts"), font::SMALL, pal.muted()));
+                ui.label(w::text(t!("Phonebook"), font::SMALL, pal.muted()));
                 ui.add_space(w::GAP);
             }
-            for (name, number) in contacts {
+            for (name, number) in contacts.iter() {
                 let row = w::Row { icon: "󰀄", label: name, sub: Some(number), hint: "", badge: 0, selected: false, strong: false };
                 if line(ui, &row).clicked() {
                     pick = Some(Target::Contact { name: name.to_owned(), number: number.to_owned() });
@@ -197,7 +272,7 @@ mod tests {
         }
         assert_eq!(l.cursor, 2);
         assert!(l.kbd);
-        // Liste raccourcie (recherche) : curseur ramené sur la dernière ligne.
+        // Shortened list (search): cursor brought back to the last row.
         assert!(!l.navigate(1, false, false));
         assert_eq!(l.cursor, 0);
     }
@@ -210,16 +285,25 @@ mod tests {
         assert!(!l.enter_opens(false, true));
         l.navigate(2, true, false);
         assert!(l.enter_opens(false, false));
-        // Recherche active sans validation : Entrée reste à la saisie.
+        // Search active without validation: Enter stays with the input.
         assert!(!l.enter_opens(false, true));
     }
 
     #[test]
     fn opening_resets_cursor_and_query() {
-        let mut l = ConvList { query: "ma".into(), cursor: 2, kbd: true, focus: false };
+        let mut l = ConvList { query: "ma".into(), cursor: 2, kbd: true, focus: false, found: None, tab: Tab::Calls };
         l.opened(&Target::Conv("k".into()));
         assert_eq!((l.query.as_str(), l.cursor, l.kbd), ("ma", 0, false));
         l.opened(&Target::Contact { name: "Ma".into(), number: "+331".into() });
-        assert!(l.query.is_empty());
+        assert_eq!(l.query, "");
+    }
+
+    #[test]
+    fn sms_tab_leaves_out_landlines() {
+        let fr = Some(Id::FR);
+        assert!(!Tab::Sms.offers("03 89 00 00 00", None, fr));
+        assert!(Tab::Calls.offers("03 89 00 00 00", None, fr));
+        assert!(Tab::Sms.offers("06 00 00 00 00", None, fr));
+        assert!(Tab::Sms.offers("03 89 00 00 00", None, None), "home unknown: kept");
     }
 }

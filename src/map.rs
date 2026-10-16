@@ -1,4 +1,4 @@
-//! Client MAP via obexd (bus session) : lecture, envoi, polling.
+//! MAP client through obexd (session bus): read, send, polling.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -41,12 +41,12 @@ pub struct Sms {
     pub read: bool,
     pub text: String,
     pub kind: String,
-    /// Destinataire (messages envoyés).
+    /// Recipient (sent messages).
     pub recipient: String,
     pub recipient_address: String,
 }
 
-/// Propriété texte nettoyée ([`clean`]) : expéditeur et texte sont contrôlés par l'émetteur du SMS.
+/// Cleaned text property ([`clean`]): sender and text are controlled by the SMS sender.
 fn str_prop(p: &HashMap<String, OwnedValue>, k: &str, multiline: bool) -> String {
     clean(prop_str(p, k).unwrap_or_default(), multiline)
 }
@@ -65,7 +65,7 @@ fn sms_from(path: &OwnedObjectPath, p: &HashMap<String, OwnedValue>) -> Sms {
     }
 }
 
-/// Dossiers MAP autorisés (liste blanche : jamais de chemin libre vers `SetFolder`).
+/// Allowed MAP folders (allow-list: never a free path to `SetFolder`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Folder {
@@ -86,13 +86,13 @@ impl Folder {
         }
     }
 
-    /// Chemin passé à `SetFolder`.
+    /// Path passed to `SetFolder`.
     #[must_use]
     pub fn path(self) -> String {
         format!("/telecom/msg/{}", self.as_str())
     }
 
-    /// Dossier des messages envoyés depuis le téléphone.
+    /// Folder of the messages sent from the phone.
     #[must_use]
     pub fn is_sent(self) -> bool {
         self == Self::Sent
@@ -113,9 +113,15 @@ impl std::str::FromStr for Folder {
     }
 }
 
-/// Messages jamais vus, ordonnés par horodatage (format MAP `YYYYMMDDTHHMMSS`).
+/// Never-seen messages, ordered by timestamp (MAP format `YYYYMMDDTHHMMSS`). Handles absent from
+/// the listing are forgotten: `seen` stays bounded by the folder size. An empty listing (transient
+/// phone answer) keeps `seen`, otherwise the next full listing would replay the whole inbox.
 pub fn new_messages(seen: &mut HashSet<String>, mut all: Vec<Sms>) -> Vec<Sms> {
     all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    if !all.is_empty() {
+        let listed: HashSet<&str> = all.iter().map(|m| m.handle.as_str()).collect();
+        seen.retain(|h| listed.contains(h.as_str()));
+    }
     all.into_iter().filter(|m| seen.insert(m.handle.clone())).collect()
 }
 
@@ -124,10 +130,10 @@ pub struct MapClient {
 }
 
 impl MapClient {
-    /// Ouvre une session MAP vers `addr`.
+    /// Opens a MAP session to `addr`.
     ///
     /// # Errors
-    /// obexd injoignable ou session refusée.
+    /// obexd unreachable or session refused.
     pub async fn connect(addr: &BtAddr) -> Result<Self> {
         Ok(Self { session: Session::open(addr, "map").await? })
     }
@@ -139,10 +145,10 @@ impl MapClient {
             .await?)
     }
 
-    /// Messages du dossier `folder`.
+    /// Messages of folder `folder`.
     ///
     /// # Errors
-    /// Erreur D-Bus ou d'obexd.
+    /// D-Bus or obexd error.
     pub async fn list(&self, folder: Folder) -> Result<Vec<Sms>> {
         let ma = self.access().await?;
         ma.set_folder(&folder.path()).await?;
@@ -152,10 +158,10 @@ impl MapClient {
         Ok(v)
     }
 
-    /// Envoie un SMS et attend la fin du transfert.
+    /// Sends an SMS and waits for the end of the transfer.
     ///
     /// # Errors
-    /// Numéro invalide, fichier temporaire impossible, ou transfert refusé, en échec ou trop long.
+    /// Invalid number, temporary file impossible, or transfer refused, failed or too long.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
         let bmsg = bmsg::encode_sms(to, text)?;
         let mut file = tempfile::NamedTempFile::new()?; // 0600
@@ -164,13 +170,13 @@ impl MapClient {
 
         let ma = self.access().await?;
         ma.set_folder(&Folder::Outbox.path()).await?;
-        // Piège : "UTF-8"/"utf-8" => InvalidArguments ; seul "utf8" est accepté.
+        // Pitfall: "UTF-8"/"utf-8" => InvalidArguments; only "utf8" is accepted.
         let args = HashMap::from([("Charset", Value::from("utf8"))]);
         let (tpath, _) = ma.push_message(&path, "", args).await?;
         self.session.wait_transfer(tpath, Duration::from_secs(15)).await
     }
 
-    /// Polling de l'inbox ; les messages déjà présents au démarrage ne sont pas émis.
+    /// Inbox polling; messages already present at startup are not emitted.
     pub fn watch(&self, interval: Duration) -> impl Stream<Item = Result<Sms>> + '_ {
         futures_util::stream::unfold(
             (None::<HashSet<String>>, Vec::<Sms>::new().into_iter()),
@@ -194,10 +200,10 @@ impl MapClient {
         )
     }
 
-    /// Ferme la session MAP.
+    /// Closes the MAP session.
     ///
     /// # Errors
-    /// Erreur D-Bus ou d'obexd.
+    /// D-Bus or obexd error.
     pub async fn close(self) -> Result<()> {
         self.session.close().await
     }
@@ -216,6 +222,10 @@ mod tests {
         let mut seen: HashSet<String> = ["1".to_owned()].into();
         let out = new_messages(&mut seen, vec![sms("3", "20261015T120000"), sms("1", "x"), sms("2", "20261015T110000")]);
         assert_eq!(out.iter().map(|m| m.handle.as_str()).collect::<Vec<_>>(), ["2", "3"]);
+        assert!(new_messages(&mut seen, vec![sms("2", "a")]).is_empty());
+        assert_eq!(seen, HashSet::from(["2".to_owned()]));
+        // Transient empty listing: nothing forgotten, nothing replayed afterwards.
+        assert!(new_messages(&mut seen, vec![]).is_empty());
         assert!(new_messages(&mut seen, vec![sms("2", "a")]).is_empty());
     }
 

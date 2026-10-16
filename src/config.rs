@@ -1,11 +1,11 @@
-//! Emplacements partagés : adresse de l'iPhone (`~/.config/bluez-message/device`) et socket du démon.
+//! Shared locations: iPhone address (`~/.config/bluez-message/device`) and daemon socket.
 
 use std::path::{Path, PathBuf};
 
 use crate::addr::BtAddr;
 use crate::t;
 
-/// Dossier XDG `var` s'il est absolu, sinon `~/{fallback}`.
+/// XDG `var` directory if absolute, otherwise `~/{fallback}`.
 fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     std::env::var_os(var)
         .map(PathBuf::from)
@@ -13,22 +13,22 @@ fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
 }
 
-/// `$XDG_CONFIG_HOME` ou `~/.config`.
+/// `$XDG_CONFIG_HOME` or `~/.config`.
 #[must_use]
 pub fn config_dir() -> Option<PathBuf> {
     xdg_dir("XDG_CONFIG_HOME", ".config")
 }
 
-/// `$XDG_DATA_HOME` ou `~/.local/share`.
+/// `$XDG_DATA_HOME` or `~/.local/share`.
 #[must_use]
 pub fn data_dir() -> Option<PathBuf> {
     xdg_dir("XDG_DATA_HOME", ".local/share")
 }
 
-/// Adresse donnée en argument, sinon lue dans `~/.config/bluez-message/device` ; validée.
+/// Address given as argument, otherwise read from `~/.config/bluez-message/device`; validated.
 ///
 /// # Errors
-/// Message traduit : `HOME` absent, fichier illisible ou adresse invalide.
+/// Translated message: `HOME` missing, unreadable file or invalid address.
 pub fn resolve_addr(arg: Option<BtAddr>) -> Result<BtAddr, String> {
     if let Some(a) = arg {
         return Ok(a);
@@ -38,29 +38,29 @@ pub fn resolve_addr(arg: Option<BtAddr>) -> Result<BtAddr, String> {
     raw.trim().parse().map_err(|e: crate::error::Error| e.to_string())
 }
 
-/// Socket du démon dans `$XDG_RUNTIME_DIR` (répertoire 0700 propre à l'utilisateur).
+/// Daemon socket in `$XDG_RUNTIME_DIR` (0700 directory owned by the user).
 ///
 /// # Errors
-/// Message traduit si `XDG_RUNTIME_DIR` est absent ou relatif.
+/// Translated message if `XDG_RUNTIME_DIR` is missing or relative.
 pub fn socket_path() -> Result<PathBuf, String> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
     dir.map(|d| d.join("bluez-message.sock")).ok_or_else(|| t!("XDG_RUNTIME_DIR missing or relative").to_owned())
 }
 
-/// Enregistre l'adresse de l'iPhone dans `~/.config/bluez-message/device` (écriture atomique, 0600).
+/// Saves the iPhone address to `~/.config/bluez-message/device` (atomic write, 0600).
 ///
 /// # Errors
-/// `HOME` absent ou écriture impossible.
+/// `HOME` missing or write impossible.
 pub fn write_device(addr: &BtAddr) -> std::io::Result<()> {
     let dir = config_dir().ok_or_else(|| std::io::Error::other("HOME not set"))?.join("bluez-message");
     write_private(&dir.join("device"), format!("{addr}\n").as_bytes())
 }
 
-/// Écriture atomique d'un fichier privé : dossier (propre à bluez-message) créé ou resserré en 0700, fichier
-/// temporaire 0600 synchronisé puis renommé.
+/// Atomic write of a private file: directory (specific to bluez-message) created or tightened to 0700, temporary
+/// file 0600 synced then renamed.
 ///
 /// # Errors
-/// Création du dossier, écriture, synchronisation ou renommage impossible.
+/// Directory creation, write, sync or rename impossible.
 pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -71,14 +71,14 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     };
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    // Nom propre à l'écriture (processus + compteur) : deux écritures concurrentes (démon et GUI) ne
-    // suppriment pas le temporaire l'une de l'autre.
+    // Name unique to the write (process + counter): two concurrent writes (daemon and GUI) do not
+    // delete each other's temporary file.
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(name);
     tmp_name.push(format!(".{}.{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     let tmp = dir.join(tmp_name);
-    // Reste d'une écriture interrompue (ou lien planté) : retiré, puis création exclusive sans suivre de lien,
-    // pour que le fichier soit bien neuf et en 0600.
+    // Leftover of an interrupted write (or planted link): removed, then exclusive creation without following links,
+    // so that the file is really new and 0600.
     match std::fs::remove_file(&tmp) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}

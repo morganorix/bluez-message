@@ -1,4 +1,4 @@
-//! Adresse Bluetooth validée (`AA:BB:CC:DD:EE:FF`, majuscules).
+//! Validated Bluetooth address (`AA:BB:CC:DD:EE:FF`, uppercase).
 
 use std::fmt;
 use std::str::FromStr;
@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
-/// Adresse Bluetooth : six octets hexadécimaux séparés par `:`, normalisée en majuscules (forme de BlueZ).
-/// Sérialisée en chaîne ; une adresse invalide est rejetée dès la lecture.
+/// Bluetooth address: six hexadecimal bytes separated by `:`, normalised to uppercase (BlueZ form).
+/// Serialised as a string; an invalid address is rejected as soon as it is read.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct BtAddr(String);
@@ -19,13 +19,13 @@ impl BtAddr {
         &self.0
     }
 
-    /// Nœud D-Bus de l'appareil (`dev_AA_BB_…`).
+    /// Device's D-Bus node (`dev_AA_BB_…`).
     #[must_use]
     pub fn node(&self) -> String {
         format!("dev_{}", self.0.replace(':', "_"))
     }
 
-    /// Chemin D-Bus complet de l'appareil sur l'adaptateur.
+    /// Full D-Bus path of the device on the adapter.
     #[must_use]
     pub fn path(&self) -> String {
         format!("{}/{}", crate::bluez::ADAPTER, self.node())

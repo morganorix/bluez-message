@@ -1,5 +1,5 @@
-//! Moteur MAP + appels (PipeWire Telephony) commun au démon (`serve`) et à l'interface (`bluez-message`) :
-//! des commandes entrent par [`Engine::submit`], des événements [`Out`] sortent par un canal.
+//! MAP + calls engine (PipeWire Telephony) shared by the daemon (`serve`) and the interface (`bluez-message`):
+//! commands come in through [`Engine::submit`], [`Out`] events go out through a channel.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -20,11 +20,11 @@ use crate::settings::Settings;
 use crate::telephony;
 use crate::t;
 
-/// Taille maximale d'un texte de SMS accepté (caractères).
+/// Maximum length of an accepted SMS text (characters).
 pub const MAX_TEXT: usize = 2000;
 const BACKOFF_MIN: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
-/// Délai de reconnexion doublé à chaque échec, de `BACKOFF_MIN` à `BACKOFF_MAX`.
+/// Reconnection delay doubled on each failure, from `BACKOFF_MIN` to `BACKOFF_MAX`.
 struct Backoff(Duration);
 
 impl Backoff {
@@ -32,7 +32,7 @@ impl Backoff {
         Self(BACKOFF_MIN)
     }
 
-    /// Délai à attendre maintenant ; le suivant est doublé (plafonné).
+    /// Delay to wait now; the next one is doubled (capped).
     fn next(&mut self) -> Duration {
         let d = self.0;
         self.0 = (d * 2).min(BACKOFF_MAX);
@@ -44,7 +44,7 @@ impl Backoff {
     }
 }
 
-/// Dossiers suivis : `inbox` pour les arrivées, `sent` pour compléter les conversations.
+/// Tracked folders: `inbox` for arrivals, `sent` to complete conversations.
 const FOLDERS: [Folder; 2] = [Folder::Inbox, Folder::Sent];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,34 +53,34 @@ pub enum Cmd {
     Send { to: String, text: String },
     Answer,
     Hangup,
-    /// Refuse l'appel qui sonne ou le second appel.
+    /// Rejects the ringing call or the second call.
     Reject,
-    /// Met l'appel en cours en attente et prend le second.
+    /// Puts the current call on hold and takes the second one.
     HoldAnswer,
-    /// Bascule entre l'appel en cours et celui en attente.
+    /// Switches between the current call and the one on hold.
     Swap,
-    /// Appelle un numéro depuis l'iPhone.
+    /// Dials a number from the iPhone.
     Dial { number: String },
-    /// Coupe ou rétablit le micro du PC : traité par le démon, pas par le moteur.
+    /// Mutes or unmutes the PC microphone: handled by the daemon, not by the engine.
     Mute,
-    /// Conversation lue jusqu'à `until` (horodatage MAP) : consigné par le démon, pas par le moteur.
+    /// Conversation read up to `until` (MAP timestamp): recorded by the daemon, not by the engine.
     MarkRead { key: String, until: String },
-    /// Retire de l'historique local un élément (`item`) ou toute la conversation : traité par le démon.
+    /// Removes an item (`item`) or the whole conversation from the local history: handled by the daemon.
     Delete { key: String, item: Option<Item> },
-    /// Réglages de l'app : traité par le démon.
+    /// App settings: handled by the daemon.
     Settings { settings: Settings },
-    /// Relance la liaison Bluetooth de l'iPhone (Disconnect + Connect) : traité par le démon.
+    /// Restarts the iPhone's Bluetooth link (Disconnect + Connect): handled by the daemon.
     Reconnect,
-    /// Change d'iPhone (appareil appairé) : le démon enregistre l'adresse et redémarre.
+    /// Switches iPhone (paired device): the daemon stores the address and restarts.
     SetDevice { addr: BtAddr },
-    /// Efface pour de bon les SMS supprimés depuis l'app : traité par le démon.
+    /// Permanently erases the SMS deleted from the app: handled by the daemon.
     PurgeHidden,
-    /// Vide l'historique local : traité par le démon.
+    /// Clears the local history: handled by the daemon.
     ClearHistory,
     Quit,
 }
 
-/// Appareil Bluetooth appairé.
+/// Paired Bluetooth device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     pub addr: BtAddr,
@@ -88,12 +88,12 @@ pub struct Device {
     pub connected: bool,
 }
 
-/// Élément d'une conversation (SMS ou ligne d'appel), désigné pour une suppression.
+/// Item of a conversation (SMS or call line), designated for a deletion.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Item {
-    /// Horodatage MAP de l'élément.
+    /// MAP timestamp of the item.
     pub timestamp: String,
-    /// Texte du SMS (vide pour un appel).
+    /// SMS text (empty for a call).
     pub text: String,
     pub outgoing: bool,
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct Item {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Out {
-    /// `new` : faux pour l'état initial du dossier, vrai pour une arrivée.
+    /// `new`: false for the folder's initial state, true for an arrival.
     Sms { #[serde(flatten)] sms: Sms, folder: Folder, new: bool },
     Sent {
         to: String,
@@ -111,42 +111,52 @@ pub enum Out {
         ok: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
-        /// Heure locale de l'envoi, format MAP (`AAAAMMJJTHHMMSS`).
+        /// Local time of the send, MAP format (`YYYYMMDDTHHMMSS`).
         #[serde(default)]
         timestamp: String,
     },
     Call(HfEvent),
-    /// Appel terminé, consigné dans l'historique par le démon.
+    /// Call ended, recorded in the history by the daemon.
     CallLog {
         number: String,
-        /// Début de l'appel, format MAP.
+        /// Start of the call, MAP format.
         timestamp: String,
         kind: CallKind,
-        /// Durée de la communication (0 si non décroché).
+        /// Duration of the conversation (0 if not answered).
         secs: u64,
-        /// Rejoué depuis l'historique : un appel manqué ne compte plus comme non lu.
+        /// Replayed from the history: a missed call no longer counts as unread.
         #[serde(default)]
         read: bool,
     },
-    /// Répertoire de l'iPhone (PBAP) : (numéro, nom).
+    /// iPhone contacts (PBAP): (number, name).
     Contacts { names: Vec<(String, String)> },
-    /// Micro du PC coupé ou rétabli par le démon pendant l'appel.
+    /// PC microphone muted or unmuted by the daemon during the call.
     Muted { on: bool },
-    /// Conversation lue jusqu'à `until` (horodatage MAP).
+    /// Conversation read up to `until` (MAP timestamp).
     Read { key: String, until: String },
-    /// Élément (ou conversation entière si `item` est absent) retiré de l'historique.
+    /// Item (or whole conversation if `item` is absent) removed from the history.
     Deleted { key: String, item: Option<Item> },
     Status { link: Profile, up: bool },
-    /// Réglages en vigueur, langues disponibles, appareils appairés et adresse suivie.
-    Settings { settings: Settings, langs: Vec<String>, devices: Vec<Device>, device: BtAddr },
-    /// Historique local vidé.
+    /// Settings in effect, available languages, paired devices and tracked address; `home`: country
+    /// numbers are read with (ISO code, see [`crate::numbering`]), `auto`: the one without a setting.
+    Settings {
+        settings: Settings,
+        langs: Vec<String>,
+        devices: Vec<Device>,
+        device: BtAddr,
+        #[serde(default)]
+        home: Option<String>,
+        #[serde(default)]
+        auto: Option<String>,
+    },
+    /// Local history cleared.
     Cleared,
-    /// Compte rendu d'une commande (purge…), adressé au seul demandeur.
+    /// Report of a command (purge…), addressed to the requester only.
     Info { msg: String },
     Error { msg: String },
 }
 
-/// Liaison Bluetooth suivie : appels (HFP), messages (MAP) ou contacts (PBAP, issue de la dernière synchronisation).
+/// Tracked Bluetooth link: calls (HFP), messages (MAP) or contacts (PBAP, result of the last synchronisation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
@@ -184,10 +194,10 @@ impl CallKind {
     }
 }
 
-/// Valide un envoi avant toute action ; le message d'erreur est destiné à l'interface.
+/// Validates a send before any action; the error message is meant for the interface.
 ///
 /// # Errors
-/// Message traduit : destinataire invalide, texte vide ou trop long.
+/// Translated message: invalid recipient, empty or too long text.
 pub fn validate_send(to: &str, text: &str) -> std::result::Result<(), String> {
     bmsg::validate_number(to).map_err(|e| e.to_string())?;
     if text.trim().is_empty() || text.chars().count() > MAX_TEXT {
@@ -196,14 +206,14 @@ pub fn validate_send(to: &str, text: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Numéro à composer : séparateurs de présentation retirés (` `, `-`, `.`, `(`, `)`), puis `+` initial
-/// facultatif et 2 à 30 chiffres. `*` et `#` refusés : un expéditeur usurpé (`**21*…#`) ferait d'un
-/// « Rappeler » un code MMI (renvoi d'appel).
+/// Number to dial: presentation separators removed (` `, `-`, `.`, `(`, `)`), then optional leading `+`
+/// and 2 to 30 digits. `*` and `#` rejected: a spoofed sender (`**21*…#`) would turn a
+/// "Call back" into an MMI code (call forwarding).
 ///
 /// # Errors
-/// Message traduit si le numéro n'a pas cette forme.
+/// Translated message if the number does not have that form.
 pub fn dial_number(n: &str) -> std::result::Result<String, String> {
-    let n: String = n.chars().filter(|c| !matches!(c, ' ' | '-' | '.' | '(' | ')')).collect();
+    let n = crate::phone::strip_separators(n);
     let body = n.strip_prefix('+').unwrap_or(&n);
     if (2..=30).contains(&body.len()) && body.bytes().all(|b| b.is_ascii_digit()) {
         Ok(n)
@@ -230,10 +240,10 @@ fn validate_delete(key: &str, item: Option<&Item>) -> std::result::Result<(), St
     Ok(())
 }
 
-/// Décode et valide une commande JSON.
+/// Decodes and validates a JSON command.
 ///
 /// # Errors
-/// Message traduit : JSON illisible ou champ refusé par la validation.
+/// Translated message: unreadable JSON or field rejected by validation.
 pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
     let cmd: Cmd = serde_json::from_str(line).map_err(|e| t!("unreadable command: {0}", e))?;
     match &cmd {
@@ -247,12 +257,12 @@ pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
     Ok(cmd)
 }
 
-/// Réveil de la session MAP en attente de reconnexion (iPhone revenu).
+/// Wake-up of the MAP session waiting to reconnect (iPhone is back).
 #[derive(Clone, Default)]
 pub struct Nudge(Arc<Notify>);
 
 impl Nudge {
-    /// Nouvel essai MAP immédiat, backoff remis à zéro ; sans effet notable si la session est ouverte.
+    /// Immediate MAP retry, backoff reset; no noticeable effect if the session is open.
     pub fn nudge(&self) {
         self.0.notify_one();
     }
@@ -267,10 +277,12 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Lance les tâches MAP et HFP ; à appeler dans un runtime tokio.
+    /// Starts the MAP and HFP tasks; to be called inside a tokio runtime.
     #[must_use]
     pub fn start(addr: &BtAddr, interval: Duration) -> (Self, mpsc::UnboundedReceiver<Out>) {
         let addr = addr.clone();
+        // Unbounded on purpose: telephony callbacks are synchronous (no back-pressure possible without
+        // losing call events), producers are bounded by the phone's folders and the owner drains it continuously.
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let (send_tx, send_rx) = mpsc::channel(8);
         let (hf_tx, hf_rx) = mpsc::channel(8);
@@ -290,7 +302,7 @@ impl Engine {
             let mut on_warn = move |msg| {
                 let _ = warn.send(Out::Error { msg });
             };
-            // Bus session perdu : nouvel essai avec backoff ; l'erreur n'est signalée qu'une fois.
+            // Session bus lost: retry with backoff; the error is reported only once.
             let mut backoff = Backoff::new();
             let mut reported = false;
             while let Err(e) = telephony::run(&addr, &mut hf_rx, &mut on_event, &mut on_warn).await {
@@ -305,10 +317,10 @@ impl Engine {
         (Self { send_tx, nudge, hf_tx, map_task, hfp_task }, out_rx)
     }
 
-    /// Transmet une commande (non bloquant). `Quit` est à traiter par l'appelant via [`Engine::shutdown`].
+    /// Forwards a command (non-blocking). `Quit` is for the caller to handle via [`Engine::shutdown`].
     ///
     /// # Errors
-    /// Message traduit : champ refusé, file pleine, commande réservée au démon ou moteur arrêté.
+    /// Translated message: field rejected, queue full, daemon-only command or engine stopped.
     pub fn submit(&self, cmd: Cmd) -> std::result::Result<(), String> {
         match cmd {
             Cmd::Send { to, text } => {
@@ -333,7 +345,7 @@ impl Engine {
         }
     }
 
-    /// Poignée de réveil de la session MAP, pour la surveillance de la liaison.
+    /// MAP session wake-up handle, for link monitoring.
     #[must_use]
     pub fn nudger(&self) -> Nudge {
         self.nudge.clone()
@@ -343,7 +355,7 @@ impl Engine {
         self.hf_tx.try_send(cmd).map_err(|_| t!("HFP busy").to_owned())
     }
 
-    /// Fermer les canaux arrête la tâche d'appels proprement ; MAP est interrompu.
+    /// Closing the channels stops the calls task cleanly; MAP is interrupted.
     pub async fn shutdown(self) {
         drop(self.hf_tx);
         drop(self.send_tx);
@@ -355,8 +367,8 @@ impl Engine {
     }
 }
 
-/// Session MAP tenue ouverte : état initial, puis polling et envois ; reconnexion avec backoff.
-/// L'état du lien n'est émis qu'à ses changements.
+/// MAP session kept open: initial state, then polling and sends; reconnection with backoff.
+/// The link state is emitted only when it changes.
 async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(String, String)>, out: UnboundedSender<Out>, nudge: Nudge) {
     let mut seen: [Option<HashSet<String>>; 2] = [None, None];
     let mut backoff = Backoff::new();
@@ -376,17 +388,17 @@ async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(S
             }
             Ok(client) => {
                 set_up(&mut last, true);
-                // Réveil émis pendant la connexion : déjà satisfait, ne doit pas écourter le prochain backoff.
+                // Wake-up emitted during the connection: already satisfied, must not shorten the next backoff.
                 let _ = nudge.0.notified().now_or_never();
                 let started = tokio::time::Instant::now();
                 let r = session(&client, &mut seen, interval, &mut sends, &out).await;
                 let _ = client.close().await;
                 match r {
-                    Ok(()) => return, // canal d'envoi fermé : arrêt
+                    Ok(()) => return, // send channel closed: stop
                     Err(e) => {
                         tracing::warn!("MAP lost: {e}");
                         set_up(&mut last, false);
-                        // Session courte = échec répété : le backoff continue de croître.
+                        // Short session = repeated failure: the backoff keeps growing.
                         if started.elapsed() >= BACKOFF_MAX {
                             backoff.reset();
                         }
@@ -398,8 +410,8 @@ async fn map_loop(addr: BtAddr, interval: Duration, mut sends: mpsc::Receiver<(S
     }
 }
 
-/// Attend le délai du backoff en refusant les envois (pas de session) ; un réveil l'écourte et remet le
-/// backoff à zéro. Vrai si le canal est fermé.
+/// Waits for the backoff delay while refusing sends (no session); a wake-up shortens it and resets the
+/// backoff. True if the channel is closed.
 async fn wait_or_refuse(sends: &mut mpsc::Receiver<(String, String)>, backoff: &mut Backoff, out: &UnboundedSender<Out>, nudge: &Nudge) -> bool {
     let deadline = tokio::time::sleep(backoff.next());
     tokio::pin!(deadline);
@@ -429,7 +441,7 @@ async fn session(
 ) -> Result<()> {
     loop {
         for (folder, seen) in FOLDERS.into_iter().zip(seen.iter_mut()) {
-            // iOS expose `sent` vide ou instable : son échec n'interrompt pas la session.
+            // iOS exposes an empty or unstable `sent`: its failure does not interrupt the session.
             let all = match client.list(folder).await {
                 Ok(all) => all,
                 Err(e) if folder.is_sent() => {
@@ -525,7 +537,7 @@ mod tests {
         assert_eq!(v["handle"], "h");
         assert_eq!(v["folder"], "inbox");
         assert_eq!(v["new"], true);
-        // Aller-retour : la GUI relit les lignes du démon.
+        // Round trip: the GUI rereads the daemon's lines.
         assert_eq!(serde_json::from_str::<Out>(&line).unwrap(), o);
         let c = Out::Call(HfEvent::Indicator { name: "call".into(), value: 1 });
         assert_eq!(serde_json::from_str::<Out>(&serde_json::to_string(&c).unwrap()).unwrap(), c);

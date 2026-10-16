@@ -1,4 +1,4 @@
-//! Composants génériques, calqués valeur pour valeur sur le menu de la barre
+//! Generic components, modelled value for value on the bar's menu
 //! (ui/menu.plm, ui/menuview.plm, ui/common.plm, ui/wifi.plm, ui/energy.plm).
 
 use std::sync::Arc;
@@ -12,17 +12,17 @@ use eframe::egui::{
 use super::emoji::Emojis;
 use super::theme::{BOLD, CORNER, Palette, font, size};
 
-/// Écart entre les lignes d'une liste (`gap: 2` de `rows`).
+/// Gap between the rows of a list (`gap: 2` of `rows`).
 pub const ROW_GAP: f32 = 2.0;
-/// Écart entre les lignes d'une vue (`viewGap`).
+/// Gap between the rows of a view (`viewGap`).
 pub const GAP: f32 = 4.0;
-/// Marge latérale du contenu dans le panneau (liste à 688 dans un menu à 668).
+/// Side margin of the content in the panel (list at 688 in a menu at 668).
 pub const PAD: i8 = 20;
-/// Marge haute du contenu (liste à 60 sous un panneau à 48).
+/// Top margin of the content (list at 60 under a panel at 48).
 pub const TOP: i8 = 12;
-/// Centre des icônes de ligne et d'en-tête.
+/// Centre of the row and header icons.
 const ICON_X: f32 = 22.0;
-/// Abscisse des libellés, après l'icône.
+/// X position of the labels, after the icon.
 const TEXT_X: f32 = 44.0;
 
 #[must_use]
@@ -35,19 +35,19 @@ pub fn bold_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD.into()))
 }
 
-/// Texte de taille `size`, couleur `c`.
+/// Text of size `size`, colour `c`.
 pub fn text(s: impl Into<String>, size: f32, c: Color32) -> RichText {
     RichText::new(s).size(size).color(c)
 }
 
-/// Une ligne tronquée par « … » à `max_w`.
+/// A line truncated with "…" at `max_w`.
 fn line(ui: &Ui, s: &str, font: FontId, c: Color32, max_w: f32) -> Arc<Galley> {
     let mut job = LayoutJob::single_section(s.to_owned(), TextFormat::simple(font, c));
     job.wrap = TextWrapping::truncate_at_width(max_w.max(0.0));
     ui.painter().layout_job(job)
 }
 
-/// Pose `g` ancré à gauche (ou à droite) et centré verticalement sur `p`.
+/// Places `g` anchored left (or right) and vertically centred on `p`.
 fn put(ui: &Ui, g: Arc<Galley>, p: Pos2, right: bool, c: Color32) -> f32 {
     let w = g.size().x;
     let x = if right { p.x - w } else { p.x };
@@ -55,18 +55,18 @@ fn put(ui: &Ui, g: Arc<Galley>, p: Pos2, right: bool, c: Color32) -> f32 {
     w
 }
 
-/// Filet : `fg` à 10 %, 1 px, toute la largeur.
+/// Rule: `fg` at 10 %, 1 px, full width.
 pub fn rule(ui: &mut Ui, pal: &Palette) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(r, 0, pal.dim(0.10));
 }
 
-/// `MenuHeader` / `ViewHeader` (44 de haut) : icône 16 à 22 (50 %), titre 15 gras à 44.
+/// `MenuHeader` / `ViewHeader` (44 high): icon 16 at 22 (50 %), title 15 bold at 44.
 pub fn header(ui: &mut Ui, pal: &Palette, icon: &str, title: &str) -> Rect {
     header_with(ui, pal, icon, title, 200.0)
 }
 
-/// [`header`] dont le titre laisse `reserve` à droite (indicateurs, boutons).
+/// [`header`] whose title leaves `reserve` on the right (indicators, buttons).
 pub fn header_with(ui: &mut Ui, pal: &Palette, icon: &str, title: &str, reserve: f32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HEADER_H), Sense::hover());
     let y = rect.center().y;
@@ -76,14 +76,14 @@ pub fn header_with(ui: &mut Ui, pal: &Palette, icon: &str, title: &str, reserve:
     rect
 }
 
-/// Bouton carré (`icon_button`) à droite d'un en-tête rendu par `header`, à 14 du bord.
+/// Square button (`icon_button`) to the right of a header drawn by `header`, 14 from the edge.
 pub fn header_button(ui: &mut Ui, pal: &Palette, header: Rect, glyph: &str) -> Response {
     let zone = Rect::from_center_size(header.right_center() - vec2(size::EDGE + 20.0, 0.0), vec2(40.0, 32.0));
     ui.scope_builder(UiBuilder::new().max_rect(zone), |ui| icon_button(ui, pal, glyph)).inner
 }
 
-/// `NearHeader` (38 de haut) : libellé 13 à 50 % centré à 22, action 30 × 28 à droite (glyphe 16, 60 → 100 %),
-/// filet à 36.
+/// `NearHeader` (38 high): label 13 at 50 % centred at 22, action 30 × 28 on the right (glyph 16, 60 → 100 %),
+/// rule at 36.
 pub fn section_action(ui: &mut Ui, pal: &Palette, label: &str, glyph: &str) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::hover());
     let g = line(ui, label, regular(font::LABEL), pal.dim(0.5), rect.width() - 40.0);
@@ -97,32 +97,32 @@ pub fn section_action(ui: &mut Ui, pal: &Palette, label: &str, glyph: &str) -> R
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// `Hint` (16 de haut) : texte 12 à 40 %.
+/// `Hint` (16 high): text 12 at 40 %.
 pub fn hint(ui: &mut Ui, pal: &Palette, label: &str) {
     ui.label(text(label, font::BODY, pal.muted()));
 }
 
-/// Une ligne de liste.
+/// A list row.
 pub struct Row<'a> {
     pub icon: &'a str,
     pub label: &'a str,
-    /// Sous-ligne 11 à 40 % (ligne de 48, comme `NearCard`) ; sans elle, ligne de 36 (`Row`).
+    /// Sub-line 11 at 40 % (row of 48, like `NearCard`); without it, row of 36 (`Row`).
     pub sub: Option<&'a str>,
-    /// À droite, 11 à 40 %.
+    /// On the right, 11 at 40 %.
     pub hint: &'a str,
-    /// Compteur en pastille, sur la sous-ligne.
+    /// Counter in a badge, on the sub-line.
     pub badge: usize,
     pub selected: bool,
     pub strong: bool,
 }
 
-/// `Row` de ui/menu.plm : fond accent 15 % si choisie ou survolée, icône 15 à 22 (60 → 100 %, vire à l'accent),
-/// libellé 13 à 44 (70 → 100 %), indication 11 à 40 % à droite (w − 14).
+/// `Row` of ui/menu.plm: accent background 15 % if chosen or hovered, icon 15 at 22 (60 → 100 %, turns accent),
+/// label 13 at 44 (70 → 100 %), hint 11 at 40 % on the right (w − 14).
 pub fn row(ui: &mut Ui, pal: &Palette, r: &Row) -> Response {
     row_with(ui, pal, r, None)
 }
 
-/// [`row`] dont la sous-ligne montre ses emojis en couleur.
+/// [`row`] whose sub-line shows its emojis in colour.
 pub fn row_with(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>) -> Response {
     let h = if r.sub.is_some() { size::CARD_H } else { size::ROW_H };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
@@ -152,7 +152,7 @@ pub fn row_with(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Pastille (badge de `KnownCard`) : 18 de haut, rayon 4, accent 15 %, texte 10 gras ; ancrée à droite sur `p`.
+/// Badge (`KnownCard` badge): 18 high, radius 4, accent 15 %, text 10 bold; anchored right on `p`.
 fn badge_at(ui: &Ui, pal: &Palette, label: &str, p: Pos2) -> f32 {
     let g = ui.painter().layout_no_wrap(label.to_owned(), bold_font(font::TINY), pal.accent);
     let w = g.size().x + 12.0;
@@ -162,18 +162,18 @@ fn badge_at(ui: &Ui, pal: &Palette, label: &str, p: Pos2) -> f32 {
     w
 }
 
-/// Champ de saisie comme le mot de passe wifi : texte 12 à 10 du bord (hauteur : `interact_size.y`).
+/// Input field like the wifi password: text 12 at 10 from the edge (height: `interact_size.y`).
 pub fn field<'t>(t: &'t mut String, hint: &str) -> TextEdit<'t> {
     TextEdit::singleline(t).hint_text(hint).font(regular(font::BODY)).margin(Margin::symmetric(10, 10))
 }
 
-/// Contenu aligné à droite dans `rect`, centré verticalement.
+/// Content right-aligned in `rect`, vertically centred.
 pub fn right_of<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)), add).inner
 }
 
-/// Carte d'appel (`NearCard` de l'appareil choisi) : 48 de haut, accent 7 %, icône 16 centrée à 18 en `tint`,
-/// titre 13 `fg` à 34, sous-ligne 11 en `sub_c`. Rend la carte pour y poser des boutons.
+/// Call card (`NearCard` of the chosen device): 48 high, accent 7 %, icon 16 centred at 18 in `tint`,
+/// title 13 `fg` at 34, sub-line 11 in `sub_c`. Returns the card so buttons can be placed on it.
 pub fn call_card(ui: &mut Ui, pal: &Palette, icon: &str, tint: Color32, title: &str, sub: &str, sub_c: Color32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CARD_H), Sense::hover());
     let p = ui.painter();
@@ -185,8 +185,8 @@ pub fn call_card(ui: &mut Ui, pal: &Palette, icon: &str, tint: Color32, title: &
     rect
 }
 
-/// Bandeau d'information ou d'erreur (comme `wifi_error`) : 32 de haut, icône et texte 12 en `color` tronqués,
-/// croix à droite. `true` : fermé.
+/// Information or error banner (like `wifi_error`): 32 high, icon and text 12 in `color` truncated,
+/// cross on the right. `true`: closed.
 pub fn banner(ui: &mut Ui, pal: &Palette, icon: &str, msg: &str, color: Color32) -> bool {
     let mut close = false;
     Sides::new().shrink_left().height(size::BANNER_H).show(
@@ -202,15 +202,15 @@ pub fn banner(ui: &mut Ui, pal: &Palette, icon: &str, msg: &str, color: Color32)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
-    /// Boutons des notifications : `fg` 10 % (+15 %), texte `fg`. Seule la popin s'en sert.
+    /// Notification buttons: `fg` 10 % (+15 %), text `fg`. Only the popup uses them.
     Neutral,
-    /// `KnownCard` connecté : accent 10 % (+15 %), texte accent.
+    /// Connected `KnownCard`: accent 10 % (+15 %), accent text.
     Accent,
-    /// OUBLIER / ANNULER : danger 30 % (+20 %), texte `fg`.
+    /// FORGET / CANCEL: danger 30 % (+20 %), text `fg`.
     Danger,
 }
 
-/// Bouton des cartes : 120 × `interact_size.y` (26 ; 34 à côté d'un champ), rayon 4, libellé 11.
+/// Card button: 120 × `interact_size.y` (26; 34 next to a field), radius 4, label 11.
 pub fn button(ui: &mut Ui, pal: &Palette, label: &str, tone: Tone) -> Response {
     let (tint, ink, base, hover) = match tone {
         Tone::Neutral => (pal.fg, pal.fg, 0.10, 0.15),
@@ -228,7 +228,7 @@ pub fn button(ui: &mut Ui, pal: &Palette, label: &str, tone: Tone) -> Response {
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Bouton carré de `PowerBar` : 40 × 32, `fg` 6 % (+12 % au survol), glyphe 16 à 55 → 100 %.
+/// Square `PowerBar` button: 40 × 32, `fg` 6 % (+12 % on hover), glyph 16 at 55 → 100 %.
 pub fn icon_button(ui: &mut Ui, pal: &Palette, glyph: &str) -> Response {
     let (rect, r) = ui.allocate_exact_size(vec2(40.0, 32.0), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -239,9 +239,9 @@ pub fn icon_button(ui: &mut Ui, pal: &Palette, glyph: &str) -> Response {
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// `HeadSwitch` de ui/menuview.plm, peint à droite d'une ligne (w − 14) : 50 × 30, fond `mix(mix(bg, fg, 0.2),
-/// accent, pw)`, pastille 9 `fg` (40 → 100 %) glissant de 15 à 35 ; `pw` animé. La ligne porte le clic.
-/// Animation liée à l'identifiant de la ligne, pas à sa position : stable pendant le défilement.
+/// `HeadSwitch` of ui/menuview.plm, painted on the right of a row (w − 14): 50 × 30, background `mix(mix(bg, fg, 0.2),
+/// accent, pw)`, 9 `fg` knob (40 → 100 %) sliding from 15 to 35; `pw` animated. The row carries the click.
+/// Animation tied to the row's id, not its position: stable while scrolling.
 pub fn switch(ui: &mut Ui, pal: &Palette, row: &Response, on: bool) {
     let pw = ui.ctx().animate_bool(row.id.with("switch"), on);
     let row = row.rect;
@@ -252,9 +252,9 @@ pub fn switch(ui: &mut Ui, pal: &Palette, row: &Response, on: bool) {
     ui.painter().circle_filled(c, 9.0, pal.fg.gamma_multiply(0.4 + 0.6 * pw));
 }
 
-/// Choix segmenté sur sa propre ligne (34 de haut), calé sur le bord gauche des icônes de ligne : pastilles de 26
-/// (rayon `CORNER`), `on` plein accent, les autres `fg` 10 % (accent 25 % au survol), texte 11. Renvoie
-/// l'option cliquée.
+/// Segmented choice on its own row (34 high), aligned to the left edge of the row icons: 26 pills
+/// (radius `CORNER`), `on` solid accent, the others `fg` 10 % (accent 25 % on hover), text 11. Returns
+/// the clicked option.
 pub fn segments(ui: &mut Ui, pal: &Palette, labels: &[&str], on: usize) -> Option<usize> {
     let (line, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
     let (mut x, y) = (line.left() + ICON_X - font::TITLE / 2.0, line.center().y);
@@ -280,6 +280,34 @@ pub fn segments(ui: &mut Ui, pal: &Palette, labels: &[&str], on: usize) -> Optio
     hit
 }
 
+/// Tabs sharing the full width equally (30 high, 4 apart), same colours as [`segments`]. Returns the
+/// clicked tab.
+pub fn tabs(ui: &mut Ui, pal: &Palette, labels: &[&str], on: usize) -> Option<usize> {
+    let (line, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let n = labels.len().max(1) as f32;
+    let w = (line.width() - 4.0 * (n - 1.0)) / n;
+    let mut hit = None;
+    for (i, label) in labels.iter().enumerate() {
+        let sel = i == on;
+        let ink = if sel { pal.bg } else { pal.fg.gamma_multiply(0.8) };
+        let left = line.left() + i as f32 * (w + 4.0);
+        let rect = Rect::from_min_size(Pos2::new(left, line.top()), vec2(w, line.height()));
+        let r = ui.interact(rect, resp.id.with(i), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        let fill = match (sel, r.hovered()) {
+            (true, _) => pal.accent,
+            (false, true) => pal.accent.gamma_multiply(0.25),
+            (false, false) => pal.bg.lerp_to_gamma(pal.fg, 0.1),
+        };
+        ui.painter().rect_filled(rect, CORNER, fill);
+        let g = ui.painter().layout_no_wrap((*label).to_owned(), regular(font::SMALL), ink);
+        ui.painter().galley(rect.center() - g.size() / 2.0, g, ink);
+        if r.clicked() {
+            hit = Some(i);
+        }
+    }
+    hit
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Link {
     Off,
@@ -287,8 +315,8 @@ pub enum Link {
     On,
 }
 
-/// Point d'état de `KnownCard` (rond 4.5 ; halo 8 accent 22 % si relié ; éteint `fg` 25 %, en cours accent2),
-/// icône (Nerd Font) 16 à 40 % à sa gauche.
+/// `KnownCard` status dot (circle 4.5; halo 8 accent 22 % if linked; off `fg` 25 %, in progress accent2),
+/// icon (Nerd Font) 16 at 40 % to its left.
 pub fn status_dot(ui: &mut Ui, pal: &Palette, icon: &str, state: Link) -> Response {
     let g = ui.painter().layout_no_wrap(icon.to_owned(), regular(font::ICON), pal.muted());
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0 + 16.0, 30.0), Sense::hover());

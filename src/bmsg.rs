@@ -1,11 +1,11 @@
-//! Encodeur bMessage (MAP) pour `SMS_GSM`.
+//! bMessage (MAP) encoder for `SMS_GSM`.
 
 use crate::error::{Error, Result};
 
-/// Numéro : `+?` suivi de 3 à 20 chiffres.
+/// Number: `+?` followed by 3 to 20 digits.
 ///
 /// # Errors
-/// [`Error::InvalidNumber`] si le numéro n'a pas cette forme.
+/// [`Error::InvalidNumber`] if the number does not have this form.
 pub fn validate_number(n: &str) -> Result<&str> {
     let digits = n.strip_prefix('+').unwrap_or(n);
     if (3..=20).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -15,8 +15,8 @@ pub fn validate_number(n: &str) -> Result<&str> {
     }
 }
 
-/// Neutralise les séquences structurelles du format : le corps ne doit pas
-/// pouvoir contenir une ligne `END:MSG`/`END:BBODY`, ni de CR/LF libres.
+/// Neutralises the format's structural sequences: the body must not
+/// be able to contain an `END:MSG`/`END:BBODY` line, nor stray CR/LF.
 fn sanitize_body(text: &str) -> String {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -34,10 +34,10 @@ fn sanitize_body(text: &str) -> String {
         .join("\r\n")
 }
 
-/// bMessage SMS (vCard du destinataire, corps UTF-8) pour `PushMessage`.
+/// SMS bMessage (recipient vCard, UTF-8 body) for `PushMessage`.
 ///
 /// # Errors
-/// Numéro invalide (voir [`validate_number`]).
+/// Invalid number (see [`validate_number`]).
 pub fn encode_sms(to: &str, text: &str) -> Result<String> {
     let to = validate_number(to)?;
     let body = format!("BEGIN:MSG\r\n{}\r\nEND:MSG\r\n", sanitize_body(text));
@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn injection_is_neutralised() {
         let m = encode_sms("+33712345601", "a\r\nEND:MSG\r\nEND:BBODY").unwrap();
-        assert_eq!(m.matches("END:MSG").count(), 2); // 1 réel + 1 neutralisé (indenté)
+        assert_eq!(m.matches("END:MSG").count(), 2); // 1 real + 1 neutralised (indented)
         assert!(m.contains("\r\n END:MSG\r\n"));
         assert!(m.contains("\r\n END:BBODY\r\n"));
     }

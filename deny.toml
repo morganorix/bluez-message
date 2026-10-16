@@ -1,0 +1,9 @@
+# cargo-deny: `cargo deny check advisories`.
+[advisories]
+ignore = [
+    # rustybuzz: unmaintained (no vulnerability). Kept for emoji shaping (CBDT bitmaps); harfrust would
+    # rewrite that path, and ttf-parser stays in the tree through winit anyway.
+    { id = "RUSTSEC-2026-0206", reason = "unmaintained, no known vulnerability; migration to harfrust deferred" },
+    # ttf-parser: unmaintained (no vulnerability), pulled by rustybuzz and winit.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, no known vulnerability; transitive through winit" },
+]

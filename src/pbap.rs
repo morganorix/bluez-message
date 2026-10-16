@@ -1,5 +1,5 @@
-//! Répertoire de l'iPhone par PBAP (obexd, bus session) : noms et numéros, pour afficher un nom
-//! à la place du numéro. iOS demande l'autorisation à la première lecture.
+//! iPhone phonebook through PBAP (obexd, session bus): names and numbers, to show a name
+//! in place of the number. iOS asks for authorisation on the first read.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -12,9 +12,9 @@ use crate::error::Result;
 use crate::obex::Session;
 use crate::phone::clean;
 
-/// Bornes du répertoire : l'instantané `Contacts` part sur une seule ligne IPC (16 Mio côté GUI).
-/// 20 000 × (128 car. × 4 octets + 64) ≈ 12 Mo au pire.
-const MAX_VCF_BYTES: u64 = 32 * 1024 * 1024;
+/// Phonebook bounds: the `Contacts` snapshot goes out on a single IPC line (16 MiB on the GUI side).
+/// 20,000 × (128 chars × 4 bytes + 64) ≈ 12 MB at worst.
+const MAX_VCF_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CONTACTS: usize = 20_000;
 const MAX_NAME: usize = 128;
 const MAX_TEL: usize = 64;
@@ -25,10 +25,10 @@ trait PhonebookAccess {
     fn pull_all(&self, targetfile: &str, filters: HashMap<&str, Value<'_>>) -> zbus::Result<(OwnedObjectPath, HashMap<String, OwnedValue>)>;
 }
 
-/// Lit le répertoire interne (`int/pb`) : paires (numéro, nom).
+/// Reads the internal phonebook (`int/pb`): (number, name) pairs.
 ///
 /// # Errors
-/// Session refusée (autorisation iOS), erreur D-Bus ou transfert en échec.
+/// Session refused (iOS authorisation), D-Bus error or failed transfer.
 pub async fn pull(addr: &BtAddr) -> Result<Vec<(String, String)>> {
     let session = Session::open(addr, "pbap").await?;
     let r = pull_in(&session).await;
@@ -40,29 +40,35 @@ async fn pull_in(session: &Session) -> Result<Vec<(String, String)>> {
     let pb = PhonebookAccessProxy::builder(&session.conn).path(session.path.as_ref())?.build().await?;
     pb.select("int", "pb").await?;
     let filters = HashMap::from([("Format", Value::from("vcard30")), ("Fields", Value::from(vec!["FN", "N", "TEL"]))]);
-    // Fichier vide : obexd choisit le fichier temporaire et le renvoie dans `Filename`.
+    // Empty file: obexd chooses the temporary file and returns it in `Filename`.
     let (transfer, props) = pb.pull_all("", filters).await?;
     let file = crate::bluez::prop_str(&props, "Filename").map(str::to_owned);
-    session.wait_transfer(transfer, Duration::from_secs(120)).await?;
-    let Some(file) = file else { return Ok(vec![]) };
-    let text = read_bounded(&file).map(|b| String::from_utf8_lossy(&b).into_owned());
-    let _ = std::fs::remove_file(&file);
+    let done = session.wait_transfer(transfer, Duration::from_secs(120)).await;
+    let Some(file) = file else { return done.map(|()| vec![]) };
+    // The temporary file (phonebook in clear) is removed whatever the outcome of the transfer.
+    let text = done.and_then(|()| Ok(read_bounded(&file).map(|b| String::from_utf8_lossy(&b).into_owned())?));
+    if let Err(e) = std::fs::remove_file(&file)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("PBAP temporary file not removed: {e}");
+    }
     Ok(parse_vcards(&text?))
 }
 
-/// Lit au plus `MAX_VCF_BYTES` : au-delà, la fin est ignorée (la dernière fiche tronquée n'a pas d'`END`).
+/// Reads `MAX_VCF_BYTES` at most: beyond that, the end is ignored (the last truncated card has no `END`).
 fn read_bounded(file: &str) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut b = Vec::new();
-    std::fs::File::open(file)?.take(MAX_VCF_BYTES + 1).read_to_end(&mut b)?;
-    if b.len() as u64 > MAX_VCF_BYTES {
+    let limit = u64::try_from(MAX_VCF_BYTES).unwrap_or(u64::MAX);
+    std::fs::File::open(file)?.take(limit.saturating_add(1)).read_to_end(&mut b)?;
+    if b.len() > MAX_VCF_BYTES {
         tracing::warn!("PBAP phonebook larger than {MAX_VCF_BYTES} bytes: truncated");
-        b.truncate(MAX_VCF_BYTES as usize);
+        b.truncate(MAX_VCF_BYTES);
     }
     Ok(b)
 }
 
-/// vCard 3.0 minimal : lignes dépliées, `FN` (sinon `N`), chaque `TEL`.
+/// Minimal vCard 3.0: unfolded lines, `FN` (otherwise `N`), each `TEL`.
 pub fn parse_vcards(src: &str) -> Vec<(String, String)> {
     let mut out = vec![];
     let (mut name, mut tels) = (String::new(), Vec::<String>::new());

@@ -1,7 +1,7 @@
 [Unit]
 Description=Relais SMS/appels iPhone (bluez-messaged)
-# default.target et non graphical-session.target : sous Hyprland/sway, cette cible
-# (RefuseManualStart=yes) reste souvent inactive et le démon ne démarrait jamais.
+# default.target and not graphical-session.target: under Hyprland/sway, that target
+# (RefuseManualStart=yes) often stays inactive and the daemon never started.
 After=pipewire.service wireplumber.service
 
 [Service]

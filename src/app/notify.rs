@@ -1,5 +1,5 @@
-//! Notifications « Navi » (serveur pleamar) dans un thread dédié : un serveur lent ne fige pas l'UI.
-//! Les actions de la notification d'appel reviennent en [`Cmd`] par `on_cmd`.
+//! "Navi" notifications (pleamar server) in a dedicated thread: a slow server does not freeze the UI.
+//! The call notification's actions come back as a [`Cmd`] through `on_cmd`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -15,12 +15,12 @@ use crate::t;
 
 const APP: &str = "Navi";
 
-/// Le texte d'un SMS est contrôlé par l'expéditeur : neutralise le balisage autorisé par la spec.
+/// The text of an SMS is controlled by the sender: neutralises the markup allowed by the spec.
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Rafraîchissement de la bulle de sonnerie : un remplacement relance le délai de la carte pleamar.
+/// Ringing bubble refresh: a replacement restarts the pleamar card's delay.
 const TICK: Duration = Duration::from_secs(1);
 
 pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 'static) {
@@ -43,22 +43,13 @@ pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 's
     });
 }
 
-/// Nom du répertoire et numéro, sinon le numéro seul.
-fn caller(c: &Call) -> String {
-    match (c.name.as_deref(), c.number.as_deref()) {
-        (Some(name), Some(n)) if !n.is_empty() => format!("{name}\n{n}"),
-        (_, Some(n)) if !n.is_empty() => n.to_owned(),
-        _ => t!("hidden number").to_owned(),
-    }
-}
-
-/// La bulle de sonnerie (Décrocher / Refuser), remplacée sur place (même id) tant qu'elle sonne.
-/// Décroché, sortant : la fenêtre `bluez-msg-call` prend le relais, la bulle se ferme.
+/// The ringing bubble (Answer / Decline), replaced in place (same id) while it rings.
+/// Answered, outgoing: the `bluez-msg-call` window takes over, the bubble closes.
 struct Bubble<F> {
     on_cmd: F,
-    /// Id affiché ; 0 = aucun. Remis à 0 par l'écouteur à la fermeture (bouton, fermeture manuelle).
+    /// Displayed id; 0 = none. Reset to 0 by the listener on close (button, manual close).
     id: Arc<AtomicU32>,
-    /// Numéro affiché pendant la sonnerie ; `None` : pas de bulle.
+    /// Number displayed while ringing; `None`: no bubble.
     number: Option<String>,
 }
 
@@ -68,12 +59,12 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
             self.close();
             return;
         }
-        let number = caller(c);
+        let number = c.caller("\n");
         self.display(&number);
         self.number = Some(number);
     }
 
-    /// Garde la carte affichée ; une bulle fermée (bouton, ×) n'est pas recréée.
+    /// Keeps the card displayed; a closed bubble (button, ×) is not recreated.
     fn tick(&mut self) {
         if let Some(n) = &self.number
             && self.id.load(Ordering::Acquire) != 0
@@ -102,7 +93,7 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
             .timeout(Timeout::Never)
             .action("answer", t!("Answer"))
             .action("reject", t!("Decline"));
-        // Même id : pleamar met la carte à jour sans la refaire tomber ; l'écouteur existant reste valable.
+        // Same id: pleamar updates the card without making it drop again; the existing listener stays valid.
         let current = self.id.load(Ordering::Acquire);
         if current != 0 {
             n.id(current);
@@ -114,7 +105,7 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
                 let (on_cmd, slot) = (self.on_cmd.clone(), Arc::clone(&self.id));
                 thread::spawn(move || {
                     h.wait_for_action(|a| {
-                        // Carte fermée (bouton ou ×) : libérée avant la commande, l'état qui en découle en crée une neuve.
+                        // Card closed (button or ×): released before the command, the resulting state creates a new one.
                         let _ = slot.compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire);
                         let cmd = match a {
                             "answer" => Cmd::Answer,
@@ -155,13 +146,13 @@ mod tests {
     #[test]
     fn caller_name() {
         let mut c = Call::default();
-        assert_eq!(caller(&c), t!("hidden number"));
+        assert_eq!(c.caller("\n"), t!("Hidden number"));
         c.number = Some(String::new());
-        assert_eq!(caller(&c), t!("hidden number"));
+        assert_eq!(c.caller("\n"), t!("Hidden number"));
         c.number = Some("+331".into());
-        assert_eq!(caller(&c), "+331");
+        assert_eq!(c.caller("\n"), "+331");
         c.name = Some("Bob".into());
-        assert_eq!(caller(&c), "Bob\n+331");
+        assert_eq!(c.caller("\n"), "Bob\n+331");
     }
 
 }

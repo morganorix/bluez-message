@@ -1,5 +1,5 @@
-//! Réglages de l'app (`~/.config/bluez-message/settings.json`), écrits par le démon seul ; la GUI les reçoit
-//! par [`crate::engine::Out::Settings`] et les modifie par [`crate::engine::Cmd::Settings`].
+//! App settings (`~/.config/bluez-message/settings.json`), written by the daemon only; the GUI receives them
+//! through [`crate::engine::Out::Settings`] and changes them through [`crate::engine::Cmd::Settings`].
 
 use std::path::PathBuf;
 
@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::t;
 
-/// Durées de conservation proposées (jours) ; `None` : tout garder.
+/// Offered retention periods (days); `None`: keep everything.
 pub const RETENTIONS: [u32; 3] = [30, 90, 365];
 
-/// Taille de l'interface des fenêtres (zoom egui : texte et espacements ensemble).
+/// Window interface size (egui zoom: text and spacing together).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextSize {
@@ -21,10 +21,10 @@ pub enum TextSize {
 }
 
 impl TextSize {
-    /// Dans l'ordre d'affichage.
+    /// In display order.
     pub const ALL: [Self; 3] = [Self::Normal, Self::Large, Self::ExtraLarge];
 
-    /// Facteur de zoom de l'interface.
+    /// Interface zoom factor.
     #[must_use]
     pub const fn zoom(self) -> f32 {
         match self {
@@ -34,7 +34,7 @@ impl TextSize {
         }
     }
 
-    /// Taille suivante, en boucle.
+    /// Next size, looping.
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
@@ -57,42 +57,47 @@ impl TextSize {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Code de langue (`fr`, `pt_BR`…) ; `None` : celle du système.
+    /// Language code (`fr`, `pt_BR`…); `None`: the system's.
     pub lang: Option<String>,
     pub notify_sms: bool,
     pub notify_calls: bool,
-    /// Notification de SMS sans le texte.
+    /// SMS notification without the text.
     pub hide_preview: bool,
-    /// SMS et appels plus anciens effacés de l'historique local ; `None` : tout garder.
+    /// SMS and calls older than this are erased from the local history; `None`: keep everything.
     pub retention_days: Option<u32>,
     pub text_size: TextSize,
-    /// iPhone non relié : le démon relance la connexion Bluetooth régulièrement.
+    /// iPhone not linked: the daemon regularly retries the Bluetooth connection.
     pub auto_connect: bool,
+    /// Home country for the numbering plan (`fr`…, see [`crate::numbering`]); `None`: from the locale.
+    pub country: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true }
+        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None }
     }
 }
 
-/// Code de langue utilisable comme nom de fichier : lettres, chiffres, `_`, `-` (pas de traversée).
+/// Language code usable as a file name: letters, digits, `_`, `-` (no traversal).
 #[must_use]
 pub fn valid_lang(code: &str) -> bool {
     !code.is_empty() && code.len() <= 16 && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 impl Settings {
-    /// Contrôle des valeurs reçues d'un client.
+    /// Check of the values received from a client.
     ///
     /// # Errors
-    /// Message traduit : langue ou rétention invalide.
+    /// Translated message: invalid language, retention or country.
     pub fn validate(&self) -> Result<(), String> {
         if self.lang.as_deref().is_some_and(|l| !valid_lang(l)) {
             return Err(t!("invalid language code").to_owned());
         }
         if self.retention_days.is_some_and(|d| !RETENTIONS.contains(&d)) {
             return Err(t!("invalid retention").to_owned());
+        }
+        if self.country.as_deref().is_some_and(|c| crate::numbering::parse_code(c).is_none()) {
+            return Err(t!("unknown country").to_owned());
         }
         Ok(())
     }
@@ -101,7 +106,7 @@ impl Settings {
         crate::config::config_dir().map(|d| d.join("bluez-message/settings.json"))
     }
 
-    /// Réglages enregistrés ; absents ou invalides : défauts (avertissement au journal).
+    /// Saved settings; absent or invalid: defaults (warning in the log).
     pub fn load() -> Self {
         let Some(p) = Self::path() else { return Self::default() };
         let raw = match std::fs::read_to_string(&p) {
@@ -121,10 +126,10 @@ impl Settings {
         }
     }
 
-    /// Écriture atomique (fichier temporaire 0600 puis renommage).
+    /// Atomic write (temporary file 0600 then rename).
     ///
     /// # Errors
-    /// `HOME` absent ou écriture impossible.
+    /// `HOME` missing or write impossible.
     pub fn save(&self) -> std::io::Result<()> {
         let p = Self::path().ok_or_else(|| std::io::Error::other("HOME not set"))?;
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
@@ -152,7 +157,9 @@ mod tests {
         assert!(bad_lang.validate().is_err());
         let bad_days = Settings { retention_days: Some(7), ..Settings::default() };
         assert!(bad_days.validate().is_err());
-        let ok = Settings { lang: Some("pt_BR".into()), retention_days: Some(90), ..Settings::default() };
+        let bad_country = Settings { country: Some("xx".into()), ..Settings::default() };
+        assert!(bad_country.validate().is_err());
+        let ok = Settings { lang: Some("pt_BR".into()), retention_days: Some(90), country: Some("fr".into()), ..Settings::default() };
         assert!(ok.validate().is_ok());
     }
 }

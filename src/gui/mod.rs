@@ -1,5 +1,5 @@
-//! Socle commun des fenêtres egui (`bluez-message`, `bluez-msg-call`) : thème, composants et démarrage
-//! (runtime tokio, palette, client IPC du démon).
+//! Common base of the egui windows (`bluez-message`, `bluez-msg-call`): theme, components and startup
+//! (tokio runtime, palette, daemon IPC client).
 
 pub mod emoji;
 pub mod theme;
@@ -17,16 +17,16 @@ use crate::{config, ipc};
 
 use theme::Palette;
 
-/// Ce que reçoit la fenêtre : palette initiale, commandes vers le démon, événements du démon.
+/// What the window receives: initial palette, commands to the daemon, daemon events.
 pub struct Client {
     pub palette: Palette,
     pub tx: tokio_mpsc::UnboundedSender<Cmd>,
     pub events: mpsc::Receiver<ipc::Link>,
 }
 
-/// Rendu Vulkan seul s'il existe un adaptateur : la valeur par défaut d'eframe (Vulkan + GL) charge aussi
-/// le pilote GL de Mesa et LLVM, environ 110 Mo inutiles. Sans Vulkan, repli sur GL. `WGPU_BACKEND` garde
-/// la main.
+/// Vulkan-only rendering if there is an adapter: eframe's default (Vulkan + GL) also loads
+/// Mesa's GL driver and LLVM, about 110 MB for nothing. Without Vulkan, falls back to GL. `WGPU_BACKEND` keeps
+/// priority.
 fn wgpu_setup(rt: &tokio::runtime::Runtime) -> eframe::egui_wgpu::WgpuSetup {
     use eframe::egui_wgpu::{WgpuSetup, WgpuSetupCreateNew};
     use eframe::wgpu;
@@ -42,9 +42,9 @@ fn wgpu_setup(rt: &tokio::runtime::Runtime) -> eframe::egui_wgpu::WgpuSetup {
     WgpuSetup::CreateNew(setup)
 }
 
-/// Ouvre la fenêtre `viewport` et construit l'application par `make`. Avec `connect`, le client IPC tourne
-/// sur un runtime tokio et réveille l'affichage à chaque événement ; sans lui (démo), les commandes sont
-/// sans effet. Les erreurs sont préfixées par `bin`.
+/// Opens the `viewport` window and builds the app with `make`. With `connect`, the IPC client runs
+/// on a tokio runtime and wakes the display on each event; without it (demo), commands have
+/// no effect. Errors are prefixed with `bin`.
 pub fn run<A, F>(bin: &str, viewport: egui::ViewportBuilder, connect: bool, make: F) -> ExitCode
 where
     A: eframe::App + 'static,
@@ -57,7 +57,7 @@ where
             return ExitCode::FAILURE;
         }
     };
-    // Un seul thread : le client IPC n'a qu'une connexion à servir.
+    // Single thread: the IPC client has only one connection to serve.
     let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {

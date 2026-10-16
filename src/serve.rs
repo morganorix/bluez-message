@@ -1,26 +1,28 @@
-//! Mode démon : le moteur piloté en JSON lignes.
-//! Entrée (stdin) : `{"cmd":"send","to":…,"text":…}`, `{"cmd":"answer"}`, `{"cmd":"hangup"}`, `{"cmd":"quit"}`.
-//! Sortie (stdout) : voir [`Out`]. Fin de stdin = arrêt.
+//! Daemon mode: the engine driven through JSON lines.
+//! Input (stdin): `{"cmd":"send","to":…,"text":…}`, `{"cmd":"answer"}`, `{"cmd":"hangup"}`, `{"cmd":"quit"}`.
+//! Output (stdout): see [`Out`]. End of stdin = stop.
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::addr::BtAddr;
 use crate::engine::{Cmd, Engine, Out, parse_cmd};
 use crate::error::Result;
+use crate::ipc::MAX_LINE;
+use crate::t;
 
-/// Écrit une valeur en JSON sur une ligne de stdout (format des sorties CLI et démon).
+/// Writes a value as JSON on one stdout line (format of CLI and daemon outputs).
 pub fn emit<T: serde::Serialize>(v: &T) {
     if let Ok(s) = serde_json::to_string(v) {
         println!("{s}");
     }
 }
 
-/// Boucle du mode `serve` : commandes JSON sur stdin, sorties sur stdout, jusqu'à `quit` ou la fin de stdin.
+/// `serve` mode loop: JSON commands on stdin, outputs on stdout, until `quit` or end of stdin.
 ///
 /// # Errors
-/// Lecture de stdin impossible.
+/// Reading stdin impossible. A line longer than [`MAX_LINE`] bytes ends the loop, like on the socket.
 pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
     let (engine, mut events) = Engine::start(addr, interval);
     let printer = tokio::spawn(async move {
@@ -29,8 +31,18 @@ pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
         }
     });
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if (&mut stdin).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut buf).await? == 0 {
+            break;
+        }
+        if buf.last() != Some(&b'\n') && buf.len() > MAX_LINE {
+            emit(&Out::Error { msg: t!("line longer than {0} bytes rejected", MAX_LINE) });
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf);
         if line.trim().is_empty() {
             continue;
         }
@@ -44,7 +56,7 @@ pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
         }
     }
     engine.shutdown().await;
-    // Les tâches du moteur sont terminées : le canal se ferme, l'impression se vide puis s'arrête.
+    // The engine tasks are finished: the channel closes, printing drains then stops.
     let _ = tokio::time::timeout(Duration::from_secs(1), printer).await;
     Ok(())
 }

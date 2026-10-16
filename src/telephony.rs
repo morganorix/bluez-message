@@ -1,6 +1,6 @@
-//! Appels via le service `org.pipewire.Telephony` (bus session) : PipeWire tient le profil HFP
-//! (rôle `hfp_hf`) et l'audio SCO ; ce module ne fait que suivre les appels et les piloter.
-//! Les états sont traduits en [`HfEvent`] pour garder la machine d'appel de l'interface.
+//! Calls through the `org.pipewire.Telephony` service (session bus): PipeWire holds the HFP profile
+//! (role `hfp_hf`) and the SCO audio; this module only tracks calls and drives them.
+//! States are translated into [`HfEvent`] to keep the interface's call state machine.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -31,14 +31,14 @@ const MAX_NUMBER: usize = 64;
 type Props = HashMap<String, OwnedValue>;
 type Objects = HashMap<OwnedObjectPath, HashMap<String, Props>>;
 
-/// AG dont `Address` correspond à `addr` (casse ignorée : l'adresse lue est normalisée).
+/// AG whose `Address` matches `addr` (case ignored: the address read is normalised).
 fn pick_ag(objs: &Objects, addr: &BtAddr) -> Option<OwnedObjectPath> {
     objs.iter()
         .find(|(_, ifs)| ifs.get(AG_IFACE).and_then(|p| prop_str(p, "Address")).is_some_and(|a| a.parse::<BtAddr>().is_ok_and(|a| a == *addr)))
         .map(|(path, _)| path.clone())
 }
 
-/// État `State` d'un appel Telephony ; état inconnu gardé tel quel (borné).
+/// `State` of a Telephony call; unknown state kept as is (bounded).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CallState {
     Incoming,
@@ -65,7 +65,7 @@ impl CallState {
         }
     }
 
-    /// Priorité pour l'appel affiché ; `None` : non affiché (`waiting`, inconnu).
+    /// Priority for the displayed call; `None`: not displayed (`waiting`, unknown).
     fn rank(&self) -> Option<u8> {
         match self {
             Self::Active => Some(0),
@@ -77,7 +77,7 @@ impl CallState {
         }
     }
 
-    /// En communication (décroché, éventuellement mis en attente).
+    /// In conversation (answered, possibly put on hold).
     fn is_up(&self) -> bool {
         matches!(self, Self::Active | Self::Held)
     }
@@ -87,15 +87,15 @@ fn ind(name: Indicator, value: u8) -> HfEvent {
     HfEvent::Indicator { name, value }
 }
 
-/// Événements d'un état d'appel ; `None` pour un état sans effet (`waiting`, inconnu).
+/// Events of a call state; `None` for a state with no effect (`waiting`, unknown).
 fn call_events(state: &CallState, number: &str) -> Option<Vec<HfEvent>> {
     Some(match state {
         CallState::Incoming if number.is_empty() => vec![HfEvent::IncomingCall],
         CallState::Incoming => vec![HfEvent::IncomingCall, HfEvent::Clip { number: number.into() }],
         CallState::Dialing => vec![ind(Indicator::CallSetup, 2)],
         CallState::Alerting => vec![ind(Indicator::CallSetup, 3)],
-        // Ordre HFP : call=1 avant callsetup=0, sinon l'état client clôt l'appel et perd le numéro ;
-        // le numéro suit, pour un client qui découvre l'appel déjà en cours.
+        // HFP order: call=1 before callsetup=0, otherwise the client state closes the call and loses the number;
+        // the number follows, for a client discovering the call already in progress.
         CallState::Active | CallState::Held => vec![ind(Indicator::Call, 1), ind(Indicator::CallSetup, 0), HfEvent::Clip { number: number.into() }],
         CallState::Disconnected => end_events(),
         CallState::Waiting | CallState::Other(_) => return None,
@@ -112,17 +112,17 @@ struct Call {
     number: String,
 }
 
-/// État suivi : AG retenu, ses appels, et l'appel dernièrement signalé (seuls ses changements émettent).
+/// Tracked state: selected AG, its calls, and the call last reported (only its changes emit).
 #[derive(Debug, Default)]
 struct Tracker {
     ag: Option<OwnedObjectPath>,
     calls: HashMap<OwnedObjectPath, Call>,
     shown: Option<Call>,
-    /// Derniers appels secondaires signalés (mis en attente, en attente de réponse).
+    /// Last secondary calls reported (put on hold, waiting to be answered).
     lines: Lines,
 }
 
-/// Appels secondaires : l'appel affiché est en attente, numéro mis en attente, numéro qui attend une réponse.
+/// Secondary calls: the displayed call is on hold, number put on hold, number waiting for an answer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Lines {
     hold: bool,
@@ -141,7 +141,7 @@ impl Tracker {
         self.ag.as_ref().is_some_and(|ag| path.strip_prefix(ag.as_str()).is_some_and(|r| r.starts_with('/')))
     }
 
-    /// Événements du passage de l'appel affiché précédent à l'appel prioritaire courant.
+    /// Events of the switch from the previous displayed call to the current priority call.
     fn emit(&mut self) -> Vec<HfEvent> {
         let cur = self
             .calls
@@ -149,7 +149,7 @@ impl Tracker {
             .filter_map(|c| c.state.rank().map(|r| (r, c)))
             .min_by(|(ra, a), (rb, b)| ra.cmp(rb).then_with(|| a.number.cmp(&b.number)))
             .map(|(_, c)| c.clone());
-        // Secondaires : un appel mis en attente derrière l'appel affiché, un second appel qui sonne.
+        // Secondary: a call put on hold behind the displayed call, a second ringing call.
         let other = |state: CallState| self.calls.values().filter(|c| c.state == state).map(|c| c.number.clone()).min();
         let lines = match &cur {
             Some(c) if c.state == CallState::Held => Lines { hold: true, held: None, waiting: other(CallState::Waiting) },
@@ -160,7 +160,7 @@ impl Tracker {
         if cur != self.shown {
             let up = |c: &Option<Call>| c.as_ref().is_some_and(|c| c.state.is_up());
             evs = match &cur {
-                // Plus d'appel en communication, un autre sonne ou compose : clore d'abord l'ancien.
+                // No call in conversation any more, another rings or dials: close the old one first.
                 Some(c) if up(&self.shown) && !up(&cur) => {
                     let mut e = end_events();
                     e.extend(call_events(&c.state, &c.number).unwrap_or_default());
@@ -186,7 +186,7 @@ impl Tracker {
         vec![HfEvent::Connected, HfEvent::SlcReady]
     }
 
-    /// Perte de l'AG ou du service : fin d'appel éventuelle puis `Disconnected`.
+    /// AG or service lost: possible end of call then `Disconnected`.
     fn lose_ag(&mut self) -> Vec<HfEvent> {
         if self.ag.take().is_none() {
             return vec![];
@@ -197,13 +197,13 @@ impl Tracker {
         evs
     }
 
-    fn upsert_call(&mut self, path: OwnedObjectPath, p: &Props) -> Vec<HfEvent> {
+    fn upsert_call(&mut self, path: &OwnedObjectPath, p: &Props) -> Vec<HfEvent> {
         if !self.owns_call(path.as_str()) {
             return vec![];
         }
         let state = prop_str(p, "State");
-        // Appel inconnu : créé seulement sur un état réel, sinon une entrée `Other("")` resterait sans retrait.
-        if !self.calls.contains_key(&path) && (matches!(state, None | Some("disconnected")) || self.calls.len() >= MAX_CALLS) {
+        // Unknown call: created only on a real state, otherwise an `Other("")` entry would never be removed.
+        if !self.calls.contains_key(path) && (matches!(state, None | Some("disconnected")) || self.calls.len() >= MAX_CALLS) {
             return vec![];
         }
         let call = self.calls.entry(path.clone()).or_insert_with(|| Call { state: CallState::Other(String::new()), number: String::new() });
@@ -215,7 +215,7 @@ impl Tracker {
         }
         tracing::debug!(path = path.as_str(), state = ?call.state, number = mask(&call.number), "call");
         if call.state == CallState::Disconnected {
-            self.calls.remove(&path);
+            self.calls.remove(path);
         }
         self.emit()
     }
@@ -234,7 +234,7 @@ impl Tracker {
             (OM_IFACE, "InterfacesAdded") => {
                 let Ok((obj, ifs)) = m.body().deserialize::<(OwnedObjectPath, HashMap<String, Props>)>() else { return vec![] };
                 if let Some(p) = ifs.get(CALL_IFACE) {
-                    return self.upsert_call(obj, p);
+                    return self.upsert_call(&obj, p);
                 }
                 if self.ag.is_none() && pick_ag(&HashMap::from([(obj.clone(), ifs)]), addr).is_some() {
                     return self.set_ag(obj);
@@ -256,13 +256,13 @@ impl Tracker {
                 if changed_iface != CALL_IFACE {
                     return vec![];
                 }
-                self.upsert_call(OwnedObjectPath::from(path.to_owned()), &props)
+                self.upsert_call(&OwnedObjectPath::from(path.to_owned()), &props)
             }
             _ => vec![],
         }
     }
 
-    /// Réaligne sur l'état du service, en n'émettant que les différences ; `Err` si le service est absent.
+    /// Realigns with the service state, emitting only the differences; `Err` if the service is absent.
     async fn sync(&mut self, conn: &Connection, addr: &BtAddr) -> Result<Vec<HfEvent>> {
         let found = pick_ag(&managed(conn, ROOT).await?, addr);
         let mut evs = vec![];
@@ -278,7 +278,7 @@ impl Tracker {
                 self.calls.retain(|p, _| objs.get(p).is_some_and(|ifs| ifs.contains_key(CALL_IFACE)));
                 for (path, ifs) in objs {
                     if let Some(p) = ifs.get(CALL_IFACE) {
-                        evs.extend(self.upsert_call(path, p));
+                        evs.extend(self.upsert_call(&path, p));
                     }
                 }
                 evs.extend(self.emit());
@@ -288,7 +288,7 @@ impl Tracker {
         Ok(evs)
     }
 
-    /// Premier appel trouvé dans l'ordre de priorité `states` (pas l'ordre de la table).
+    /// First call found in the priority order `states` (not the table order).
     fn find(&self, states: &[CallState]) -> Option<OwnedObjectPath> {
         states.iter().find_map(|s| self.calls.iter().filter(|(_, c)| c.state == *s).map(|(p, _)| p).min_by_key(|p| p.as_str()).cloned())
     }
@@ -318,7 +318,7 @@ impl Tracker {
     }
 }
 
-/// Appel de méthode borné dans le temps : un service figé ne bloque pas la boucle.
+/// Time-bounded method call: a frozen service does not block the loop.
 async fn call(conn: &Connection, path: &str, iface: &str, method: &str) -> Result<Message> {
     call_with(conn, path, iface, method, &()).await
 }
@@ -337,12 +337,12 @@ async fn managed(conn: &Connection, path: &str) -> Result<Objects> {
     Ok(call(conn, path, OM_IFACE, "GetManagedObjects").await?.body().deserialize::<Objects>()?)
 }
 
-/// Suit les appels de `addr` jusqu'à la fermeture de `cmds` (`Ok`). `on_event` reçoit `Connected`/`SlcReady`
-/// à l'apparition du téléphone, puis les événements d'appel ; `on_warn` signale une fois l'absence du service.
-/// Sur `Err`, la fin d'appel et `Disconnected` ont déjà été émis.
+/// Tracks the calls of `addr` until `cmds` is closed (`Ok`). `on_event` receives `Connected`/`SlcReady`
+/// when the phone appears, then the call events; `on_warn` reports the service's absence once.
+/// On `Err`, the end of call and `Disconnected` have already been emitted.
 ///
 /// # Errors
-/// Bus session injoignable ou abonnement refusé (fin d'appel et `Disconnected` déjà émis).
+/// Session bus unreachable or subscription refused (end of call and `Disconnected` already emitted).
 pub async fn run(
     addr: &BtAddr,
     cmds: &mut mpsc::Receiver<HfCmd>,
@@ -350,8 +350,8 @@ pub async fn run(
     mut on_warn: impl FnMut(String),
 ) -> Result<()> {
     let conn = Connection::session().await?;
-    // Abonnements avant la synchro : aucun signal perdu entre les deux. Le filtre `sender` d'une règle
-    // ne vaut que pour le nom unique : l'émetteur est contrôlé contre le propriétaire courant.
+    // Subscriptions before the sync: no signal lost in between. A rule's `sender` filter
+    // only applies to the unique name: the sender is checked against the current owner.
     let dbus = fdo::DBusProxy::new(&conn).await?;
     let mut owners = dbus.receive_name_owner_changed_with_args(&[(0, SERVICE)]).await?;
     let rule = MatchRule::builder().msg_type(Type::Signal).path_namespace(ROOT)?.build();
@@ -463,14 +463,14 @@ mod tests {
     fn call_lifecycle() {
         let mut t = Tracker::default();
         assert_eq!(t.set_ag(path("/org/pipewire/Telephony/ag1")), [HfEvent::Connected, HfEvent::SlcReady]);
-        // Appel d'un autre AG : ignoré.
-        assert!(t.upsert_call(path("/org/pipewire/Telephony/ag10/call1"), &props(&[("State", "incoming")])).is_empty());
+        // Call from another AG: ignored.
+        assert!(t.upsert_call(&path("/org/pipewire/Telephony/ag10/call1"), &props(&[("State", "incoming")])).is_empty());
         let c = path("/org/pipewire/Telephony/ag1/call1");
-        let evs = t.upsert_call(c.clone(), &props(&[("LineIdentification", "+331"), ("State", "incoming")]));
+        let evs = t.upsert_call(&c, &props(&[("LineIdentification", "+331"), ("State", "incoming")]));
         assert_eq!(evs, [HfEvent::IncomingCall, HfEvent::Clip { number: "+331".into() }]);
-        assert_eq!(t.upsert_call(c.clone(), &props(&[("State", "active")])), [ind("call", 1), ind("callsetup", 0), HfEvent::Clip { number: "+331".into() }]);
-        assert_eq!(t.upsert_call(c.clone(), &props(&[("State", "disconnected")])), end_events());
-        // Retrait après `disconnected` : pas de second événement de fin.
+        assert_eq!(t.upsert_call(&c, &props(&[("State", "active")])), [ind("call", 1), ind("callsetup", 0), HfEvent::Clip { number: "+331".into() }]);
+        assert_eq!(t.upsert_call(&c, &props(&[("State", "disconnected")])), end_events());
+        // Removal after `disconnected`: no second end event.
         assert!(t.remove_call(&c).is_empty());
         assert_eq!(t.lose_ag(), [HfEvent::Disconnected]);
         assert!(t.lose_ag().is_empty());
@@ -481,18 +481,18 @@ mod tests {
         let mut t = Tracker::default();
         t.set_ag(path("/org/pipewire/Telephony/ag1"));
         let (a, b) = (path("/org/pipewire/Telephony/ag1/call1"), path("/org/pipewire/Telephony/ag1/call2"));
-        t.upsert_call(a.clone(), &props(&[("State", "active")]));
-        // Second appel entrant : l'appel actif reste affiché, rien n'est émis.
-        assert!(t.upsert_call(b.clone(), &props(&[("LineIdentification", "+332"), ("State", "incoming")])).is_empty());
-        // Propriété inchangée : pas de réémission.
-        assert!(t.upsert_call(a.clone(), &props(&[("State", "active")])).is_empty());
+        t.upsert_call(&a, &props(&[("State", "active")]));
+        // Second incoming call: the active call stays displayed, nothing is emitted.
+        assert!(t.upsert_call(&b, &props(&[("LineIdentification", "+332"), ("State", "incoming")])).is_empty());
+        // Property unchanged: no re-emission.
+        assert!(t.upsert_call(&a, &props(&[("State", "active")])).is_empty());
         let mut want = end_events();
         want.extend([HfEvent::IncomingCall, HfEvent::Clip { number: "+332".into() }]);
         assert_eq!(t.remove_call(&a), want);
-        // Fin inconnue : ignorée.
-        assert!(t.upsert_call(path("/org/pipewire/Telephony/ag1/call9"), &props(&[("State", "disconnected")])).is_empty());
-        // Propriété sans état sur un appel inconnu : pas d'entrée fantôme.
-        assert!(t.upsert_call(path("/org/pipewire/Telephony/ag1/call8"), &props(&[("LineIdentification", "+338")])).is_empty());
+        // Unknown end: ignored.
+        assert!(t.upsert_call(&path("/org/pipewire/Telephony/ag1/call9"), &props(&[("State", "disconnected")])).is_empty());
+        // Property without state on an unknown call: no phantom entry.
+        assert!(t.upsert_call(&path("/org/pipewire/Telephony/ag1/call8"), &props(&[("LineIdentification", "+338")])).is_empty());
         assert!(!t.calls.contains_key(&path("/org/pipewire/Telephony/ag1/call8")));
     }
 
@@ -500,7 +500,7 @@ mod tests {
     fn losing_ag_ends_call() {
         let mut t = Tracker::default();
         t.set_ag(path("/org/pipewire/Telephony/ag1"));
-        t.upsert_call(path("/org/pipewire/Telephony/ag1/call1"), &props(&[("State", "active")]));
+        t.upsert_call(&path("/org/pipewire/Telephony/ag1/call1"), &props(&[("State", "active")]));
         let mut want = end_events();
         want.push(HfEvent::Disconnected);
         assert_eq!(t.lose_ag(), want);
@@ -511,16 +511,16 @@ mod tests {
         let mut t = Tracker::default();
         t.set_ag(path("/org/pipewire/Telephony/ag1"));
         let (a, b) = (path("/org/pipewire/Telephony/ag1/call1"), path("/org/pipewire/Telephony/ag1/call2"));
-        t.upsert_call(a.clone(), &props(&[("LineIdentification", "+331"), ("State", "active")]));
+        t.upsert_call(&a, &props(&[("LineIdentification", "+331"), ("State", "active")]));
         let lines = |hold, held: Option<&str>, waiting: Option<&str>| HfEvent::Lines { hold, held: held.map(Into::into), waiting: waiting.map(Into::into) };
-        assert_eq!(t.upsert_call(b.clone(), &props(&[("LineIdentification", "+332"), ("State", "waiting")])), [lines(false, None, Some("+332"))]);
+        assert_eq!(t.upsert_call(&b, &props(&[("LineIdentification", "+332"), ("State", "waiting")])), [lines(false, None, Some("+332"))]);
         assert_eq!(t.find(&[CallState::Waiting, CallState::Incoming]), Some(b.clone()));
-        // Attente + répondre : a passe en attente, b en communication.
-        t.upsert_call(a.clone(), &props(&[("State", "held")]));
-        let evs = t.upsert_call(b.clone(), &props(&[("State", "active")]));
+        // Hold + answer: a goes on hold, b in conversation.
+        t.upsert_call(&a, &props(&[("State", "held")]));
+        let evs = t.upsert_call(&b, &props(&[("State", "active")]));
         assert_eq!(evs.last(), Some(&lines(false, Some("+331"), None)));
         assert!(evs.contains(&HfEvent::Clip { number: "+332".into() }));
-        // Raccrocher vise l'appel actif, pas celui en attente.
+        // Hanging up targets the active call, not the one on hold.
         assert_eq!(t.find(&[CallState::Active, CallState::Dialing, CallState::Alerting, CallState::Held, CallState::Incoming]), Some(b.clone()));
         let evs = t.remove_call(&b);
         assert_eq!(evs.last(), Some(&lines(true, None, None)));

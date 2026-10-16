@@ -1,20 +1,20 @@
-//! Numéros et correspondants : clé de regroupement, correspondant d'un SMS, recherche par nom ou numéro.
+//! Numbers and correspondents: correspondent of an SMS, search by name or number.
 
 use crate::map::Sms;
 
-/// Numéro et nom (MAP) du correspondant d'un SMS.
+/// Number and name (MAP) of an SMS correspondent.
 #[must_use]
 pub fn sms_peer(sms: &Sms, sent: bool) -> (&str, &str) {
     if sent { (pick(&sms.recipient_address, &sms.recipient), &sms.recipient) } else { (pick(&sms.address, &sms.sender), &sms.sender) }
 }
 
-/// Normalise un numéro pour regrouper « +33 7 12… » et « 07 12… » : 9 derniers chiffres.
-pub fn number_key(n: &str) -> String {
-    let digits: String = n.chars().filter(char::is_ascii_digit).collect();
-    if digits.len() >= 9 { digits[digits.len() - 9..].to_owned() } else if digits.is_empty() { n.trim().to_owned() } else { digits }
+/// Number without its formatting separators (spaces, `-`, `.`, parentheses).
+#[must_use]
+pub fn strip_separators(n: &str) -> String {
+    n.chars().filter(|c| !matches!(c, ' ' | '-' | '.' | '(' | ')')).collect()
 }
 
-/// Minuscules sans accents, pour comparer des noms.
+/// Lowercase without accents, to compare names.
 pub(crate) fn fold(s: &str) -> String {
     s.chars()
         .flat_map(char::to_lowercase)
@@ -32,7 +32,7 @@ pub(crate) fn fold(s: &str) -> String {
         .collect()
 }
 
-/// Recherche décodée une fois : morceau de nom replié, ou chiffres si la saisie est un numéro.
+/// Search decoded once: folded name fragment, or digits if the input is a number.
 pub(crate) struct Query {
     name: String,
     digits: Option<String>,
@@ -45,14 +45,15 @@ impl Query {
         Self { name: fold(q), digits: numeric.then(|| digits(q)) }
     }
 
-    /// `folded` : nom déjà passé par `fold`.
+    /// `folded`: name already passed through `fold`.
     pub(crate) fn hits(&self, folded: &str, number: &str) -> bool {
         match &self.digits {
             None => folded.contains(&self.name),
             Some(qd) if qd.is_empty() => self.name.is_empty(),
             Some(qd) => {
+                // "06 12…" also finds "+33 6 12…": national form rebuilt from the last 9 digits.
                 let nd = digits(number);
-                nd.contains(qd.as_str()) || (nd.len() >= 9 && format!("0{}", number_key(number)).contains(qd.as_str()))
+                nd.contains(qd.as_str()) || (nd.len() >= 9 && format!("0{}", &nd[nd.len() - 9..]).contains(qd.as_str()))
             }
         }
     }
@@ -62,24 +63,26 @@ fn digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
 }
 
-/// `q` trouve ce correspondant : morceau du nom (casse et accents ignorés) ou, si `q` est un numéro, suite de
-/// chiffres du numéro sous sa forme internationale ou nationale (`+33 6…` comme `06…`).
+/// `q` matches this correspondent: name fragment (case and accents ignored) or, if `q` is a number, run of
+/// digits of the number in its international or national form (`+33 6…` as well as `06…`).
 #[must_use]
 pub fn matches(q: &str, name: &str, number: &str) -> bool {
     Query::new(q).hits(&fold(name), number)
 }
 
-/// Texte venu du téléphone ou du réseau (expéditeur, numéro, SMS, contact) : retire les caractères de
-/// contrôle (sauf `\n` si `multiline`), les marques de direction bidi et les caractères invisibles, qui
-/// permettent de maquiller un nom ou un numéro affiché. Les séparateurs U+2028/2029 deviennent `\n` en
-/// multiligne. Le ZWJ (U+200D) des emojis composés est gardé.
+/// Text coming from the phone or the network (sender, number, SMS, contact): removes control
+/// characters (except `\n` if `multiline`), bidi direction marks and invisible characters, which
+/// allow a displayed name or number to be disguised. U+2028/2029 separators become `\n` in
+/// multiline. Kept on purpose (format characters with a visible role): ZWJ U+200D (composed emojis),
+/// ZWNJ U+200C (Persian, Indic scripts) and tags U+E0020-E007F (subdivision flags).
 #[must_use]
 pub fn clean(s: &str, multiline: bool) -> String {
     s.chars()
         .filter_map(|c| match c {
             '\u{2028}' | '\u{2029}' => multiline.then_some('\n'),
             '\n' if multiline => Some(c),
-            '\u{061C}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' => None,
+            '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' => None,
             c if c.is_control() => None,
             c => Some(c),
         })
@@ -98,11 +101,13 @@ mod tests {
     fn clean_strips_controls_and_bidi() {
         assert_eq!(clean("Banque\u{202E}gnp.exe", false), "Banquegnp.exe");
         assert_eq!(clean("+33\u{2066}6\u{200F}12\0", false), "+33612");
+        assert_eq!(clean("Al\u{00AD}i\u{2062}ce\u{206A}\u{FFF9}\u{180E}", false), "Alice");
+        assert_eq!(clean("\u{1F3F4}\u{E0067}\u{E007F} a\u{200C}b", false), "\u{1F3F4}\u{E0067}\u{E007F} a\u{200C}b");
         assert_eq!(clean("a\r\nb\tc", false), "abc");
         assert_eq!(clean("a\r\nb", true), "a\nb");
         assert_eq!(clean("a\u{2028}b\u{2029}c", true), "a\nb\nc");
         assert_eq!(clean("\u{FEFF}B\u{200B}o\u{2060}b\u{2028}", false), "Bob");
-        // ZWJ des emojis composés gardé.
+        // ZWJ of composed emojis kept.
         assert_eq!(clean("👨\u{200D}👩", true), "👨\u{200D}👩");
     }
 }

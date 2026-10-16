@@ -1,26 +1,26 @@
-//! Traduction de l'interface. Les textes source sont en anglais dans le code (`t!("…")`) ; la langue
-//! vient de la locale du système (`LC_ALL` > `LC_MESSAGES` > `LANG`, ou `BLUEZ_MESSAGE_LANG` pour forcer).
-//! Fichiers `<lang>.json` (`{ "English source": "Traduction" }`) : ceux embarqués (`locales/`), puis ceux
-//! de l'utilisateur dans `$XDG_CONFIG_HOME/bluez-message/locales/` qui les complètent ou les remplacent.
-//! Sans fichier pour la langue : anglais. Voir `locales/README.md`.
+//! Interface translation. Source texts are in English in the code (`t!("…")`); the language
+//! comes from the system locale (`LC_ALL` > `LC_MESSAGES` > `LANG`, or `BLUEZ_MESSAGE_LANG` to force it).
+//! `<lang>.json` files (`{ "English source": "Translation" }`): the embedded ones (`locales/`), then those
+//! of the user in `$XDG_CONFIG_HOME/bluez-message/locales/` which complete or replace them.
+//! Without a file for the language: English. See `locales/README.md`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{PoisonError, RwLock};
 
-/// Traductions livrées avec les binaires.
+/// Translations shipped with the binaries.
 const EMBEDDED: &[(&str, &str)] = &[("fr", include_str!("../locales/fr.json"))];
 
-/// Gabarit : toutes les clés (valeurs vides), tenu à jour par les tests.
+/// Template: all keys (empty values), kept up to date by the tests.
 pub const TEMPLATE: &str = include_str!("../locales/template.json");
 
 type Table = HashMap<String, String>;
 
-/// Table en vigueur. Remplaçable à chaud ([`set_lang`]) : l'ancienne reste en mémoire (quelques Ko par
-/// changement de langue) pour que les `&'static str` déjà rendus restent valides.
+/// Table in effect. Hot-replaceable ([`set_lang`]): the old one stays in memory (a few KB per
+/// language change) so that the `&'static str` already rendered stay valid.
 static TABLE: RwLock<Option<&'static Table>> = RwLock::new(None);
 
-/// Traduction de `s` dans la langue choisie, ou `s` lui-même.
+/// Translation of `s` in the chosen language, or `s` itself.
 pub fn tr(s: &'static str) -> &'static str {
     table().get(s).map_or(s, String::as_str)
 }
@@ -29,12 +29,12 @@ fn table() -> &'static Table {
     if let Some(t) = *TABLE.read().unwrap_or_else(PoisonError::into_inner) {
         return t;
     }
-    // Premier appel : langue du réglage enregistré, sinon du système.
+    // First call: language of the saved setting, otherwise the system's.
     TABLE.write().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(|| Box::leak(Box::new(load(stored_lang()))))
 }
 
-/// Change la langue (`None` : celle du système) ; `BLUEZ_MESSAGE_LANG` garde la priorité.
-/// Chaque langue n'est chargée (et laissée en mémoire) qu'une fois.
+/// Changes the language (`None`: the system's); `BLUEZ_MESSAGE_LANG` keeps priority.
+/// Each language is loaded (and left in memory) only once.
 pub fn set_lang(lang: Option<&str>) {
     static LOADED: std::sync::Mutex<BTreeMap<Option<String>, &'static Table>> = std::sync::Mutex::new(BTreeMap::new());
     let key = lang.filter(|l| crate::settings::valid_lang(l)).map(str::to_owned);
@@ -42,7 +42,7 @@ pub fn set_lang(lang: Option<&str>) {
     *TABLE.write().unwrap_or_else(PoisonError::into_inner) = Some(t);
 }
 
-/// Langue du réglage enregistré, lue sans passer par `t!` (appelée pendant l'initialisation de la table).
+/// Language of the saved setting, read without going through `t!` (called while the table is being initialised).
 fn stored_lang() -> Option<String> {
     #[derive(serde::Deserialize)]
     struct Only {
@@ -53,7 +53,7 @@ fn stored_lang() -> Option<String> {
     only.lang.filter(|l| crate::settings::valid_lang(l))
 }
 
-/// Langues disponibles : anglais, traductions embarquées et fichiers de l'utilisateur.
+/// Available languages: English, embedded translations and the user's files.
 pub fn available() -> Vec<String> {
     let mut out = BTreeSet::from(["en".to_owned()]);
     out.extend(EMBEDDED.iter().map(|(l, _)| (*l).to_owned()));
@@ -71,7 +71,7 @@ pub fn available() -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Nom d'une langue dans cette langue ; à défaut, son code.
+/// Name of a language in that language; otherwise its code.
 #[must_use]
 pub fn native_name(code: &str) -> &str {
     match code.split(['_', '-']).next().unwrap_or(code) {
@@ -92,8 +92,8 @@ pub fn native_name(code: &str) -> &str {
     }
 }
 
-/// Remplace `{0}`, `{1}`… de `pattern` par `args`, en un seul passage : une valeur insérée (corps de
-/// SMS, nom) contenant `{1}` n'est jamais réinterprétée.
+/// Replaces `{0}`, `{1}`… of `pattern` with `args`, in a single pass: an inserted value (SMS
+/// body, name) containing `{1}` is never reinterpreted.
 pub fn fill(pattern: &str, args: &[&dyn std::fmt::Display]) -> String {
     let mut out = String::with_capacity(pattern.len());
     let mut rest = pattern;
@@ -112,14 +112,14 @@ pub fn fill(pattern: &str, args: &[&dyn std::fmt::Display]) -> String {
     out
 }
 
-/// Marqueur `{n}` (chiffres ASCII seulement) en tête de `s` : numéro et longueur.
+/// `{n}` marker (ASCII digits only) at the start of `s`: number and length.
 fn marker(s: &str) -> Option<(usize, usize)> {
     let body = s.strip_prefix('{')?;
     let end = body.find(|c: char| !c.is_ascii_digit())?;
     (end > 0 && body[end..].starts_with('}')).then(|| body[..end].parse().ok().map(|n| (n, end + 2)))?
 }
 
-/// `t!("Text")` traduit ; `t!("Sent to {0}", who)` traduit puis remplace les marqueurs.
+/// `t!("Text")` translates; `t!("Sent to {0}", who)` translates then replaces the markers.
 #[macro_export]
 macro_rules! t {
     ($s:literal) => {
@@ -130,8 +130,8 @@ macro_rules! t {
     };
 }
 
-/// Codes à essayer, du plus général au plus précis : `pt_BR.UTF-8@euro` → `["pt", "pt_BR"]`.
-/// `BLUEZ_MESSAGE_LANG`, puis `pref` (réglage), puis la locale du système.
+/// Codes to try, from the most general to the most specific: `pt_BR.UTF-8@euro` → `["pt", "pt_BR"]`.
+/// `BLUEZ_MESSAGE_LANG`, then `pref` (setting), then the system locale.
 fn langs(pref: Option<String>) -> Vec<String> {
     let env = |v: &str| std::env::var(v).ok().filter(|s| !s.is_empty());
     let raw = env("BLUEZ_MESSAGE_LANG")
@@ -139,7 +139,7 @@ fn langs(pref: Option<String>) -> Vec<String> {
         .or_else(|| ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|v| env(v)))
         .unwrap_or_default();
     let code = raw.split(['.', '@']).next().unwrap_or_default();
-    // Nom de fichier : lettres, chiffres, `_` et `-` seulement (pas de traversée de chemin).
+    // File name: letters, digits, `_` and `-` only (no path traversal).
     if code.is_empty() || code == "C" || code == "POSIX" || !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return vec![];
     }
@@ -168,8 +168,8 @@ fn load(pref: Option<String>) -> Table {
     table
 }
 
-/// Ajoute les traductions valides de `json` : valeur vide ignorée (repli), marqueurs `{n}` différents de
-/// la source rejetés (le texte affiché perdrait ou inventerait une valeur).
+/// Adds the valid translations from `json`: empty value ignored (fallback), `{n}` markers different from
+/// the source rejected (the displayed text would lose or invent a value).
 fn merge(table: &mut HashMap<String, String>, json: &str, origin: &str) {
     let map: BTreeMap<String, String> = match serde_json::from_str(json) {
         Ok(m) => m,
@@ -190,7 +190,7 @@ fn merge(table: &mut HashMap<String, String>, json: &str, origin: &str) {
     }
 }
 
-/// Marqueurs `{0}`, `{1}`… présents dans `s`.
+/// Markers `{0}`, `{1}`… present in `s`.
 #[must_use]
 pub fn markers(s: &str) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
@@ -205,16 +205,16 @@ pub fn markers(s: &str) -> BTreeSet<usize> {
     out
 }
 
-/// Clés du gabarit.
+/// Template keys.
 #[must_use]
 pub fn template_keys() -> BTreeSet<String> {
     serde_json::from_str::<BTreeMap<String, String>>(TEMPLATE).map(|m| m.into_keys().collect()).unwrap_or_default()
 }
 
-/// Contrôle d'un fichier de traduction : clés manquantes, inconnues, marqueurs incohérents.
+/// Check of a translation file: missing keys, unknown keys, inconsistent markers.
 ///
 /// # Errors
-/// Message traduit si le JSON est illisible.
+/// Translated message if the JSON is unreadable.
 pub fn check(json: &str) -> Result<Vec<String>, String> {
     let map: BTreeMap<String, String> = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let keys = template_keys();
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(t.len(), 1);
     }
 
-    /// Littéraux `t!("…")` du code source.
+    /// `t!("…")` literals of the source code.
     fn source_keys() -> BTreeSet<String> {
         fn walk(dir: &std::path::Path, out: &mut BTreeSet<String>) {
             for e in std::fs::read_dir(dir).unwrap().flatten() {
@@ -273,7 +273,7 @@ mod tests {
                     let src = std::fs::read_to_string(&p).unwrap();
                     let mut rest = src.as_str();
                     while let Some(i) = rest.find("t!(\"") {
-                        // `print!(`, `assert!(`… ne sont pas `t!(`.
+                        // `print!(`, `assert!(`… are not `t!(`.
                         let ident = rest[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
                         rest = &rest[i + 4..];
                         if ident {
@@ -290,7 +290,7 @@ mod tests {
         }
         let mut out = BTreeSet::new();
         walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut out);
-        // Clés de ce module (contrôle d'un fichier).
+        // Keys of this module (check of a file).
         out.extend(["missing: {0}", "unknown key: {0}", "{n} markers differ: {0}"].map(String::from));
         out
     }

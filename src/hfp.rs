@@ -1,4 +1,4 @@
-//! Unité mains libres (HFP, rôle HF) via BlueZ `ProfileManager1` : signalisation seulement, pas d'audio SCO.
+//! Hands-free unit (HFP, HF role) through BlueZ `ProfileManager1`: signalling only, no SCO audio.
 
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -17,7 +17,7 @@ use crate::t;
 const UUID_HFP_HF: &str = "0000111e-0000-1000-8000-00805f9b34fb";
 const PROFILE_PATH: &str = "/org/bluez_message/hfp";
 
-/// Séquence d'initialisation SLC ; chaque commande est envoyée après le `OK` de la précédente.
+/// SLC initialisation sequence; each command is sent after the previous one's `OK`.
 const SLC: [&str; 5] = ["AT+BRSF=4", "AT+CIND=?", "AT+CIND?", "AT+CMER=3,0,0,1", "AT+CLIP=1"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,13 +30,13 @@ pub enum HfEvent {
     Clip { number: String },
     Indicator { name: Indicator, value: u8 },
     IncomingCall,
-    /// Appels secondaires (Telephony seulement) : `hold` si l'appel principal est lui-même en attente ;
-    /// `held` un autre appel mis en attente, `waiting` un second appel qui sonne (numéro vide si masqué).
+    /// Secondary calls (Telephony only): `hold` if the main call is itself on hold;
+    /// `held` another call put on hold, `waiting` a second ringing call (empty number if hidden).
     Lines { hold: bool, held: Option<String>, waiting: Option<String> },
     Error,
 }
 
-/// Indicateur `+CIND`/`+CIEV` ; sérialisé sous son nom HFP (`call`, `callsetup`…), nom inconnu gardé tel quel.
+/// `+CIND`/`+CIEV` indicator; serialised under its HFP name (`call`, `callsetup`…), unknown name kept as is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Indicator {
@@ -96,7 +96,7 @@ impl From<Indicator> for String {
     }
 }
 
-/// Machine à états du protocole AT, sans E/S (testable).
+/// AT protocol state machine, no I/O (testable).
 #[derive(Default)]
 pub struct Slc {
     sent: usize,
@@ -110,7 +110,7 @@ impl Slc {
         vec![SLC[0].to_owned()]
     }
 
-    /// Retourne (commandes à émettre, événements).
+    /// Returns (commands to send, events).
     pub fn on_line(&mut self, line: &str) -> (Vec<String>, Vec<HfEvent>) {
         let (mut cmds, mut evs) = (vec![], vec![]);
         match line {
@@ -153,7 +153,7 @@ impl Slc {
     }
 }
 
-/// `"service",(0,1)),("call",(0,1))...` → noms dans l'ordre (index CIEV = position + 1).
+/// `"service",(0,1)),("call",(0,1))...` → names in order (CIEV index = position + 1).
 fn parse_indicator_names(s: &str) -> Vec<Indicator> {
     s.split('"').skip(1).step_by(2).map(Indicator::from).collect()
 }
@@ -169,12 +169,14 @@ struct Agent {
     tx: mpsc::Sender<OwnedFd>,
 }
 
+// Signatures imposed by `org.bluez.Profile1` (zbus methods are async, unused arguments kept).
+#[allow(clippy::unused_async)]
 #[interface(name = "org.bluez.Profile1")]
 impl Agent {
     async fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::zvariant::OwnedFd, _props: HashMap<String, OwnedValue>) {
         if device.as_str().ends_with(&self.device_suffix) {
             let _ = self.tx.send(fd.into()).await;
-        } // sinon : fd refermé au drop, appareil étranger ignoré
+        } // otherwise: fd closed on drop, foreign device ignored
     }
 
     async fn request_disconnection(&self, _device: ObjectPath<'_>) {}
@@ -192,11 +194,12 @@ trait ProfileManager {
     fn unregister_profile(&self, profile: &ObjectPath<'_>) -> zbus::Result<()>;
 }
 
-struct Rfcomm(AsyncFd<OwnedFd>);
+/// RFCOMM socket; `File` gives safe `read`/`write` on the descriptor.
+struct Rfcomm(AsyncFd<std::fs::File>);
 
 impl Rfcomm {
     fn new(fd: OwnedFd) -> Result<Self> {
-        // SAFETY: fcntl sur un fd valide dont nous sommes propriétaires.
+        // SAFETY: fcntl on a valid fd that we own.
         let rc = unsafe {
             let fl = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
             libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, fl | libc::O_NONBLOCK)
@@ -204,66 +207,56 @@ impl Rfcomm {
         if rc < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        // SAFETY: OwnedFd garde le fd ouvert et stable jusqu'au drop de l'AsyncFd.
-        let afd = unsafe { AsyncFd::register(fd) }.map_err(|e| e.into_parts().1)?;
+        // SAFETY: the File owns the fd, which stays open and stable until the AsyncFd is dropped.
+        let afd = unsafe { AsyncFd::register(std::fs::File::from(fd)) }.map_err(|e| e.into_parts().1)?;
         Ok(Self(afd))
     }
 
-    /// `Ok(None)` = fermeture par le pair.
+    /// `Ok(None)` = closed by the peer.
     async fn read(&self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
         loop {
             let mut g = self.0.readable().await?;
-            // SAFETY: buf valide pour buf.len() octets.
-            let r = g.try_io(|fd| {
-                let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-                usize::try_from(n).map_err(|_| std::io::Error::last_os_error())
-            });
+            let r = g.try_io(|f| std::io::Read::read(&mut f.get_ref(), buf));
             match r {
                 Ok(Ok(0)) => return Ok(None),
                 Ok(Ok(n)) => return Ok(Some(n)),
                 Ok(Err(e)) => return Err(e),
-                Err(_would_block) => continue,
+                Err(_would_block) => {}
             }
         }
     }
 
     async fn write_cmd(&self, cmd: &str) -> std::io::Result<()> {
         let data = format!("{cmd}\r");
-        let mut off = 0;
-        while off < data.len() {
+        let mut rest = data.as_bytes();
+        while !rest.is_empty() {
             let mut g = self.0.writable().await?;
-            let r = g.try_io(|fd| {
-                // SAFETY: data[off..] valide.
-                let n = unsafe { libc::write(fd.as_raw_fd(), data[off..].as_ptr().cast(), data.len() - off) };
-                usize::try_from(n).map_err(|_| std::io::Error::last_os_error())
-            });
+            let r = g.try_io(|f| std::io::Write::write(&mut f.get_ref(), rest));
             match r {
-                Ok(Ok(n)) => off += n,
+                Ok(Ok(0)) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(Ok(n)) => rest = rest.get(n..).unwrap_or_default(),
                 Ok(Err(e)) => return Err(e),
-                Err(_) => continue,
+                Err(_would_block) => {}
             }
         }
-        // ATD<numéro> : numéro composé masqué.
-        match cmd.strip_prefix("ATD") {
-            Some(n) => tracing::debug!(number = mask(n.trim_end_matches(';')), "TX ATD"),
-            None => tracing::debug!(cmd, "TX"),
-        }
+        // ATD<number>: dialled number masked.
+        if let Some(n) = cmd.strip_prefix("ATD") { tracing::debug!(number = mask(n.trim_end_matches(';')), "TX ATD") } else { tracing::debug!(cmd, "TX") }
         Ok(())
     }
 }
 
-/// Commandes d'appel acceptées pendant une session.
+/// Call commands accepted during a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HfCmd {
     Answer,
     Hangup,
-    /// Refuse l'appel qui sonne ou le second appel.
+    /// Rejects the ringing call or the second call.
     Reject,
-    /// Met l'appel en cours en attente et prend le second.
+    /// Puts the current call on hold and takes the second one.
     HoldAnswer,
-    /// Bascule entre l'appel en cours et celui en attente (reprend un appel seul en attente).
+    /// Switches between the current call and the one on hold (resumes a single held call).
     Swap,
-    /// Numéro déjà validé ([`crate::engine::dial_number`]).
+    /// Number already validated ([`crate::engine::dial_number`]).
     Dial(String),
 }
 
@@ -274,18 +267,18 @@ impl HfCmd {
             HfCmd::Hangup => "AT+CHUP".into(),
             HfCmd::Reject => "AT+CHLD=0".into(),
             HfCmd::HoldAnswer | HfCmd::Swap => "AT+CHLD=2".into(),
-            // Garde-fou : rien d'autre qu'un numéro ne part dans la commande AT.
+            // Safeguard: nothing but a number goes into the AT command.
             HfCmd::Dial(n) => format!("ATD{};", n.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect::<String>()),
         }
     }
 }
 
-/// Enregistre le profil HF puis enchaîne les sessions de `addr` (reconnexion comprise) ; `on_event`
-/// reçoit `Connected`/`Disconnected` et les événements AT. Se termine quand `cmds` est fermé.
-/// Hors session, les commandes sont ignorées.
+/// Registers the HF profile then chains the sessions of `addr` (reconnection included); `on_event`
+/// receives `Connected`/`Disconnected` and the AT events. Ends when `cmds` is closed.
+/// Outside a session, commands are ignored.
 ///
 /// # Errors
-/// Enregistrement du profil ou bus système impossible.
+/// Profile registration or system bus impossible.
 pub async fn run(addr: &BtAddr, mut cmds: mpsc::Receiver<HfCmd>, mut on_event: impl FnMut(&HfEvent)) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
     let conn = Connection::system().await?;
@@ -297,7 +290,7 @@ pub async fn run(addr: &BtAddr, mut cmds: mpsc::Receiver<HfCmd>, mut on_event: i
     let opts = HashMap::from([
         ("Name", Value::from("bluez-message HFP")),
         ("Role", Value::from("client")),
-        // Lien appairé et chiffré exigé : sans clé de liaison, une adresse usurpée ne peut pas injecter RING/CLIP.
+        // Paired and encrypted link required: without a link key, a spoofed address cannot inject RING/CLIP.
         ("RequireAuthentication", Value::from(true)),
         ("RequireAuthorization", Value::from(false)),
         ("Version", Value::from(0x0107u16)),
@@ -315,7 +308,7 @@ pub async fn run(addr: &BtAddr, mut cmds: mpsc::Receiver<HfCmd>, mut on_event: i
         let r = session(fd, &mut cmds, &mut on_event).await;
         on_event(&HfEvent::Disconnected);
         match r {
-            Ok(true) => continue,
+            Ok(true) => {}
             Ok(false) => break Ok(()),
             Err(e) => tracing::warn!("HFP session ended: {e}"),
         }
@@ -324,7 +317,7 @@ pub async fn run(addr: &BtAddr, mut cmds: mpsc::Receiver<HfCmd>, mut on_event: i
     result
 }
 
-/// `Ok(true)` : fin de session (pair parti) ; `Ok(false)` : `cmds` fermé, arrêt demandé.
+/// `Ok(true)`: end of session (peer gone); `Ok(false)`: `cmds` closed, stop requested.
 async fn session(fd: OwnedFd, cmds: &mut mpsc::Receiver<HfCmd>, on_event: &mut impl FnMut(&HfEvent)) -> Result<bool> {
     let io = Rfcomm::new(fd)?;
     let mut slc = Slc::default();
@@ -350,7 +343,7 @@ async fn session(fd: OwnedFd, cmds: &mut mpsc::Receiver<HfCmd>, on_event: &mut i
             }
             match line.strip_prefix("+CLIP:") {
                 Some(rest) => tracing::debug!(number = mask(rest.split('"').nth(1).unwrap_or_default()), "RX +CLIP"),
-                // +CLCC, +CNUM… : champs entre guillemets (numéros, noms) jamais journalisés.
+                // +CLCC, +CNUM…: quoted fields (numbers, names) never logged.
                 None if line.contains('"') => tracing::debug!(cmd = line.split(':').next().unwrap_or_default(), "RX (quoted fields hidden)"),
                 None => tracing::debug!(%line, "RX"),
             }

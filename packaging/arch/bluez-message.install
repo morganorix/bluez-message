@@ -8,10 +8,23 @@ post_install() {
 MSG
 }
 
+# Applies an action to the service in each open user session (pacman runs as root).
+_each_user() {
+  command -v loginctl >/dev/null || return 0
+  loginctl list-users --no-legend 2>/dev/null | while read -r _uid user _rest; do
+    [ -n "$user" ] || continue
+    systemctl --user -M "$user@" daemon-reload 2>/dev/null
+    systemctl --user -M "$user@" "$@" bluez-messaged.service 2>/dev/null && echo "==> bluez-message: $1 bluez-messaged ($user)"
+  done
+  return 0
+}
+
 post_upgrade() {
-  echo "==> bluez-message: systemctl --user daemon-reload && systemctl --user restart bluez-messaged (or log out)"
+  _each_user try-restart
+  echo "==> bluez-message: reopen bmessage if its window is open."
 }
 
 post_remove() {
-  echo "==> bluez-message: systemctl --user stop bluez-messaged && systemctl --user restart wireplumber (or log out)"
+  _each_user stop
+  echo "==> bluez-message: systemctl --user restart wireplumber (or log out) to drop the call audio setup"
 }

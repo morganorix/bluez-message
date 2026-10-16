@@ -48,14 +48,14 @@ Prebuilt package (x86_64) from the [releases](https://github.com/morganorix/blue
 signed with key `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Once, trust the key:
 
 ```sh
-curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.3/morganorix.asc | sudo pacman-key --add -
+curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.4/morganorix.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
 ```
 
 Then install:
 
 ```sh
-sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.3/bluez-message-0.1.3-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.4/bluez-message-0.1.4-1-x86_64.pkg.tar.zst
 ```
 
 Or build it from a clone of the repository:

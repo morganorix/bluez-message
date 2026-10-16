@@ -1,5 +1,5 @@
-//! État de la liaison Bluetooth de l'iPhone (`org.bluez.Device1`) et relance de la connexion :
-//! après une reconnexion spontanée, l'iPhone reste parfois relié sans ses profils (`ServicesResolved` faux).
+//! State of the iPhone's Bluetooth link (`org.bluez.Device1`) and connection restart:
+//! after a spontaneous reconnection, the iPhone sometimes stays linked without its profiles (`ServicesResolved` false).
 
 use std::collections::HashMap;
 
@@ -10,15 +10,15 @@ use crate::addr::BtAddr;
 use crate::engine::Device;
 use crate::error::Result;
 
-/// Adaptateur Bluetooth utilisé.
+/// Bluetooth adapter used.
 pub(crate) const ADAPTER: &str = "/org/bluez/hci0";
 
-/// Propriété D-Bus textuelle d'un dictionnaire `a{sv}`.
+/// Textual D-Bus property of an `a{sv}` dictionary.
 pub(crate) fn prop_str<'a>(p: &'a HashMap<String, OwnedValue>, k: &str) -> Option<&'a str> {
     p.get(k).and_then(|v| <&str>::try_from(v).ok())
 }
 
-/// Propriété D-Bus booléenne ; absente : faux.
+/// Boolean D-Bus property; absent: false.
 pub(crate) fn prop_bool(p: &HashMap<String, OwnedValue>, k: &str) -> bool {
     p.get(k).and_then(|v| bool::try_from(v).ok()).unwrap_or(false)
 }
@@ -33,52 +33,52 @@ trait Device {
     fn services_resolved(&self) -> zbus::Result<bool>;
 }
 
-/// Liaison de l'appareil vue par BlueZ.
+/// Device link as seen by BlueZ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Link {
     pub connected: bool,
     pub resolved: bool,
 }
 
-/// Appareil BlueZ de l'adresse `addr`, sur l'adaptateur `hci0`.
+/// BlueZ device of address `addr`, on the `hci0` adapter.
 pub struct Phone {
     dev: DeviceProxy<'static>,
 }
 
 impl Phone {
-    /// Proxy `Device1` de l'appareil `addr` sur le bus système.
+    /// `Device1` proxy of device `addr` on the system bus.
     ///
     /// # Errors
-    /// Bus système injoignable ou chemin D-Bus refusé.
+    /// System bus unreachable or D-Bus path refused.
     pub async fn new(addr: &BtAddr) -> Result<Self> {
         let conn = Connection::system().await?;
         let path = OwnedObjectPath::try_from(addr.path()).map_err(zbus::Error::from)?;
-        // Pas de cache : les propriétés sont relues à chaque constat.
+        // No cache: properties are reread at each check.
         let dev = DeviceProxy::builder(&conn).path(path)?.cache_properties(zbus::proxy::CacheProperties::No).build().await?;
         Ok(Self { dev })
     }
 
-    /// État courant de la liaison (relié, profils résolus).
+    /// Current link state (linked, profiles resolved).
     ///
     /// # Errors
-    /// Lecture des propriétés D-Bus impossible.
+    /// D-Bus properties cannot be read.
     pub async fn link(&self) -> Result<Link> {
         Ok(Link { connected: self.dev.connected().await?, resolved: self.dev.services_resolved().await? })
     }
 
-    /// Connecte les profils de l'appareil (sans effet sur ceux déjà connectés).
+    /// Connects the device's profiles (no effect on those already connected).
     ///
     /// # Errors
-    /// Refus ou échec de BlueZ.
+    /// Refusal or failure from BlueZ.
     pub async fn connect(&self) -> Result<()> {
         Ok(self.dev.connect().await?)
     }
 
-    /// Changements de `Connected` ou `ServicesResolved` signalés par BlueZ (`PropertiesChanged`) ;
-    /// le flux reste muet si l'appareil disparaît.
+    /// Changes of `Connected` or `ServicesResolved` signalled by BlueZ (`PropertiesChanged`);
+    /// the stream stays silent if the device disappears.
     ///
     /// # Errors
-    /// Abonnement au signal refusé.
+    /// Signal subscription refused.
     pub async fn link_changes(&self) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
         let props = zbus::fdo::PropertiesProxy::builder(self.dev.inner().connection())
             .destination("org.bluez")?
@@ -95,23 +95,23 @@ impl Phone {
         }))
     }
 
-    /// Déconnecte l'appareil.
+    /// Disconnects the device.
     ///
     /// # Errors
-    /// Refus ou échec de BlueZ.
+    /// Refusal or failure from BlueZ.
     pub async fn disconnect(&self) -> Result<()> {
         Ok(self.dev.disconnect().await?)
     }
 }
 
 impl Phone {
-    /// Relance complète de la liaison (`Disconnect`, 2 s, `Connect`), bornée à `limit`.
+    /// Full restart of the link (`Disconnect`, 2 s, `Connect`), bounded by `limit`.
     ///
     /// # Errors
-    /// Message traduit : échec de `Disconnect`/`Connect` ou délai dépassé.
+    /// Translated message: `Disconnect`/`Connect` failed or timeout exceeded.
     pub async fn reconnect(&self, limit: std::time::Duration) -> std::result::Result<(), String> {
         let r = tokio::time::timeout(limit, async {
-            // Déjà déconnecté : `Disconnect` échoue sans gravité.
+            // Already disconnected: `Disconnect` fails harmlessly.
             let _ = self.disconnect().await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             self.connect().await
@@ -127,10 +127,10 @@ impl Phone {
 /// HFP Audio Gateway, MAP Message Server.
 const PHONE_UUIDS: [&str; 2] = ["0000111f-0000-1000-8000-00805f9b34fb", "00001132-0000-1000-8000-00805f9b34fb"];
 
-/// Appareils appairés sur `hci0`, triés par nom ; 3 s au plus (la boucle du démon l'attend).
+/// Devices paired on `hci0`, sorted by name; 3 s at most (the daemon loop waits for it).
 ///
 /// # Errors
-/// BlueZ injoignable ou délai de 3 s dépassé.
+/// BlueZ unreachable or 3 s timeout exceeded.
 pub async fn paired() -> Result<Vec<Device>> {
     tokio::time::timeout(std::time::Duration::from_secs(3), list_paired())
         .await
@@ -147,7 +147,7 @@ async fn list_paired() -> Result<Vec<Device>> {
         .filter_map(|(_, ifs)| {
             let d = ifs.get("org.bluez.Device1")?;
             let get_s = |k: &str| prop_str(d, k).map(str::to_owned);
-            // Téléphones seulement : passerelle mains libres (HFP AG) ou serveur de messages (MAP MSE).
+            // Phones only: hands-free gateway (HFP AG) or message server (MAP MSE).
             let uuids = d.get("UUIDs").and_then(|v| <Vec<String>>::try_from(v.try_clone().ok()?).ok()).unwrap_or_default();
             if !prop_bool(d, "Paired") || !uuids.iter().any(|u| PHONE_UUIDS.iter().any(|p| u.eq_ignore_ascii_case(p))) {
                 return None;

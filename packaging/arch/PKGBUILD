@@ -1,6 +1,6 @@
-# Paquet local : construit depuis l'arbre du dépôt (pas d'archive source), voir README.md.
+# Local package: built from the repository tree (no source archive), see README.md.
 pkgname=bluez-message
-pkgver=0.1.3
+pkgver=0.1.4
 pkgrel=1
 pkgdesc="bmessage : SMS et appels de l'iPhone sur le PC (relais Bluetooth MAP/PBAP/HFP)"
 arch=('x86_64')
@@ -10,7 +10,7 @@ depends=(
   'bluez' 'bluez-utils' 'bluez-obex'
   'pipewire' 'wireplumber'
   'fontconfig' 'ttf-jetbrains-mono-nerd' 'noto-fonts-emoji'
-  # Chargées par dlopen (winit, wgpu) : invisibles pour ldd.
+  # Loaded with dlopen (winit, wgpu): invisible to ldd.
   'vulkan-icd-loader' 'libxkbcommon' 'wayland'
   'libx11' 'libxcursor' 'libxi' 'libxrandr'
 )
@@ -49,7 +49,7 @@ package() {
   done
   cd "$startdir"
   install -Dm644 bluez-messaged.service "$pkgdir/usr/lib/systemd/user/bluez-messaged.service"
-  # Activé pour tous les utilisateurs (comme gnupg) ; refus individuel : systemctl --user mask bluez-messaged.
+  # Enabled for every user (like gnupg); opt out individually: systemctl --user mask bluez-messaged.
   install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
   ln -s ../bluez-messaged.service "$pkgdir/usr/lib/systemd/user/default.target.wants/bluez-messaged.service"
   install -Dm644 bluez-message.desktop "$pkgdir/usr/share/applications/bluez-message.desktop"

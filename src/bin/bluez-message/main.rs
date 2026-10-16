@@ -1,5 +1,5 @@
-//! `bluez-message` : SMS et appels de l'iPhone dans une fenêtre egui. Client du démon `bluez-messaged`
-//! (moteur et notifications) : fermer la fenêtre n'interrompt rien.
+//! `bluez-message`: iPhone SMS and calls in an egui window. Client of the `bluez-messaged` daemon
+//! (engine and notifications): closing the window interrupts nothing.
 
 mod composer;
 mod convs;
@@ -7,7 +7,7 @@ mod prefs;
 mod thread;
 mod ui;
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, TryLockError};
 use std::process::ExitCode;
 
 use bluez_message::gui;
@@ -21,7 +21,7 @@ struct Args {}
 fn main() -> ExitCode {
     bluez_message::log::init();
     Args::parse();
-    // Une seule fenêtre : un second lancement se retire sans rien faire.
+    // Single window: a second launch exits without doing anything.
     let _lock = match instance_lock() {
         Ok(f) => f,
         Err(TryLockError::WouldBlock) => {
@@ -42,11 +42,11 @@ fn main() -> ExitCode {
     gui::run("bluez-message", viewport, true, |c| ui::App::new(c.palette, c.tx, c.events))
 }
 
-/// Verrou d'instance `bluez-message-gui.lock` près du socket du démon, libéré par le système à la sortie (même
-/// sur plantage). `WouldBlock` : une fenêtre est déjà ouverte. Sans `XDG_RUNTIME_DIR` : pas de verrou.
+/// Instance lock `bluez-message-gui.lock` next to the daemon socket, released by the system on exit (even
+/// on crash). `WouldBlock`: a window is already open. Without `XDG_RUNTIME_DIR`: no lock.
 fn instance_lock() -> Result<Option<File>, TryLockError> {
     let Ok(sock) = bluez_message::config::socket_path() else { return Ok(None) };
-    let f = OpenOptions::new().create(true).truncate(false).write(true).open(sock.with_file_name("bluez-message-gui.lock")).map_err(TryLockError::Error)?;
+    let f = bluez_message::ipc::lock_file(&sock.with_file_name("bluez-message-gui.lock")).map_err(TryLockError::Error)?;
     f.try_lock()?;
     Ok(Some(f))
 }

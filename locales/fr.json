@@ -10,7 +10,7 @@
   "Confirm: daemon restarts": "Confirmer : le démon redémarre",
   "Connect automatically": "Connexion automatique",
   "Contacts": "Contacts",
-  "Conversations": "Conversations",
+  "Phonebook": "Répertoire",
   "Copy": "Copier",
   "D-Bus stream closed": "flux D-Bus fermé",
   "DECLINE": "REFUSER",
@@ -117,7 +117,6 @@
   "empty text or longer than {0} characters": "texte vide ou plus long que {0} caractères",
   "engine stopped": "moteur arrêté",
   "error: {0}": "erreur : {0}",
-  "hidden number": "numéro masqué",
   "history: {0}": "historique : {0}",
   "iPhone reconnected": "iPhone reconnecté",
   "invalid Bluetooth address: {0}": "adresse Bluetooth invalide : {0}",
@@ -162,5 +161,14 @@
   "{0}: complete": "{0} : complet",
   "{0}: timed out": "{0} : délai dépassé",
   "{1}/{0} {2}:{3}": "{0}/{1} {2}:{3}",
-  "{n} markers differ: {0}": "marqueurs {n} différents : {0}"
+  "{n} markers differ: {0}": "marqueurs {n} différents : {0}",
+  "unknown country": "pays inconnu",
+  "SMS": "SMS",
+  "Calls": "Appels",
+  "No calls": "Aucun appel",
+  "No calls yet": "Aucun appel pour l'instant",
+  "Country of phone numbers": "Pays des numéros de téléphone",
+  "Landlines stay out of SMS": "Les fixes restent hors des SMS",
+  "Automatic": "Automatique",
+  "Automatic ({0})": "Automatique ({0})"
 }

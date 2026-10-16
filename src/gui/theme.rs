@@ -1,4 +1,4 @@
-//! Couleurs de la barre (template matugen `colors.plm`), police Nerd Font et mesures de ui/*.plm.
+//! Bar colours (matugen template `colors.plm`), Nerd Font and measurements of ui/*.plm.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,45 +8,45 @@ use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontF
 
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf";
 const FONT_BOLD: &str = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf";
-/// Famille des titres et badges (`weight: 700` de la barre).
+/// Family of titles and badges (`weight: 700` of the bar).
 pub const BOLD: &str = "bold";
-/// Arrondi commun des cartes, boutons et champs (`menuCorner` de control-bar.plm).
+/// Common rounding of cards, buttons and fields (`menuCorner` of control-bar.plm).
 pub const CORNER: u8 = 4;
 
-/// Tailles de police de ui/*.plm.
+/// Font sizes of ui/*.plm.
 pub mod font {
-    /// Message fait d'emojis seuls, affiché sans bulle.
+    /// Message made of emojis only, displayed without a bubble.
     pub const EMOJI: f32 = 44.0;
-    /// Icônes d'en-tête, de carte et de bouton.
+    /// Header, card and button icons.
     pub const ICON: f32 = 16.0;
-    /// Titres (gras) ; icônes de ligne.
+    /// Titles (bold); row icons.
     pub const TITLE: f32 = 15.0;
-    /// Libellés de ligne et de carte.
+    /// Row and card labels.
     pub const LABEL: f32 = 13.0;
-    /// Texte courant, champs, bandeaux.
+    /// Body text, fields, banners.
     pub const BODY: f32 = 12.0;
-    /// Sous-lignes, indications, boutons.
+    /// Sub-lines, hints, buttons.
     pub const SMALL: f32 = 11.0;
-    /// Badges et horodatages.
+    /// Badges and timestamps.
     pub const TINY: f32 = 10.0;
 }
 
-/// Mesures communes de ui/*.plm.
+/// Common measurements of ui/*.plm.
 pub mod size {
     /// `MenuHeader` / `ViewHeader`.
     pub const HEADER_H: f32 = 44.0;
-    /// `NearCard` : ligne à sous-ligne, carte d'appel.
+    /// `NearCard`: row with sub-line, call card.
     pub const CARD_H: f32 = 48.0;
-    /// `Row` sans sous-ligne.
+    /// `Row` without sub-line.
     pub const ROW_H: f32 = 36.0;
-    /// Bandeaux d'information et d'erreur.
+    /// Information and error banners.
     pub const BANNER_H: f32 = 32.0;
-    /// Champ de saisie (mot de passe wifi) et bouton voisin.
+    /// Input field (wifi password) and neighbouring button.
     pub const FIELD_H: f32 = 34.0;
-    /// Bouton des cartes.
+    /// Card button.
     pub const BUTTON_W: f32 = 120.0;
     pub const BUTTON_H: f32 = 26.0;
-    /// Retrait du contenu au bord d'une carte ou d'un panneau.
+    /// Content inset at the edge of a card or panel.
     pub const EDGE: f32 = 14.0;
 }
 
@@ -83,7 +83,7 @@ fn hex(s: &str) -> Option<Color32> {
 }
 
 impl Palette {
-    /// Lignes `let nom = #rrggbb` ; les noms inconnus ou valeurs invalides gardent le défaut.
+    /// `let name = #rrggbb` lines; unknown names or invalid values keep the default.
     #[must_use]
     pub fn parse(src: &str) -> Self {
         let mut p = Self::default();
@@ -109,25 +109,25 @@ impl Palette {
         std::fs::read_to_string(path).map(|s| Self::parse(&s)).unwrap_or_default()
     }
 
-    /// `fg` posé sur `bg` à `t` (opaque).
+    /// `fg` laid over `bg` at `t` (opaque).
     #[must_use]
     pub fn surface(&self, t: f32) -> Color32 {
         self.bg.lerp_to_gamma(self.fg, t)
     }
 
-    /// `fg` à l'opacité `a` : textes secondaires, fonds de cartes.
+    /// `fg` at opacity `a`: secondary texts, card backgrounds.
     #[must_use]
     pub fn dim(&self, a: f32) -> Color32 {
         self.fg.gamma_multiply(a)
     }
 
-    /// Texte secondaire : `fg` à 40 % (sous-lignes, indications).
+    /// Secondary text: `fg` at 40 % (sub-lines, hints).
     #[must_use]
     pub fn muted(&self) -> Color32 {
         self.dim(0.4)
     }
 
-    /// Bordure des menus de la barre : `mix(bg, accent, 0.2)`.
+    /// Border of the bar's menus: `mix(bg, accent, 0.2)`.
     #[must_use]
     pub fn line(&self) -> Color32 {
         self.bg.lerp_to_gamma(self.accent, 0.2)
@@ -139,7 +139,7 @@ impl Palette {
         v.override_text_color = Some(self.fg);
         v.panel_fill = self.bg;
         v.window_fill = self.bg;
-        // Champs de saisie : `fg` à 10 % comme le mot de passe wifi.
+        // Input fields: `fg` at 10 % like the wifi password.
         v.extreme_bg_color = self.surface(0.10);
         v.faint_bg_color = self.surface(0.03);
         v.weak_text_color = Some(self.dim(0.4));
@@ -152,7 +152,7 @@ impl Palette {
         v.menu_corner_radius = CornerRadius::same(CORNER);
         v.window_stroke = Stroke::new(1.0, self.line());
         let w = &mut v.widgets;
-        // Filets de section : `fg` à 10 %.
+        // Section rules: `fg` at 10 %.
         w.noninteractive.bg_stroke = Stroke::new(1.0, self.surface(0.10));
         for (s, t) in [(&mut w.noninteractive, 0.0), (&mut w.inactive, 0.10), (&mut w.hovered, 0.18), (&mut w.active, 0.25), (&mut w.open, 0.12)] {
             if t > 0.0 {
@@ -168,8 +168,8 @@ impl Palette {
     }
 }
 
-/// JetBrainsMono Nerd Font en tête des familles si présente ; sinon polices par défaut.
-/// La famille `BOLD` existe toujours (repli sur la police normale).
+/// JetBrainsMono Nerd Font first in the families if present; otherwise default fonts.
+/// The `BOLD` family always exists (falls back to the normal font).
 #[must_use]
 pub fn fonts() -> FontDefinitions {
     let mut f = FontDefinitions::default();
@@ -188,7 +188,7 @@ pub fn fonts() -> FontDefinitions {
     f
 }
 
-/// Tailles de la barre : 15 titre, 13 libellé, 12 texte, 11 bouton et sous-ligne.
+/// Bar sizes: 15 title, 13 label, 12 text, 11 button and sub-line.
 fn style(s: &mut egui::Style) {
     s.text_styles = [
         (TextStyle::Heading, FontId::new(font::TITLE, FontFamily::Name(BOLD.into()))),
@@ -202,20 +202,20 @@ fn style(s: &mut egui::Style) {
     s.spacing.button_padding = vec2(12.0, 5.0);
     s.spacing.interact_size.y = size::BUTTON_H;
     s.spacing.scroll.bar_width = 6.0;
-    // Bulles d'aide immédiates, même pointeur en mouvement.
+    // Immediate tooltips, even with the pointer moving.
     s.interaction.tooltip_delay = 0.0;
     s.interaction.show_tooltips_only_when_still = false;
     s.spacing.scroll.floating = true;
 }
 
-/// `colors.plm` de la barre (sortie du template matugen `control-bar`).
+/// The bar's `colors.plm` (output of the matugen `control-bar` template).
 #[must_use]
 pub fn colors_path() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join("control-bar/colors.plm"))
 }
 
-/// Surveille `colors.plm` : quand matugen le régénère (nouveau fond d'écran, nouveau schéma), les couleurs
-/// sont relues et appliquées sans relancer la fenêtre.
+/// Watches `colors.plm`: when matugen regenerates it (new wallpaper, new scheme), the colours
+/// are reread and applied without restarting the window.
 pub struct Watch {
     path: Option<PathBuf>,
     stamp: Option<SystemTime>,
@@ -237,7 +237,7 @@ impl Watch {
         Self { path, stamp, next: Instant::now() + WATCH_EVERY }
     }
 
-    /// Palette rechargée et appliquée à `ctx` si le fichier a changé ; à appeler à chaque image.
+    /// Palette reloaded and applied to `ctx` if the file changed; to be called every frame.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<Palette> {
         ctx.request_repaint_after(WATCH_EVERY);
         if Instant::now() < self.next {

@@ -1,12 +1,11 @@
-//! Socket Unix du démon `bluez-messaged` : les [`Out`] partent en JSON lignes vers chaque client (GUI),
-//! les [`Cmd`] reviennent en JSON lignes. À la connexion, un client reçoit d'abord un instantané
-//! (liens, SMS connus, envois, appel en cours) pour reconstruire son état sans notification.
+//! Unix socket of the `bluez-messaged` daemon: [`Out`] events go out as JSON lines to each client (GUI),
+//! [`Cmd`] commands come back as JSON lines. On connection, a client first receives a snapshot
+//! (links, known SMS, sends, current call) to rebuild its state without notifications.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io;
-use std::fs::File;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::fs::{File, TryLockError};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -20,26 +19,27 @@ use crate::engine::{CallKind, Cmd, Item, Out, Profile, parse_cmd};
 use crate::hfp::HfEvent;
 use crate::history::SENT_ECHO_SECS;
 use crate::map::Folder;
-use crate::phone::{number_key, sms_peer};
+use crate::numbering;
+use crate::phone::sms_peer;
 use crate::stamp;
 use crate::t;
 
-/// Longueur maximale d'une ligne client (octets) ; au-delà la connexion est fermée.
+/// Maximum length of a client line (bytes); beyond it the connection is closed.
 pub const MAX_LINE: usize = 16 * 1024;
-/// Longueur maximale d'une ligne du démon vue par la GUI (le répertoire tient sur une ligne).
+/// Maximum length of a daemon line seen by the GUI (the contacts fit on one line).
 const MAX_DAEMON_LINE: usize = 16 * 1024 * 1024;
 const MAX_SMS: usize = 1000;
 const MAX_SENT: usize = 200;
 const MAX_CALL: usize = 64;
-/// Historique des appels rejoué aux clients.
+/// Call history replayed to the clients.
 const MAX_LOG: usize = 500;
 const RETRY: Duration = Duration::from_secs(2);
 const MAX_CLIENTS: usize = 16;
-/// Un client qui ne lit plus est déconnecté au-delà de ce délai.
+/// A client that stops reading is disconnected after this delay.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const BROADCAST: usize = 4096;
 
-/// Ce qu'un client qui se connecte doit rejouer.
+/// What a connecting client must replay.
 #[derive(Debug, Default)]
 pub struct Snapshot {
     status: BTreeMap<Profile, bool>,
@@ -47,12 +47,12 @@ pub struct Snapshot {
     sms: VecDeque<Out>,
     keys: HashSet<(Folder, String)>,
     sent: VecDeque<Out>,
-    /// Événements de l'appel en cours ; vidé quand l'appel se termine.
+    /// Events of the current call; cleared when the call ends.
     call: Vec<Out>,
     log: VecDeque<Out>,
     contacts: Option<Out>,
     settings: Option<Out>,
-    /// Lu jusqu'à, par conversation.
+    /// Read up to, per conversation.
     reads: BTreeMap<String, String>,
 }
 
@@ -62,7 +62,7 @@ fn push_capped(q: &mut VecDeque<Out>, o: Out, cap: usize) -> Option<Out> {
 }
 
 impl Snapshot {
-    /// `call_idle` : aucun appel en cours après application de `o` (machine d'état du démon).
+    /// `call_idle`: no call in progress after applying `o` (the daemon's state machine).
     pub fn record(&mut self, o: &Out, call_idle: bool) {
         match o {
             Out::Status { link, up } => {
@@ -75,7 +75,7 @@ impl Snapshot {
             Out::Sms { sms, folder, .. } => {
                 let o = Out::Sms { sms: sms.clone(), folder: *folder, new: false };
                 if !self.keys.insert((*folder, sms.handle.clone())) {
-                    // Déjà connu : on garde la version la plus récente (statut lu, etc.).
+                    // Already known: the most recent version is kept (read status, etc.).
                     let same = |x: &Out| matches!(x, Out::Sms { sms: s, folder: f, .. } if f == folder && s.handle == sms.handle);
                     if let Some(slot) = self.sms.iter_mut().find(|x| same(x)) {
                         *slot = o;
@@ -84,7 +84,7 @@ impl Snapshot {
                     self.keys.remove(&(folder, sms.handle));
                 }
             }
-            // Échecs compris : la bulle « non envoyé » se retrouve à la réouverture de l'app.
+            // Failures included: the "not sent" bubble is still there when the app reopens.
             Out::Sent { .. } => {
                 push_capped(&mut self.sent, o.clone(), MAX_SENT);
             }
@@ -118,15 +118,20 @@ impl Snapshot {
         }
     }
 
-    /// Retire ce qui a été supprimé de l'historique (élément ou conversation entière).
+    /// Removes what was deleted from the history (item or whole conversation).
     fn forget(&mut self, key: &str, item: Option<&Item>) {
+        let home = match &self.settings {
+            Some(Out::Settings { home, .. }) => home.as_deref().and_then(numbering::parse_code),
+            _ => None,
+        };
+        let number_key = |n: &str| numbering::key(n, home);
         let hit = |o: &Out| match o {
             Out::Sms { sms, folder, .. } => {
                 let sent = folder.is_sent();
                 number_key(sms_peer(sms, sent).0) == key
                     && item.is_none_or(|i| !i.call && i.outgoing == sent && i.timestamp == sms.timestamp && i.text == sms.text)
             }
-            // L'envoi gardé porte l'heure du PC ; l'élément supprimé, souvent celle du téléphone (retour `sent`).
+            // The kept send carries the PC time; the deleted item, often the phone's (`sent` return).
             Out::Sent { to, text, timestamp, .. } => {
                 number_key(to) == key
                     && item.is_none_or(|i| {
@@ -169,19 +174,19 @@ impl Snapshot {
     }
 }
 
-/// Commande d'un client, avec le canal où renvoyer une erreur qui ne concerne que lui.
+/// Command from a client, with the channel to send back an error that concerns only that client.
 pub type Request = (Cmd, Option<mpsc::Sender<Out>>);
 
 type Shared = Arc<Mutex<(Snapshot, broadcast::Sender<Out>)>>;
 
-/// Côté démon : publication des événements vers les clients. Détient le verrou d'instance.
+/// Daemon side: publishes events to the clients. Holds the instance lock.
 pub struct Hub {
     inner: Shared,
     _lock: File,
 }
 
 impl Hub {
-    /// Instantané et diffusion sous le même verrou : un client qui se connecte ne perd ni ne double rien.
+    /// Snapshot and broadcast under the same lock: a connecting client neither loses nor duplicates anything.
     pub fn publish(&self, o: Out, call_idle: bool) {
         let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         g.0.record(&o, call_idle);
@@ -189,30 +194,38 @@ impl Hub {
     }
 }
 
-/// Socket lié et verrou d'instance (`<socket>.lock`, à garder pendant toute la vie du démon).
+/// Bound socket and instance lock (`<socket>.lock`, to be kept for the whole life of the daemon).
 #[derive(Debug)]
 pub struct Bound {
     listener: UnixListener,
     lock: File,
 }
 
-/// Verrou exclusif non bloquant : deux démons lancés ensemble ne peuvent pas se voler le socket.
-fn lock(path: &Path) -> io::Result<File> {
-    let f = File::options().create(true).truncate(false).write(true).open(path)?;
-    // SAFETY: descripteur valide détenu par `f` ; flock n'accède à aucune mémoire.
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::new(io::ErrorKind::AddrInUse, t!("daemon already running (lock {0})", path.display())));
-    }
-    Ok(f)
+/// Instance lock file (daemon, GUI): created 0600, a symbolic link is refused.
+///
+/// # Errors
+/// File cannot be opened or created.
+pub fn lock_file(path: &Path) -> io::Result<File> {
+    File::options().create(true).truncate(false).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
 }
 
-/// Le socket n'est sûr que dans un dossier à soi, fermé aux autres : sinon un tiers pourrait s'y connecter
-/// avant le `chmod`, ou remplacer socket et verrou.
+/// Exclusive non-blocking lock: two daemons started together cannot steal each other's socket.
+fn lock(path: &Path) -> io::Result<File> {
+    let f = lock_file(path)?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(TryLockError::WouldBlock) => Err(io::Error::new(io::ErrorKind::AddrInUse, t!("daemon already running (lock {0})", path.display()))),
+        Err(TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// The socket is only safe in a directory of one's own, closed to others: otherwise a third party could connect to it
+/// before the `chmod`, or replace the socket and the lock.
 fn private_parent(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let m = std::fs::metadata(dir)?;
-    // SAFETY: geteuid n'a pas de précondition et ne peut pas échouer.
+    // SAFETY: geteuid has no precondition and cannot fail.
     let me = unsafe { libc::geteuid() };
     if m.uid() != me || m.mode() & 0o077 != 0 {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, t!("{0} must belong to you and be closed to others (0700)", dir.display())));
@@ -220,10 +233,10 @@ fn private_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Prend le verrou, refuse si un démon répond déjà, supprime un socket orphelin, droits 0600.
+/// Takes the lock, refuses if a daemon already answers, removes an orphan socket, permissions 0600.
 ///
 /// # Errors
-/// Verrou pris, démon déjà actif, ou socket impossible à créer.
+/// Lock taken, daemon already active, or socket cannot be created.
 pub async fn bind(path: &Path) -> io::Result<Bound> {
     private_parent(path)?;
     let lock = lock(&path.with_extension("lock"))?;
@@ -241,7 +254,7 @@ pub async fn bind(path: &Path) -> io::Result<Bound> {
     Ok(Bound { listener, lock })
 }
 
-/// Accepte les clients en tâche de fond ; leurs commandes arrivent dans `requests`.
+/// Accepts clients in the background; their commands arrive in `requests`.
 pub fn spawn_server(bound: Bound, requests: mpsc::Sender<Request>) -> Hub {
     let Bound { listener, lock } = bound;
     let (tx, _) = broadcast::channel(BROADCAST);
@@ -252,7 +265,7 @@ pub fn spawn_server(bound: Bound, requests: mpsc::Sender<Request>) -> Hub {
         loop {
             match listener.accept().await {
                 Ok((s, _)) => {
-                    // Au-delà de MAX_CLIENTS, la connexion est refermée aussitôt.
+                    // Beyond MAX_CLIENTS, the connection is closed immediately.
                     let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
                         tracing::warn!("too many clients: connection refused");
                         continue;
@@ -287,7 +300,7 @@ async fn serve_client(stream: UnixStream, shared: Shared, requests: mpsc::Sender
         (g.0.replay(), g.1.subscribe())
     };
     let (r, mut w) = stream.into_split();
-    // Le lecteur détient le seul émetteur de réponses : sa fin (EOF, ligne trop longue) clôt l'écriture.
+    // The reader holds the only reply sender: its end (EOF, line too long) closes writing.
     let (reply_tx, mut replies) = mpsc::channel::<Out>(8);
     let reader = tokio::spawn(read_commands(BufReader::new(r), reply_tx, requests));
     let _abort = AbortOnDrop(reader);
@@ -300,7 +313,7 @@ async fn serve_client(stream: UnixStream, shared: Shared, requests: mpsc::Sender
         let o = tokio::select! {
             e = events.recv() => match e {
                 Ok(o) => o,
-                // Client trop lent : il se reconnecte et repart de l'instantané.
+                // Client too slow: it reconnects and starts again from the snapshot.
                 Err(_) => return,
             },
             r = replies.recv() => match r {
@@ -314,7 +327,7 @@ async fn serve_client(stream: UnixStream, shared: Shared, requests: mpsc::Sender
     }
 }
 
-/// Arrête la lecture des commandes quand l'écriture vers le client s'arrête.
+/// Stops reading commands when writing to the client stops.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -340,7 +353,7 @@ async fn read_commands(mut r: BufReader<tokio::net::unix::OwnedReadHalf>, reply:
             continue;
         }
         match parse_cmd(&line) {
-            // Un client ne peut pas arrêter le démon : `quit` ferme seulement sa connexion.
+            // A client cannot stop the daemon: `quit` only closes its own connection.
             Ok(Cmd::Quit) => return,
             Ok(cmd) => {
                 if requests.send((cmd, Some(reply.clone()))).await.is_err() {
@@ -354,16 +367,16 @@ async fn read_commands(mut r: BufReader<tokio::net::unix::OwnedReadHalf>, reply:
     }
 }
 
-/// Côté GUI : état de la liaison avec le démon.
+/// GUI side: state of the link with the daemon.
 #[derive(Debug)]
 pub enum Link {
-    /// Connecté : l'instantané suit, l'état local est à réinitialiser.
+    /// Connected: the snapshot follows, the local state must be reset.
     Up,
     Down(String),
     Event(Box<Out>),
 }
 
-/// Se connecte au démon et y reste (nouvel essai toutes les 2 s) jusqu'à la fermeture de `cmds`.
+/// Connects to the daemon and stays there (retry every 2 s) until `cmds` is closed.
 pub async fn client(path: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, mut on: impl FnMut(Link)) {
     let mut reported = false;
     loop {
@@ -393,8 +406,8 @@ pub async fn client(path: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, mut o
     }
 }
 
-/// Démarre le service du démon (non activé, ou lancé avant que sa cible ne soit atteinte) ; sans attente :
-/// la reconnexion périodique du client le trouvera. Service absent (installation manuelle) : sans effet.
+/// Starts the daemon service (not enabled, or launched before its target was reached); without waiting:
+/// the client's periodic reconnection will find it. Service missing (manual install): no effect.
 async fn start_daemon() {
     let r = tokio::process::Command::new("systemctl")
         .args(["--user", "start", "--no-block", "bluez-messaged.service"])
@@ -411,11 +424,11 @@ async fn start_daemon() {
     }
 }
 
-/// `Ok` : `cmds` fermé ; `Err` : liaison perdue.
+/// `Ok`: `cmds` closed; `Err`: link lost.
 async fn session(s: UnixStream, cmds: &mut mpsc::UnboundedReceiver<Cmd>, on: &mut impl FnMut(Link)) -> Result<(), String> {
     let (r, mut w) = s.into_split();
     let mut r = BufReader::new(r);
-    // Conservé d'un tour à l'autre : une lecture interrompue par `select!` garde ses octets dans `buf`.
+    // Kept from one round to the next: a read interrupted by `select!` keeps its bytes in `buf`.
     let mut buf = Vec::new();
     loop {
         let mut limited = (&mut r).take((MAX_DAEMON_LINE + 1 - buf.len()) as u64);
@@ -462,7 +475,7 @@ mod tests {
         s.record(&Out::Status { link: Profile::Hfp, up: true }, true);
         s.record(&Out::Call(HfEvent::SlcReady), true);
         s.record(&sms("1", true), true);
-        s.record(&sms("1", true), true); // doublon : remplace sans dupliquer
+        s.record(&sms("1", true), true); // duplicate: replaces without duplicating
         s.record(&Out::Call(HfEvent::IncomingCall), false);
         s.record(&Out::Error { msg: "x".into() }, false);
         let r = s.replay();
@@ -470,10 +483,10 @@ mod tests {
             r,
             [Out::Status { link: Profile::Hfp, up: true }, Out::Call(HfEvent::SlcReady), sms("1", false), Out::Call(HfEvent::IncomingCall)]
         );
-        // Fin d'appel : plus rien de l'appel n'est rejoué.
+        // End of call: nothing of the call is replayed any more.
         s.record(&ind("callsetup", 0), true);
         assert_eq!(s.replay().len(), 3);
-        // Perte du lien HFP : SLC oublié.
+        // HFP link lost: SLC forgotten.
         s.record(&Out::Status { link: Profile::Hfp, up: false }, true);
         assert!(!s.replay().contains(&Out::Call(HfEvent::SlcReady)));
     }
@@ -499,6 +512,23 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_forgets_by_country_key() {
+        let mut s = Snapshot::default();
+        let settings = Out::Settings {
+            settings: crate::settings::Settings::default(),
+            langs: vec![],
+            devices: vec![],
+            device: "00:11:22:33:44:55".parse().unwrap(),
+            home: Some("fr".into()),
+            auto: Some("fr".into()),
+        };
+        s.record(&settings, true);
+        s.record(&Out::CallLog { number: "03 89 00 00 00".into(), timestamp: "20261015T120000".into(), kind: CallKind::Out, secs: 3, read: false }, true);
+        s.record(&Out::Deleted { key: "+33389000000".into(), item: None }, true);
+        assert_eq!(s.replay(), [settings], "conversation keyed in E.164 forgotten");
+    }
+
+    #[test]
     fn snapshot_caps_sms() {
         let mut s = Snapshot::default();
         for i in 0..MAX_SMS + 5 {
@@ -514,7 +544,7 @@ mod tests {
         Some(serde_json::from_str(&l).unwrap())
     }
 
-    /// Dossier comme `$XDG_RUNTIME_DIR` : 0700 (le défaut de `tempdir` suit l'umask).
+    /// Directory like `$XDG_RUNTIME_DIR`: 0700 (the `tempdir` default follows the umask).
     fn private_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -529,7 +559,7 @@ mod tests {
         let bound = bind(&path).await.unwrap();
         let hub = spawn_server(bound, req_tx);
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        // Second démon refusé.
+        // Second daemon refused.
         assert_eq!(bind(&path).await.unwrap_err().kind(), io::ErrorKind::AddrInUse);
         hub.publish(sms("1", true), true);
 

@@ -1,0 +1,30 @@
+post_install() {
+  cat <<'MSG'
+==> bluez-message: the daemon and the audio setup start at your next login.
+    Once: pair the iPhone (bluetoothctl: pair <address>, then trust <address>),
+    then bmessage > Settings > Bluetooth device: pick the iPhone.
+    To start everything without logging out:
+      systemctl --user daemon-reload && systemctl --user restart wireplumber && systemctl --user start bluez-messaged
+MSG
+}
+
+# Applique une action au service dans chaque session utilisateur ouverte (pacman tourne en root).
+_each_user() {
+  command -v loginctl >/dev/null || return 0
+  loginctl list-users --no-legend 2>/dev/null | while read -r _uid user _rest; do
+    [ -n "$user" ] || continue
+    systemctl --user -M "$user@" daemon-reload 2>/dev/null
+    systemctl --user -M "$user@" "$@" bluez-messaged.service 2>/dev/null && echo "==> bluez-message: $1 bluez-messaged ($user)"
+  done
+  return 0
+}
+
+post_upgrade() {
+  _each_user try-restart
+  echo "==> bluez-message: reopen bmessage if its window is open."
+}
+
+post_remove() {
+  _each_user stop
+  echo "==> bluez-message: systemctl --user restart wireplumber (or log out) to drop the call audio setup"
+}
