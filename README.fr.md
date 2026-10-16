@@ -111,7 +111,8 @@ Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
 
 ### Fenêtre principale
 
-- Colonne de gauche : conversations, champ de recherche « Nom ou numéro » (accents ignorés, `06…` ou
+- Colonne de gauche, « Contacts » : onglets **SMS** et **Appels** (moitié de largeur chacun). Les fixes
+  n'apparaissent que dans Appels, sous le nom du contact s'il est dans le carnet. Champ de recherche « Nom ou numéro » (accents ignorés, `06…` ou
   `+33…` ; Entrée ouvre le premier résultat).
 - Fil de discussion : envoi, bouton emojis, bouton d'appel dans l'en-tête.
 - Clic droit sur une bulle : réaction, Renvoyer, Copier, Supprimer (suppression locale seulement, jamais
@@ -128,7 +129,8 @@ Basculer en double appel). Elle se ferme seule en fin d'appel.
 
 ### Paramètres
 
-Langue (à chaud), notifications SMS / appels / masquage du texte, appareil Bluetooth, Reconnecter,
+Langue (à chaud), Pays des numéros (Automatique : selon la langue ou la locale ; sert à reconnaître les
+fixes et à regrouper un numéro écrit `06…` ou `+33…`), notifications SMS / appels / masquage du texte, appareil Bluetooth, Reconnecter,
 durée de conservation (30 / 90 / 365 jours), purge des messages supprimés, Tout effacer (double
 confirmation, les contacts sont gardés).
 
@@ -150,7 +152,7 @@ bluez-msg locale template | check <fichier>
 | `~/.config/bluez-message/device` | Adresse Bluetooth de l'iPhone (0600). |
 | `~/.config/bluez-message/settings.json` | Réglages (écrits par le démon seul). |
 | `~/.config/bluez-message/locales/<lang>.json` | Traductions personnelles. |
-| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). |
+| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak`. |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Socket du démon (JSON lignes). |
 | `~/.config/control-bar/colors.plm` | Optionnel : palette de couleurs (template matugen), rechargée à chaud. |
 

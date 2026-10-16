@@ -111,7 +111,8 @@ After restarting WirePlumber, reconnect the iPhone (`bluetoothctl disconnect` th
 
 ### Main window
 
-- Left column: conversations, "Name or number" search field (accents ignored, local or `+33…` format;
+- Left column, "Contacts": **SMS** and **Calls** tabs (half width each). Landlines only appear in Calls,
+  under the contact name when they are in the address book. "Name or number" search field (accents ignored, local or `+33…` format;
   Enter opens the first result).
 - Thread: send, emoji button, call button in the header.
 - Right-click on a bubble: reaction, Resend, Copy, Delete (local deletion only, never on the iPhone).
@@ -127,7 +128,8 @@ Swap during call waiting). It closes by itself when the call ends.
 
 ### Settings
 
-Language (applied live), text / call notifications / hide message text, Bluetooth device, Reconnect,
+Language (applied live), Phone number country (Automatic: from the language or the locale; used to
+recognise landlines and to group a number written as `06…` or `+33…`), text / call notifications / hide message text, Bluetooth device, Reconnect,
 retention (30 / 90 / 365 days), purge deleted messages, Erase everything (double confirmation, contacts
 are kept).
 
@@ -149,7 +151,7 @@ bluez-msg locale template | check <file>
 | `~/.config/bluez-message/device` | iPhone Bluetooth address (0600). |
 | `~/.config/bluez-message/settings.json` | Settings (written by the daemon only). |
 | `~/.config/bluez-message/locales/<lang>.json` | Your own translations. |
-| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). |
+| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak`. |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Daemon socket (JSON lines). |
 | `~/.config/control-bar/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
 
