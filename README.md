@@ -4,8 +4,8 @@ SMS et appels de l'iPhone sur un PC Linux, par Bluetooth uniquement : aucun serv
 Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egui.
 
 > **Projet « vibe codé »** : le code a été écrit par une IA ([Claude Code](https://claude.com/claude-code)),
-> sous la direction de l'auteur qui l'a testé sur son propre matériel (iPhone 11, Arch Linux, Hyprland).
-> Il n'a pas fait l'objet d'une relecture humaine ligne à ligne : à utiliser en connaissance de cause.
+> sous la direction de l'auteur, qui en a fixé les orientations de structure, d'optimisation et de
+> sécurité, et l'a testé sur son propre matériel (iPhone 11, Arch Linux, Hyprland).
 
 - **SMS** : lecture et envoi par le profil Bluetooth MAP (via `bluez-obex`).
 - **Contacts** : synchronisés par PBAP toutes les 6 h (noms dans les conversations, recherche).
