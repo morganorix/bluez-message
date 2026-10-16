@@ -258,7 +258,7 @@ mod tests {
         merge(&mut t, r#"{"A {0}": "B", "C": "", "D {0}": "E {0}"}"#, "test");
         assert_eq!(t.len(), 1);
         assert_eq!(t["D {0}"], "E {0}");
-        merge(&mut t, "pas du json", "test");
+        merge(&mut t, "not json", "test");
         assert_eq!(t.len(), 1);
     }
 
@@ -281,7 +281,7 @@ mod tests {
                         }
                         let end = rest.find('"').unwrap();
                         let key = &rest[..end];
-                        assert!(!key.ends_with('\\'), "pas d'échappement dans une clé : {}", p.display());
+                        assert!(!key.ends_with('\\'), "no escape in a key: {}", p.display());
                         out.insert(key.to_owned());
                         rest = &rest[end..];
                     }

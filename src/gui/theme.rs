@@ -202,6 +202,9 @@ fn style(s: &mut egui::Style) {
     s.spacing.button_padding = vec2(12.0, 5.0);
     s.spacing.interact_size.y = size::BUTTON_H;
     s.spacing.scroll.bar_width = 6.0;
+    // Bulles d'aide immédiates, même pointeur en mouvement.
+    s.interaction.tooltip_delay = 0.0;
+    s.interaction.show_tooltips_only_when_still = false;
     s.spacing.scroll.floating = true;
 }
 

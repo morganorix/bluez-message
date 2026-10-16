@@ -154,6 +154,8 @@ bluez-msg locale template | check <file>
 | `~/.config/control-bar/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
 
 `BLUEZ_MESSAGE_LANG` variable: forces the language (`fr`, `en`…).
+`BLUEZ_MESSAGE_LOG` variable: log level (`info` by default, without numbers, names, texts or addresses;
+`debug` for troubleshooting, e.g. `systemctl --user edit bluez-messaged` → `Environment=BLUEZ_MESSAGE_LOG=debug`).
 
 ### Hyprland (optional)
 

@@ -121,6 +121,6 @@ mod tests {
                 s.spawn(|| (0..50).for_each(|_| write_private(&path, b"x").unwrap()));
             }
         });
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "aucun temporaire laissé");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temporary file left");
     }
 }

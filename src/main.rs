@@ -44,9 +44,7 @@ enum LocaleCmd {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
+    bluez_message::log::init();
     match run(Cli::parse()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {

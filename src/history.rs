@@ -326,9 +326,9 @@ mod tests {
         h.set_since("20261001T000000");
         assert_eq!(h.since(), "20261001T000000");
         assert!(h.add_sms(&sms("+33612345678", "20261015T100000", "a"), false).unwrap());
-        assert!(!h.add_sms(&sms("06 12 34 56 78", "20261015T100000", "a"), false).unwrap(), "même message, autre écriture du numéro");
-        assert!(!h.add_sms(&sms("+33612345678", "20261015T095959", "a"), false).unwrap(), "horodatage décalé d'une seconde");
-        assert!(h.add_sms(&sms("+33612345678", "20261015T100100", "a"), false).unwrap(), "même texte une minute plus tard : nouveau");
+        assert!(!h.add_sms(&sms("06 12 34 56 78", "20261015T100000", "a"), false).unwrap(), "same message, number written differently");
+        assert!(!h.add_sms(&sms("+33612345678", "20261015T095959", "a"), false).unwrap(), "timestamp off by one second");
+        assert!(h.add_sms(&sms("+33612345678", "20261015T100100", "a"), false).unwrap(), "same text one minute later: new");
         assert!(h.add_local_sent("0612345678", "20261015T090000", "b").unwrap());
         // Retour par le dossier `sent` : remplace l'envoi local, pas de doublon.
         let back = Sms { recipient_address: "+33612345678".into(), timestamp: "20261015T090003".into(), text: "b".into(), ..Default::default() };
@@ -353,7 +353,7 @@ mod tests {
         // Retour par `sent` arrivé avant la fin du transfert : l'envoi local n'est pas consigné en plus.
         assert!(h.add_sms(&Sms { recipient_address: "0612345678".into(), timestamp: "20261015T140001".into(), text: "d".into(), ..Default::default() }, true).unwrap());
         assert!(!h.add_local_sent("+33612345678", "20261015T140000", "d").unwrap());
-        assert!(h.add_local_sent("+33612345678", "20261015T150000", "d").unwrap(), "renvoi plus tard : consigné");
+        assert!(h.add_local_sent("+33612345678", "20261015T150000", "d").unwrap(), "resent later: recorded");
         // Suppression : masqué, ne revient pas au relistage MAP.
         let item = crate::engine::Item { timestamp: "20261015T130000".into(), text: "c".into(), outgoing: false, call: false };
         assert_eq!(h.delete("612345678", Some(&item)).unwrap(), 1);
@@ -393,6 +393,6 @@ mod tests {
         h.clear().unwrap();
         assert!(h.since() > "20261015T100000");
         let v = h.load(10).unwrap();
-        assert!(matches!(v.as_slice(), [Out::Contacts { .. }]), "répertoire gardé, le reste vidé : {v:?}");
+        assert!(matches!(v.as_slice(), [Out::Contacts { .. }]), "contacts kept, the rest cleared: {v:?}");
     }
 }

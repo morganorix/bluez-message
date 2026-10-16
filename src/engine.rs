@@ -146,12 +146,13 @@ pub enum Out {
     Error { msg: String },
 }
 
-/// Liaison Bluetooth suivie : appels (HFP) ou messages (MAP).
+/// Liaison Bluetooth suivie : appels (HFP), messages (MAP) ou contacts (PBAP, issue de la dernière synchronisation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     Hfp,
     Map,
+    Pbap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -489,7 +489,7 @@ mod tests {
         let fail = Out::Sent { to: "0612345678".into(), text: "c".into(), ok: false, error: None, timestamp: "20261015T110000".into() };
         s.record(&fail, true);
         s.record(&Out::CallLog { number: "0612345678".into(), timestamp: "20261015T120000".into(), kind: CallKind::Out, secs: 3, read: false }, true);
-        assert_eq!(s.replay().len(), 4, "échec d'envoi rejoué");
+        assert_eq!(s.replay().len(), 4, "send failure replayed");
         let item = Item { timestamp: "20261015T100000".into(), text: "a".into(), outgoing: false, call: false };
         s.record(&Out::Deleted { key: "612345678".into(), item: Some(item) }, true);
         assert_eq!(s.replay().len(), 3);
@@ -542,15 +542,15 @@ mod tests {
         w.write_all(b"{\"cmd\":\"answer\"}\n").await.unwrap();
         let (cmd, reply) = req_rx.recv().await.unwrap();
         assert_eq!(cmd, Cmd::Answer);
-        reply.unwrap().send(Out::Error { msg: "occupé".into() }).await.unwrap();
-        assert_eq!(next(&mut lines).await, Some(Out::Error { msg: "occupé".into() }));
+        reply.unwrap().send(Out::Error { msg: "busy".into() }).await.unwrap();
+        assert_eq!(next(&mut lines).await, Some(Out::Error { msg: "busy".into() }));
 
-        w.write_all(b"pas du json\n").await.unwrap();
+        w.write_all(b"not json\n").await.unwrap();
         assert!(matches!(next(&mut lines).await, Some(Out::Error { .. })));
 
         w.write_all(&vec![b'a'; MAX_LINE + 10]).await.unwrap();
         assert!(matches!(next(&mut lines).await, Some(Out::Error { .. })));
-        assert_eq!(next(&mut lines).await, None, "connexion fermée après une ligne trop longue");
+        assert_eq!(next(&mut lines).await, None, "connection closed after an over-long line");
     }
 
     #[tokio::test]

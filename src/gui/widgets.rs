@@ -288,10 +288,10 @@ pub enum Link {
 }
 
 /// Point d'état de `KnownCard` (rond 4.5 ; halo 8 accent 22 % si relié ; éteint `fg` 25 %, en cours accent2),
-/// libellé 11 à 40 % à sa gauche comme celui de `HeadSwitch`.
-pub fn status_dot(ui: &mut Ui, pal: &Palette, label: &str, state: Link) {
-    let g = ui.painter().layout_no_wrap(label.to_owned(), regular(font::SMALL), pal.muted());
-    let (rect, _) = ui.allocate_exact_size(vec2(g.size().x + 8.0 + 16.0, 30.0), Sense::hover());
+/// icône (Nerd Font) 16 à 40 % à sa gauche.
+pub fn status_dot(ui: &mut Ui, pal: &Palette, icon: &str, state: Link) -> Response {
+    let g = ui.painter().layout_no_wrap(icon.to_owned(), regular(font::ICON), pal.muted());
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0 + 16.0, 30.0), Sense::hover());
     let y = rect.center().y;
     put(ui, g, Pos2::new(rect.left(), y), false, pal.muted());
     let c = Pos2::new(rect.right() - 8.0, y);
@@ -304,4 +304,5 @@ pub fn status_dot(ui: &mut Ui, pal: &Palette, label: &str, state: Link) {
         ui.painter().circle_filled(c, 8.0, pal.accent.gamma_multiply(0.22));
     }
     ui.painter().circle_filled(c, 4.5, dot);
+    resp
 }

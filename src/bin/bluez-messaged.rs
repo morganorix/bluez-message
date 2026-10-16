@@ -12,7 +12,7 @@ use bluez_message::addr::BtAddr;
 use bluez_message::app::notify;
 use bluez_message::app::state::{Effect, Phase, State};
 use bluez_message::config;
-use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out};
+use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
 use bluez_message::settings::Settings;
 use bluez_message::{bluez, i18n, ipc, pbap, t};
@@ -61,7 +61,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    bluez_message::log::init();
     let args = Args::parse();
     match run(args).await {
         Ok(Exit::Done) => ExitCode::SUCCESS,
@@ -133,7 +133,7 @@ async fn run(args: Args) -> Result<Exit, String> {
                 let Some(o) = o else { break Err(t!("engine stopped").to_owned()) };
                 d.on_event(o).await;
             }
-            Some(list) = contacts.recv() => d.on_contacts(&list),
+            Some(list) = contacts.recv() => d.on_contacts(list.as_deref()),
             r = requests.recv() => {
                 let Some((cmd, reply)) = r else { break Err(t!("command channel closed").to_owned()) };
                 if let Some(exit) = d.on_request(cmd, reply).await {
@@ -260,14 +260,21 @@ impl Daemon {
         self.links_tx.send_if_modified(|l| std::mem::replace(l, now) != now);
     }
 
-    fn on_contacts(&mut self, list: &[(String, String)]) {
-        match self.history.replace_contacts(list) {
-            Ok(names) => {
+    /// `None` : synchronisation échouée (refus, répertoire vide), contacts consignés gardés.
+    fn on_contacts(&mut self, list: Option<&[(String, String)]>) {
+        let ok = match list.map(|l| self.history.replace_contacts(l)) {
+            Some(Ok(names)) => {
                 tracing::info!(contacts = names.len(), "iPhone contacts synced");
                 self.apply_publish(Out::Contacts { names });
+                true
             }
-            Err(e) => tracing::warn!("contacts: {e}"),
-        }
+            Some(Err(e)) => {
+                tracing::warn!("contacts: {e}");
+                false
+            }
+            None => false,
+        };
+        self.apply_publish(Out::Status { link: Profile::Pbap, up: ok });
     }
 
     /// Commande d'un client (ou d'une notification) ; `Some` : le démon doit s'arrêter ou repartir.
@@ -399,7 +406,7 @@ impl Daemon {
             return Ok(false);
         }
         config::write_device(new).map_err(|e| t!("cannot save the device: {0}", e))?;
-        tracing::info!(addr = %new, "device changed: restarting");
+        tracing::info!("device changed: restarting");
         Ok(true)
     }
 
@@ -499,25 +506,24 @@ fn admit(h: &History, o: &Out) -> bool {
 
 /// Répertoire de l'iPhone par PBAP : au démarrage, puis toutes les 6 h (30 min après un échec).
 /// Un répertoire vide (refus, transfert sans fichier) ne remplace pas celui déjà consigné.
-async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Vec<(String, String)>>) {
+/// `None` envoyé à chaque échec, pour l'indicateur PBAP.
+async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Option<Vec<(String, String)>>>) {
     tokio::time::sleep(CONTACTS_DELAY).await;
     loop {
-        let wait = match pbap::pull(&addr).await {
+        let (list, wait) = match pbap::pull(&addr).await {
             Ok(list) if list.is_empty() => {
                 tracing::warn!("empty PBAP phonebook: stored contacts kept");
-                CONTACTS_RETRY
+                (None, CONTACTS_RETRY)
             }
-            Ok(list) => {
-                if tx.send(list).await.is_err() {
-                    return;
-                }
-                CONTACTS_EVERY
-            }
+            Ok(list) => (Some(list), CONTACTS_EVERY),
             Err(e) => {
                 tracing::warn!("PBAP phonebook (allow \"Sync Contacts\" on the iPhone?): {e}");
-                CONTACTS_RETRY
+                (None, CONTACTS_RETRY)
             }
         };
+        if tx.send(list).await.is_err() {
+            return;
+        }
         tokio::time::sleep(wait).await;
     }
 }

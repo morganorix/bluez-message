@@ -154,7 +154,7 @@ async fn list_paired() -> Result<Vec<Device>> {
             }
             let raw = prop_str(d, "Address")?;
             let Ok(addr) = raw.parse::<BtAddr>() else {
-                tracing::debug!(address = raw, "appareil ignoré : adresse illisible");
+                tracing::debug!(address = raw, "device ignored: unreadable address");
                 return None;
             };
             let name = get_s("Alias").or_else(|| get_s("Name")).unwrap_or_else(|| addr.to_string());

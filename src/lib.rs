@@ -11,6 +11,7 @@ pub mod hfp;
 pub mod history;
 pub mod i18n;
 pub mod ipc;
+pub mod log;
 pub mod map;
 pub mod obex;
 pub mod pbap;

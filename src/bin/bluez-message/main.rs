@@ -19,7 +19,7 @@ use eframe::egui;
 struct Args {}
 
 fn main() -> ExitCode {
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    bluez_message::log::init();
     Args::parse();
     // Une seule fenêtre : un second lancement se retire sans rien faire.
     let _lock = match instance_lock() {

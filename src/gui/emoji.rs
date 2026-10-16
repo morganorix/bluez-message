@@ -111,7 +111,7 @@ fn find_font() -> Font {
         .filter(|p| p.contains("Emoji"))
         .and_then(|p| std::fs::read(p).ok());
     let Some(bytes) = bytes else {
-        tracing::info!("police Noto Color Emoji introuvable : emojis en texte");
+        tracing::info!("Noto Color Emoji font not found: emojis rendered as text");
         return None;
     };
     // Lue une fois, gardée toute la vie du processus.

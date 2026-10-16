@@ -136,7 +136,7 @@ impl App {
         true
     }
 
-    /// En-tête (`MenuHeader`) ; à droite, les points d'état des liens.
+    /// En-tête (`MenuHeader`) ; à droite, les points d'état des liens (appel HFP, messages MAP, contacts PBAP).
     fn header(&mut self, ui: &mut egui::Ui) {
         let pal = self.pal;
         let hfp = match (self.state.hfp_up, self.state.slc) {
@@ -145,11 +145,20 @@ impl App {
             _ => w::Link::Off,
         };
         let map = if self.state.map_up { w::Link::On } else { w::Link::Off };
+        let pbap = match self.state.pbap {
+            Some(true) => w::Link::On,
+            Some(false) => w::Link::Pending,
+            None => w::Link::Off,
+        };
         let rect = w::header(ui, &pal, "󰍡", "MESSAGES");
         right_of(ui, rect.shrink2(egui::vec2(size::EDGE, 0.0)), |ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
-            w::status_dot(ui, &pal, "HFP", hfp);
-            w::status_dot(ui, &pal, "MAP", map);
+            w::status_dot(ui, &pal, "󰏲", hfp)
+                .on_hover_text(t!("HFP (Hands-Free Profile): calls and call audio. Lit with a halo: ready; lit without a halo: connecting; dim: not connected."));
+            w::status_dot(ui, &pal, "󰍩", map)
+                .on_hover_text(t!("MAP (Message Access Profile): reading and sending texts. Lit with a halo: connected; dim: not connected."));
+            let pbap_tip = t!("PBAP (Phone Book Access Profile): contact names, synced every 6 hours. Lit with a halo: last sync succeeded; lit without a halo: last sync failed (allow Sync Contacts on the iPhone); dim: not synced yet.");
+            w::status_dot(ui, &pal, "󰛋", pbap).on_hover_text(pbap_tip);
         });
     }
 
@@ -399,7 +408,7 @@ impl eframe::App for App {
         }
         CentralPanel::default_margins().frame(side(p, p, 0, 4)).show(ui, |ui| match self.prefs.as_mut() {
             Some(v) => {
-                let links = (self.state.map_up, self.state.hfp_up && self.state.slc);
+                let links = (self.state.map_up, self.state.hfp_up && self.state.slc, self.state.pbap == Some(true));
                 let (cmds, close) = v.show(ui, &pal, self.state.settings.as_ref(), links);
                 for c in cmds {
                     self.submit(c);

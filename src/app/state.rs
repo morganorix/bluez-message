@@ -155,6 +155,8 @@ pub struct State {
     pub map_up: bool,
     pub hfp_up: bool,
     pub slc: bool,
+    /// Dernière synchronisation des contacts : `None` avant la première tentative.
+    pub pbap: Option<bool>,
     pub call: Call,
     pub error: Option<String>,
     /// Compte rendu d'une commande (purge…), affiché sans alarme.
@@ -251,6 +253,10 @@ impl State {
             }
             Out::Deleted { key, item } => {
                 self.delete(&key, item.as_ref());
+                vec![]
+            }
+            Out::Status { link: Profile::Pbap, up } => {
+                self.pbap = Some(up);
                 vec![]
             }
             Out::Status { up: true, .. } if self.link_error => {
@@ -559,7 +565,7 @@ mod tests {
     fn pending_then_done_or_failed_then_resent() {
         let mut st = State::default();
         st.pending("0712345601", "a");
-        assert_eq!(st.convs[0].msgs[0].delivery, Delivery::Pending, "bulle immédiate");
+        assert_eq!(st.convs[0].msgs[0].delivery, Delivery::Pending, "immediate bubble");
         st.apply(sent("a", true, "20261015T100000"));
         assert_eq!(st.convs[0].msgs.iter().map(|m| m.delivery).collect::<Vec<_>>(), [Delivery::Done]);
         st.pending("0712345601", "b");
@@ -567,7 +573,7 @@ mod tests {
         let failed = st.convs[0].msgs.last().unwrap().clone();
         assert_eq!((failed.delivery, failed.timestamp.as_str()), (Delivery::Failed, "20261015T100100"));
         st.pending("0712345601", "b");
-        assert_eq!(st.convs[0].msgs.len(), 2, "le renvoi remplace la bulle en échec");
+        assert_eq!(st.convs[0].msgs.len(), 2, "the resend replaces the failed bubble");
         st.apply(sent("b", true, "20261015T100200"));
         assert!(st.convs[0].msgs.iter().all(|m| m.delivery == Delivery::Done));
         assert_eq!(st.convs[0].msgs.len(), 2);
@@ -600,13 +606,24 @@ mod tests {
         assert!(st.conv("612345678").is_none());
         let item = st.convs[0].msgs[0].item();
         st.delete("700000000", Some(&item));
-        assert!(st.convs.is_empty(), "conversation vidée retirée");
+        assert!(st.convs.is_empty(), "emptied conversation removed");
+    }
+
+    #[test]
+    fn pbap_status_keeps_link_error() {
+        let mut st = State::default();
+        assert_eq!(st.pbap, None);
+        st.apply(Out::Error { msg: "service unavailable".into() });
+        st.apply(Out::Status { link: Profile::Pbap, up: true });
+        assert_eq!((st.error.as_deref(), st.pbap), (Some("service unavailable"), Some(true)));
+        st.apply(Out::Status { link: Profile::Pbap, up: false });
+        assert_eq!(st.pbap, Some(false));
     }
 
     #[test]
     fn link_up_clears_link_error() {
         let mut st = State::default();
-        st.apply(Out::Error { msg: "service absent".into() });
+        st.apply(Out::Error { msg: "service unavailable".into() });
         st.apply(Out::Status { link: Profile::Hfp, up: true });
         assert_eq!((st.error.as_deref(), st.hfp_up), (None, true));
         st.pending("+331", "x");
@@ -622,7 +639,7 @@ mod tests {
         st.apply(Out::Sent { to: "+331".into(), text: "x".into(), ok: false, error: Some("MAP".into()), timestamp: String::new() });
         assert_eq!((st.convs[0].msgs[0].delivery, st.error.is_none()), (Delivery::Failed, true));
         st.pending("+331", "x");
-        assert_eq!(st.convs[0].msgs.len(), 1, "le renvoi remplace l'échec");
+        assert_eq!(st.convs[0].msgs.len(), 1, "the resend replaces the failure");
         st.apply(Out::Sent { to: "+331".into(), text: "x".into(), ok: false, error: Some("MAP".into()), timestamp: String::new() });
         assert!(st.error.as_deref().unwrap().contains("MAP"));
         // Deux envois identiques coup sur coup : deux bulles ; perte de liaison : en échec.
@@ -683,7 +700,7 @@ mod tests {
     #[test]
     fn mute_and_second_call() {
         let mut st = State::default();
-        assert_eq!(st.set_muted(true), [], "pas d'appel : rien à couper");
+        assert_eq!(st.set_muted(true), [], "no call: nothing to mute");
         st.apply(ind("call", 1));
         st.apply(Out::Call(HfEvent::Clip { number: "+331".into() }));
         assert!(shown(st.set_muted(true)).muted);
@@ -730,23 +747,23 @@ mod tests {
         st.apply(sms("1", "0612345678", "20261015T100000", "a", false));
         st.apply(sms("2", "0612345678", "20261015T110000", "b", false));
         assert_eq!(st.convs[0].unread, 2);
-        let until = st.mark_read("612345678").expect("non lu à transmettre");
+        let until = st.mark_read("612345678").expect("unread to send");
         assert_eq!((until.as_str(), st.convs[0].unread), ("20261015T110000", 0));
-        assert_eq!(st.mark_read("612345678"), None, "déjà lu : rien à transmettre");
+        assert_eq!(st.mark_read("612345678"), None, "already read: nothing to send");
         // Client neuf : instantané rejoué (SMS non lus puis lecture) → rien de non lu.
         let mut fresh = State::default();
         fresh.apply(sms("1", "0612345678", "20261015T100000", "a", false));
         fresh.apply(Out::Read { key: "612345678".into(), until: "20261015T100000".into() });
         fresh.apply(sms("2", "0612345678", "20261015T110000", "b", false));
-        assert_eq!(fresh.convs[0].unread, 1, "seul le message postérieur à la lecture");
+        assert_eq!(fresh.convs[0].unread, 1, "only the message after the read mark");
         fresh.apply(Out::Read { key: "612345678".into(), until: "20261015T090000".into() });
-        assert_eq!(fresh.convs[0].unread, 1, "une lecture ne recule pas");
+        assert_eq!(fresh.convs[0].unread, 1, "a read mark never moves back");
     }
 
     #[test]
     fn muted_event_reaches_clients() {
         let mut st = State::default();
-        assert_eq!(st.apply(Out::Muted { on: true }), [], "pas d'appel");
+        assert_eq!(st.apply(Out::Muted { on: true }), [], "no call");
         st.apply(Out::Call(HfEvent::IncomingCall));
         st.apply(ind("call", 1));
         assert!(shown(st.apply(Out::Muted { on: true })).muted);
@@ -763,7 +780,7 @@ mod tests {
         assert_eq!(v.name.as_deref(), Some("Bob"));
         st.apply(Out::CallLog { number: "0612345678".into(), timestamp: "20261015T110000".into(), kind: CallKind::Missed, secs: 0, read: false });
         let c = &st.convs[0];
-        assert_eq!((c.msgs.len(), c.unread), (2, 2), "SMS non lu + appel manqué");
+        assert_eq!((c.msgs.len(), c.unread), (2, 2), "unread text + missed call");
         assert_eq!(c.msgs[1].call, Some((CallKind::Missed, 0)));
         // Nouveau SMS : la notification porte le nom du répertoire.
         let mut s = Sms { handle: "9".into(), address: "+33612345678".into(), timestamp: "20261015T120000".into(), text: "b".into(), ..Default::default() };
@@ -775,14 +792,14 @@ mod tests {
     fn search_by_name_or_number() {
         let mut st = State::default();
         st.apply(Out::Contacts { names: vec![("+33 6 12 34 56 78".into(), "Émile Zola".into()), ("0700000000".into(), "Anne".into())] });
-        assert_eq!(st.search("emi", 10), [("Émile Zola", "+33 6 12 34 56 78")], "accents et casse ignorés");
+        assert_eq!(st.search("emi", 10), [("Émile Zola", "+33 6 12 34 56 78")], "accents and case ignored");
         assert_eq!(st.search("ZOLA", 10).len(), 1);
         assert_eq!(st.search("06 12", 10).len(), 1, "forme nationale");
         assert_eq!(st.search("+336123", 10).len(), 1, "forme internationale");
         assert_eq!(st.search("0", 10).len(), 2);
-        assert_eq!(st.search("0", 1).len(), 1, "borné");
+        assert_eq!(st.search("0", 1).len(), 1, "bounded");
         assert!(st.search("  ", 10).is_empty());
         assert_eq!(st.search("", 10), []);
-        assert_eq!(st.search("a", 10)[0].0, "Anne", "trié par nom");
+        assert_eq!(st.search("a", 10)[0].0, "Anne", "sorted by name");
     }
 }

@@ -75,7 +75,7 @@ fn pressed(ui: &egui::Ui, key: Key) -> bool {
 
 impl View {
     /// Rendu ; renvoie les commandes à transmettre au démon et `true` si la vue doit se fermer.
-    pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, prefs: Option<&Prefs>, links: (bool, bool)) -> (Vec<Cmd>, bool) {
+    pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, prefs: Option<&Prefs>, links: (bool, bool, bool)) -> (Vec<Cmd>, bool) {
         if self.armed.as_ref().is_some_and(|(_, t)| t.elapsed() > ARM) {
             self.armed = None;
         }
@@ -168,9 +168,8 @@ impl View {
     }
 
     /// Lignes par rubrique, dans l'ordre d'affichage (cible du curseur clavier) ; `lang` : langue choisie.
-    fn sections<'a>(&self, p: &'a Prefs, lang: &'a str, links: (bool, bool)) -> Vec<Section<'a>> {
+    fn sections<'a>(&self, p: &'a Prefs, lang: &'a str, links: (bool, bool, bool)) -> Vec<Section<'a>> {
         let s = &p.settings;
-        let (map_up, hfp_up) = links;
         let mut sections: Vec<Section> = vec![];
     // Langue choisie à droite, avant le chevron.
     let lang_row = w::Row { hint: lang, ..row("󰗊", t!("Language"), "", self.lang_menu.is_some()) };
@@ -191,12 +190,10 @@ impl View {
         let current = d.addr == p.device;
         let hint = match (current, &self.armed) {
             (false, Some((Armed::Device(a), _))) if *a == d.addr => t!("Confirm: daemon restarts"),
-            (true, _) => match (map_up, hfp_up) {
-                (true, true) => t!("MAP · HFP"),
-                (true, false) => t!("MAP only"),
-                (false, true) => t!("HFP only"),
-                (false, false) if d.connected => t!("connected, no profile"),
-                _ => t!("disconnected"),
+            (true, _) => match profiles(links) {
+                "" if d.connected => t!("connected, no profile"),
+                "" => t!("disconnected"),
+                up => up,
             },
             (false, _) if d.connected => t!("connected"),
             _ => "",
@@ -350,6 +347,20 @@ fn lang_list(ui: &egui::Ui, pal: &Palette, anchor: egui::Rect, choices: &[(Optio
             .inner
     });
     (r.inner, r.response.contains_pointer())
+}
+
+/// Profils actifs (MAP, HFP, PBAP), sigles non traduits.
+fn profiles((map, hfp, pbap): (bool, bool, bool)) -> &'static str {
+    match (map, hfp, pbap) {
+        (true, true, true) => "MAP · HFP · PBAP",
+        (true, true, false) => "MAP · HFP",
+        (true, false, true) => "MAP · PBAP",
+        (false, true, true) => "HFP · PBAP",
+        (true, false, false) => "MAP",
+        (false, true, false) => "HFP",
+        (false, false, true) => "PBAP",
+        (false, false, false) => "",
+    }
 }
 
 fn row<'a>(icon: &'a str, label: &'a str, hint: &'a str, selected: bool) -> w::Row<'a> {

@@ -243,7 +243,11 @@ impl Rfcomm {
                 Err(_) => continue,
             }
         }
-        tracing::debug!(cmd, "TX");
+        // ATD<numéro> : numéro composé masqué.
+        match cmd.strip_prefix("ATD") {
+            Some(n) => tracing::debug!(number = mask(n.trim_end_matches(';')), "TX ATD"),
+            None => tracing::debug!(cmd, "TX"),
+        }
         Ok(())
     }
 }
@@ -346,6 +350,8 @@ async fn session(fd: OwnedFd, cmds: &mut mpsc::Receiver<HfCmd>, on_event: &mut i
             }
             match line.strip_prefix("+CLIP:") {
                 Some(rest) => tracing::debug!(number = mask(rest.split('"').nth(1).unwrap_or_default()), "RX +CLIP"),
+                // +CLCC, +CNUM… : champs entre guillemets (numéros, noms) jamais journalisés.
+                None if line.contains('"') => tracing::debug!(cmd = line.split(':').next().unwrap_or_default(), "RX (quoted fields hidden)"),
                 None => tracing::debug!(%line, "RX"),
             }
             let (out, evs) = slc.on_line(&line);

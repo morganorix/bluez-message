@@ -31,7 +31,7 @@ struct Args {
 }
 
 fn main() -> ExitCode {
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    bluez_message::log::init();
     let args = Args::parse();
     let viewport = egui::ViewportBuilder::default()
         .with_title(t!("Call"))
