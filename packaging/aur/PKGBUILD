@@ -1,6 +1,6 @@
 # Maintainer: morganorix <4254819+morganorix@users.noreply.github.com>
 pkgname=bluez-message
-pkgver=0.1.4
+pkgver=0.1.5
 pkgrel=1
 pkgdesc="bmessage: iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
 arch=('x86_64')
@@ -23,7 +23,7 @@ optdepends=(
 makedepends=('cargo')
 install=bluez-message.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('c0a9dfab099c30402b2d45502866fad181ba6206ae57d8f8c3e6f0cd9f88041a')
+sha256sums=('450a51312961a8529d0660f5f52b9d383939289531ae554b472a0b896682281d')
 
 prepare() {
   cd "$pkgname-$pkgver"
