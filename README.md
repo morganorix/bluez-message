@@ -39,7 +39,15 @@ Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egu
 
 ### Arch Linux
 
-Paquet précompilé (x86_64), depuis les [releases](https://github.com/morganorix/bluez-message/releases) :
+Paquet précompilé (x86_64), depuis les [releases](https://github.com/morganorix/bluez-message/releases),
+signé par la clé `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Une seule fois, approuver la clé :
+
+```sh
+curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.0/morganorix.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+```
+
+Puis installer :
 
 ```sh
 sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.0/bluez-message-0.1.0-1-x86_64.pkg.tar.zst
