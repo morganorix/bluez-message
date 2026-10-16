@@ -1,0 +1,12 @@
+[Unit]
+Description=Relais SMS/appels iPhone (bluez-messaged)
+After=graphical-session.target pipewire.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/bluez-messaged
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

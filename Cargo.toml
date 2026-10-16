@@ -1,0 +1,52 @@
+[package]
+name = "bluez-message"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
+license = "MIT"
+repository = "https://github.com/morganorix/bluez-message"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+# Sans `accesskit` (lecteur d'écran) : connexion D-Bus et threads en moins. Le reste = défauts d'eframe ;
+# `winit` direct garde ses défauts (Wayland CSD, chargement dynamique), que `winit/default` d'eframe activait.
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "links", "wayland", "wgpu", "x11"], optional = true }
+futures-util = "0.3.34"
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
+libc = "0.2.190"
+notify-rust = { version = "4.18.2", optional = true }
+rusqlite = "0.32.1"
+rustybuzz = { version = "0.20.1", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "time", "io-util", "signal", "process", "net", "sync", "io-std"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+winit = { version = "0.30.13", optional = true }
+zbus = "5"
+
+[features]
+notify = ["dep:notify-rust"]
+gui = ["notify", "dep:eframe", "dep:image", "dep:rustybuzz", "dep:winit"]
+
+[[bin]]
+name = "bluez-msg"
+path = "src/main.rs"
+
+[[bin]]
+name = "bluez-message"
+path = "src/bin/bluez-message/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "bluez-msg-call"
+path = "src/bin/bluez-msg-call/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "bluez-messaged"
+path = "src/bin/bluez-messaged.rs"
+required-features = ["notify"]

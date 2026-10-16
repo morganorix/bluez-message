@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=bmessage
+Comment=iPhone texts and calls (Bluetooth relay)
+Comment[fr]=SMS et appels de l'iPhone (relais Bluetooth)
+Exec=bluez-message
+Icon=bluez-message
+Categories=Utility;
+Keywords=sms;text;iphone;call;bluetooth;
+Keywords[fr]=sms;iphone;appel;bluetooth;
+StartupWMClass=bluez-message
+Terminal=false
