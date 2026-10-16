@@ -42,11 +42,11 @@ fn main() -> ExitCode {
     gui::run("bluez-message", viewport, true, |c| ui::App::new(c.palette, c.tx, c.events))
 }
 
-/// Verrou d'instance `bluez-message.lock` près du socket du démon, libéré par le système à la sortie (même
+/// Verrou d'instance `bluez-message-gui.lock` près du socket du démon, libéré par le système à la sortie (même
 /// sur plantage). `WouldBlock` : une fenêtre est déjà ouverte. Sans `XDG_RUNTIME_DIR` : pas de verrou.
 fn instance_lock() -> Result<Option<File>, TryLockError> {
     let Ok(sock) = bluez_message::config::socket_path() else { return Ok(None) };
-    let f = OpenOptions::new().create(true).truncate(false).write(true).open(sock.with_file_name("bluez-message.lock")).map_err(TryLockError::Error)?;
+    let f = OpenOptions::new().create(true).truncate(false).write(true).open(sock.with_file_name("bluez-message-gui.lock")).map_err(TryLockError::Error)?;
     f.try_lock()?;
     Ok(Some(f))
 }

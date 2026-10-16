@@ -1,7 +1,7 @@
 # Paquet local : construit depuis l'arbre du dépôt (pas d'archive source), voir README.md.
 pkgname=bluez-message
-pkgver=0.1.0
-pkgrel=2
+pkgver=0.1.1
+pkgrel=1
 pkgdesc="bmessage : SMS et appels de l'iPhone sur le PC (relais Bluetooth MAP/PBAP/HFP)"
 arch=('x86_64')
 license=('MIT')
