@@ -37,7 +37,13 @@ Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egu
 
 ## Installation
 
-### Arch Linux (paquet)
+### Arch Linux (AUR)
+
+```sh
+yay -S bluez-message
+```
+
+Ou depuis une copie du dépôt :
 
 ```sh
 cd packaging/arch

@@ -1,17 +1,17 @@
 post_install() {
-  cat <<'EOF'
-==> bluez-message : le démon et la config audio démarrent à la prochaine ouverture de session.
-    Une seule fois : appairer l'iPhone (bluetoothctl : pair <adresse>, puis trust <adresse>),
-    puis bmessage > Paramètres > Appareil Bluetooth : choisir l'iPhone.
-    Pour tout lancer sans fermer la session :
+  cat <<'MSG'
+==> bluez-message: the daemon and the audio setup start at your next login.
+    Once: pair the iPhone (bluetoothctl: pair <address>, then trust <address>),
+    then bmessage > Settings > Bluetooth device: pick the iPhone.
+    To start everything without logging out:
       systemctl --user daemon-reload && systemctl --user restart wireplumber && systemctl --user start bluez-messaged
-EOF
+MSG
 }
 
 post_upgrade() {
-  echo "==> bluez-message : systemctl --user daemon-reload && systemctl --user restart bluez-messaged (ou fermer la session)"
+  echo "==> bluez-message: systemctl --user daemon-reload && systemctl --user restart bluez-messaged (or log out)"
 }
 
 post_remove() {
-  echo "==> bluez-message : systemctl --user stop bluez-messaged && systemctl --user restart wireplumber (ou fermer la session)"
+  echo "==> bluez-message: systemctl --user stop bluez-messaged && systemctl --user restart wireplumber (or log out)"
 }

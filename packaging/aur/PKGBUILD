@@ -1,0 +1,62 @@
+# Maintainer: morganorix <4254819+morganorix@users.noreply.github.com>
+pkgname=bluez-message
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="bmessage: iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
+arch=('x86_64')
+url="https://github.com/morganorix/bluez-message"
+license=('MIT')
+depends=(
+  'glibc' 'gcc-libs' 'sqlite'
+  'bluez' 'bluez-utils' 'bluez-obex'
+  'pipewire' 'wireplumber'
+  'fontconfig' 'ttf-jetbrains-mono-nerd' 'noto-fonts-emoji'
+  # Loaded with dlopen (winit, wgpu): invisible to ldd.
+  'vulkan-icd-loader' 'libxkbcommon' 'wayland'
+  'libx11' 'libxcursor' 'libxi' 'libxrandr'
+)
+optdepends=(
+  'vulkan-driver: lighter rendering (~45 MB), otherwise OpenGL fallback (~165 MB)'
+  'mesa: OpenGL fallback without a Vulkan driver'
+  'notification-daemon: SMS and call notifications'
+)
+makedepends=('cargo')
+install=bluez-message.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --frozen --release --all-features
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --frozen --release --all-features
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  local bin
+  for bin in bluez-msg bluez-messaged bluez-message bluez-msg-call; do
+    install -Dm755 "target/release/$bin" "$pkgdir/usr/bin/$bin"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  cd packaging/arch
+  install -Dm644 bluez-messaged.service "$pkgdir/usr/lib/systemd/user/bluez-messaged.service"
+  # Enabled for every user's graphical session; opt out with: systemctl --user mask bluez-messaged.
+  install -dm755 "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
+  ln -s ../bluez-messaged.service "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/bluez-messaged.service"
+  install -Dm644 bluez-message.desktop "$pkgdir/usr/share/applications/bluez-message.desktop"
+  install -Dm644 bluez-message.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/bluez-message.svg"
+  install -Dm644 -t "$pkgdir/usr/share/wireplumber/wireplumber.conf.d" 52-bluez-message-roles.conf 53-bluez-message-call-gain.conf
+  install -Dm644 bluez-message-call-gain.lua "$pkgdir/usr/share/wireplumber/scripts/bluez-message-call-gain.lua"
+}
