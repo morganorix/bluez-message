@@ -46,17 +46,18 @@ fn main() -> ExitCode {
     bluez_message::log::init();
     let mut args = Args::parse();
     args.open = args.open.or_else(env_open);
-    // Single window: a second launch exits without doing anything.
+    // Single window: a second launch brings the first forward and exits.
     let _lock = match instance_lock() {
         Ok(f) => f,
         Err(TryLockError::WouldBlock) => {
-            return match args.open.map(forward_open) {
-                Some(Ok(())) => ExitCode::SUCCESS,
-                Some(Err(e)) => {
+            // The open window comes forward (on `--open` if given); without the daemon, it stays as it is.
+            return match (forward_open(args.open.clone()), args.open) {
+                (Ok(()), _) => ExitCode::SUCCESS,
+                (Err(e), Some(_)) => {
                     eprintln!("bluez-message: {e}");
                     ExitCode::FAILURE
                 }
-                None => {
+                (Err(_), None) => {
                     eprintln!("bluez-message: already open");
                     ExitCode::SUCCESS
                 }
@@ -88,7 +89,7 @@ fn instance_lock() -> Result<Option<File>, TryLockError> {
 /// Window already open: the daemon passes the request on to it ([`Cmd::Open`]). `quit` then closes the
 /// connection once `open` is queued; the snapshot is drained until then, or the daemon would stop at a failed write
 /// before reading the command.
-fn forward_open(number: String) -> std::io::Result<()> {
+fn forward_open(number: Option<String>) -> std::io::Result<()> {
     use std::io::Write;
     let sock = bluez_message::config::socket_path().map_err(std::io::Error::other)?;
     let mut s = std::os::unix::net::UnixStream::connect(sock)?;

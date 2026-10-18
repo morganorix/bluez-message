@@ -126,7 +126,11 @@ impl App {
     fn on_link(&mut self, l: Link) {
         match l {
             // The daemon snapshot follows: start again from an empty state.
-            Link::Up => self.state = State::default(),
+            Link::Up => {
+                self.state = State::default();
+                // Subscribed to `Open`: notifications and a second launch bring this window forward.
+                self.submit(Cmd::Window);
+            }
             Link::Down(msg) => {
                 // Conversations kept on screen; links and call reset.
                 let mut st = State::default();
@@ -139,7 +143,9 @@ impl App {
             // Notifications are the daemon's business: effects ignored.
             Link::Event(o) if matches!(*o, Out::Open { .. }) => {
                 if let Out::Open { number } = *o {
-                    self.open_number(number);
+                    if let Some(n) = number {
+                        self.open_number(n);
+                    }
                     self.raise = true;
                 }
             }

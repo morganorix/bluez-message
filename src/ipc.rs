@@ -8,7 +8,7 @@ use std::fs::{File, TryLockError};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
@@ -248,6 +248,44 @@ pub const OPEN_ENV: &str = "BLUEZ_MESSAGE_OPEN";
 pub fn gui_open() -> bool {
     let Ok(path) = crate::config::gui_lock_path() else { return false };
     lock_file(&path).is_ok_and(|f| matches!(f.try_lock(), Err(TryLockError::WouldBlock)))
+}
+
+/// Main windows subscribed with [`crate::engine::Cmd::Window`], and the last [`Out::Open`] held for a
+/// window holding its lock but not subscribed yet (connecting, or the daemon restarted under it).
+#[derive(Default)]
+pub struct Windows {
+    open: Vec<mpsc::Sender<Out>>,
+    held: Option<(Option<String>, Instant)>,
+}
+
+impl Windows {
+    /// Age past which a held `Open` is dropped instead of handed to the next window.
+    pub const HOLD: Duration = Duration::from_secs(10);
+
+    /// Passes `Open { number }` to the subscribed windows; `false`: none left, the caller holds or launches.
+    pub fn deliver(&mut self, number: Option<&str>) -> bool {
+        self.open.retain(|w| !w.is_closed());
+        for w in &self.open {
+            let _ = w.try_send(Out::Open { number: number.map(str::to_owned) });
+        }
+        !self.open.is_empty()
+    }
+
+    /// Keeps `Open { number }` for the next window, replacing an older one.
+    pub fn hold(&mut self, number: Option<String>, now: Instant) {
+        self.held = Some((number, now));
+    }
+
+    /// Subscribes a window and hands it the held `Open`, once, if it is younger than [`Self::HOLD`].
+    pub fn add(&mut self, w: mpsc::Sender<Out>, now: Instant) {
+        if let Some((number, at)) = self.held.take()
+            && now.saturating_duration_since(at) < Self::HOLD
+        {
+            let _ = w.try_send(Out::Open { number });
+        }
+        self.open.retain(|w| !w.is_closed());
+        self.open.push(w);
+    }
 }
 
 /// Exclusive non-blocking lock: two daemons started together cannot steal each other's socket.
@@ -599,8 +637,42 @@ mod tests {
     #[test]
     fn snapshot_skips_open() {
         let mut s = Snapshot::default();
-        s.record(&Out::Open { number: "+331".into() }, true);
+        s.record(&Out::Open { number: Some("+331".into()) }, true);
         assert!(s.replay().is_empty());
+    }
+
+    fn open(number: Option<&str>) -> Out {
+        Out::Open { number: number.map(str::to_owned) }
+    }
+
+    #[test]
+    fn held_open_goes_once_to_the_next_window() {
+        let mut w = Windows::default();
+        let t0 = Instant::now();
+        assert!(!w.deliver(Some("+33600000001")));
+        w.hold(Some("+33600000001".into()), t0);
+        let (tx, mut rx) = mpsc::channel(8);
+        w.add(tx, t0 + Duration::from_secs(1));
+        assert_eq!(rx.try_recv().ok(), Some(open(Some("+33600000001"))));
+        // Handed once: a second window gets nothing, the subscribed ones get the next `Open`.
+        let (tx2, mut rx2) = mpsc::channel(8);
+        w.add(tx2, t0 + Duration::from_secs(2));
+        assert_eq!(rx2.try_recv().ok(), None);
+        assert!(w.deliver(None));
+        assert_eq!(rx.try_recv().ok(), Some(open(None)));
+        assert_eq!(rx2.try_recv().ok(), Some(open(None)));
+    }
+
+    #[test]
+    fn held_open_expires_and_closed_windows_leave() {
+        let mut w = Windows::default();
+        let t0 = Instant::now();
+        w.hold(None, t0);
+        let (tx, mut rx) = mpsc::channel(8);
+        w.add(tx, t0 + Windows::HOLD);
+        assert_eq!(rx.try_recv().ok(), None);
+        drop(rx);
+        assert!(!w.deliver(None));
     }
 
     #[test]

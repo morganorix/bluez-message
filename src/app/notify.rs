@@ -81,7 +81,7 @@ fn sms(from: &str, text: &str, reply: Option<String>, on_cmd: &(impl Fn(Cmd) + C
         thread::spawn(move || {
             h.wait_for_action(|a| {
                 if a == "reply" {
-                    on_cmd(Cmd::Open { number });
+                    on_cmd(Cmd::Open { number: Some(number) });
                 }
             });
         });
@@ -170,7 +170,7 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
                                 let d = decline.lock().unwrap_or_else(PoisonError::into_inner).clone();
                                 d.and_then(|Decline { number, text }| match (a, text) {
                                     ("decline_sms", Some(text)) => Some(Cmd::Send { to: number, text }),
-                                    ("decline_write", _) => Some(Cmd::Open { number }),
+                                    ("decline_write", _) => Some(Cmd::Open { number: Some(number) }),
                                     _ => None,
                                 })
                             }

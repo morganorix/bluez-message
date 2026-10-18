@@ -139,6 +139,7 @@ async fn run(args: Args) -> Result<Exit, String> {
         settings,
         state: State::default(),
         hub,
+        windows: ipc::Windows::default(),
         setup,
         fx_tx,
         notifier,
@@ -227,6 +228,8 @@ struct Daemon {
     settings: Settings,
     state: State,
     hub: ipc::Hub,
+    /// Main windows receiving [`Out::Open`].
+    windows: ipc::Windows,
     /// Adapter, search and pairing (both modes).
     setup: Setup,
     /// Effects towards Navi notifications.
@@ -429,7 +432,13 @@ impl Daemon {
                 }
                 Ok(())
             }
-            Cmd::Open { number } => open_conversation(&number, &self.hub),
+            Cmd::Open { number } => open_window(number.as_deref(), &mut self.windows),
+            Cmd::Window => {
+                if let Some(w) = reply.clone() {
+                    self.windows.add(w, Instant::now());
+                }
+                Ok(())
+            }
             cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
             cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
         };
@@ -1038,26 +1047,31 @@ fn run_ui(bin: &str, env: &[(&str, &str)]) {
     }
 }
 
-/// Shows the conversation with `number`: the open window receives [`Out::Open`], otherwise one is started on it.
-/// The number is not logged: a rejection only says it is invalid.
-fn open_conversation(number: &str, hub: &ipc::Hub) -> Result<(), String> {
-    let number = bluez_message::phone::strip_separators(number);
-    bluez_message::bmsg::validate_number(&number).map_err(|_| t!("open: invalid number").to_owned())?;
-    if ipc::gui_open() {
-        // Transient: never replayed to a window opened later.
-        hub.publish(Out::Open { number }, true);
-    } else {
-        // One launch at a time: repeated `Open` before the window takes its lock start nothing more.
-        static LAUNCHING: AtomicBool = AtomicBool::new(false);
-        if LAUNCHING.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-        // Number in the environment, not in argv (visible to all in `/proc`).
-        std::thread::spawn(move || {
-            run_ui("bluez-message", &[(ipc::OPEN_ENV, &number)]);
-            LAUNCHING.store(false, Ordering::Release);
-        });
+/// Brings the window forward, on the conversation with `number` if any: a subscribed window receives
+/// [`Out::Open`]; one holding its lock without being subscribed yet, or being started, gets it on
+/// [`Cmd::Window`]; otherwise one is started. The number is not logged: a rejection only says it is invalid.
+fn open_window(number: Option<&str>, windows: &mut ipc::Windows) -> Result<(), String> {
+    // One launch at a time: repeated `Open` before the window subscribes start nothing more.
+    static LAUNCHING: AtomicBool = AtomicBool::new(false);
+    let number = number
+        .map(|n| {
+            let n = bluez_message::phone::strip_separators(n);
+            if bluez_message::bmsg::validate_number(&n).is_ok() { Ok(n) } else { Err(t!("open: invalid number").to_owned()) }
+        })
+        .transpose()?;
+    if windows.deliver(number.as_deref()) {
+        return Ok(());
     }
+    if ipc::gui_open() || LAUNCHING.swap(true, Ordering::AcqRel) {
+        windows.hold(number, Instant::now());
+        return Ok(());
+    }
+    // Number in the environment, not in argv (visible to all in `/proc`).
+    std::thread::spawn(move || {
+        let env: Vec<_> = number.iter().map(|n| (ipc::OPEN_ENV, n.as_str())).collect();
+        run_ui("bluez-message", &env);
+        LAUNCHING.store(false, Ordering::Release);
+    });
     Ok(())
 }
 

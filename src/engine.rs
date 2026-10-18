@@ -77,8 +77,13 @@ pub enum Cmd {
     PurgeHidden,
     /// Clears the local history: handled by the daemon.
     ClearHistory,
-    /// Shows the conversation with `number` in the window (started if closed): handled by the daemon.
-    Open { number: String },
+    /// Brings the window forward (started if closed), on the conversation with `number` if any: handled by the daemon.
+    Open {
+        #[serde(default)]
+        number: Option<String>,
+    },
+    /// Sent by the main window once connected: it receives [`Out::Open`] from then on. Handled by the daemon.
+    Window,
     /// Powers the Bluetooth adapter on or off: handled by the daemon (setup).
     Powered { on: bool },
     /// Starts or stops the search for nearby devices: handled by the daemon (setup).
@@ -264,8 +269,12 @@ pub enum Out {
     Status { link: Profile, up: bool },
     /// Phone battery level (0..=100), `None` when BlueZ does not expose it.
     Battery { percent: Option<u8> },
-    /// The open window must show the conversation with `number` and take the focus (transient, never replayed).
-    Open { number: String },
+    /// The open window must take the focus, and show the conversation with `number` if any (transient, sent to
+    /// the windows subscribed with [`Cmd::Window`] only).
+    Open {
+        #[serde(default)]
+        number: Option<String>,
+    },
     /// Settings in effect, available languages, paired devices and tracked address; `home`: country
     /// numbers are read with (ISO code, see [`crate::numbering`]), `auto`: the one without a setting.
     Settings {
@@ -533,6 +542,7 @@ impl Engine {
             | Cmd::PurgeHidden
             | Cmd::ClearHistory
             | Cmd::Open { .. }
+            | Cmd::Window
             | Cmd::Powered { .. }
             | Cmd::Discover { .. }
             | Cmd::Pair { .. }
@@ -738,9 +748,12 @@ mod tests {
         let bat = serde_json::to_string(&Out::Battery { percent: Some(80) }).unwrap();
         assert_eq!(bat, r#"{"event":"battery","percent":80}"#);
         assert_eq!(serde_json::from_str::<Out>(r#"{"event":"battery","percent":null}"#).unwrap(), Out::Battery { percent: None });
-        let open = serde_json::to_string(&Out::Open { number: "+331".into() }).unwrap();
+        let open = serde_json::to_string(&Out::Open { number: Some("+331".into()) }).unwrap();
         assert_eq!(open, r#"{"event":"open","number":"+331"}"#);
-        assert_eq!(serde_json::from_str::<Cmd>(r#"{"cmd":"open","number":"+331"}"#).unwrap(), Cmd::Open { number: "+331".into() });
+        assert_eq!(serde_json::from_str::<Cmd>(r#"{"cmd":"open","number":"+331"}"#).unwrap(), Cmd::Open { number: Some("+331".into()) });
+        assert_eq!(serde_json::from_str::<Cmd>(r#"{"cmd":"open"}"#).unwrap(), Cmd::Open { number: None });
+        assert_eq!(serde_json::from_str::<Out>(r#"{"event":"open"}"#).unwrap(), Out::Open { number: None });
+        assert_eq!(serde_json::to_string(&Cmd::Window).unwrap(), r#"{"cmd":"window"}"#);
         let sms = Sms { handle: "h".into(), text: "x".into(), ..Default::default() };
         let o = Out::Sms { sms, folder: Folder::Inbox, new: true };
         let line = serde_json::to_string(&o).unwrap();
