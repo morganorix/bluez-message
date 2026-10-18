@@ -119,8 +119,7 @@ Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
   `+33…` ; Entrée ouvre le premier résultat). Dès 2 caractères, il cherche aussi dans le texte de tous
   les messages (section « Messages », accents et casse ignorés) : un clic ouvre la conversation sur ce message.
 - Clic droit sur une conversation : Sourdine (pas de notification SMS, les appels sonnent toujours),
-  Archiver (rangée dans la section repliable « Archivées (N) » jusqu'au prochain SMS reçu), Exporter la
-  conversation, Supprimer.
+  Archiver (rangée dans la section repliable « Archivées (N) » jusqu'au prochain SMS reçu), Supprimer.
 - Fil de discussion : envoi, bouton emojis, bouton d'appel dans l'en-tête ; « Messages plus anciens »
   en haut charge la suite de l'historique. Les liens web (http/https) sont cliquables.
 - Clic droit sur une bulle : réaction, Renvoyer, Copier, Supprimer (suppression locale seulement, jamais
@@ -152,7 +151,7 @@ Onglets :
 - **Notifications** : nouveaux SMS, appels entrants, masquage du texte.
 - **Appareils** : appareil Bluetooth, Connexion automatique, Configurer un appareil.
 - **Historique** : durée de conservation (30 / 90 / 365 jours), Exporter l'historique (fichier JSON
-  dans le dossier Téléchargements, ou le dossier personnel, lisible par vous seul ; messages supprimés
+  dans le dossier Téléchargements, ou le dossier personnel, lisible par vous seul, seul export de la fenêtre ; messages supprimés
   exclus), purge des messages supprimés, Tout
   effacer (double confirmation, les contacts sont gardés).
 - **Réponses** : réponses rapides utilisées au refus d'un appel (5 au plus, 160 caractères chacune ; la
@@ -178,7 +177,7 @@ bluez-message --open <numéro>                          # fenêtre sur cette con
 | `~/.config/bluez-message/device` | Adresse Bluetooth de l'iPhone (0600). |
 | `~/.config/bluez-message/settings.json` | Réglages (écrits par le démon seul). |
 | `~/.config/bluez-message/locales/<lang>.json` | Traductions personnelles. |
-| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak` (format des clés) ou `history.db.v<N>.bak` (schéma). Export : `bluez-message-<date>[-<numéro>].json` dans le dossier Téléchargements. |
+| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak` (format des clés) ou `history.db.v<N>.bak` (schéma). Export : `bluez-message-<date>[-<numéro>][-<n>].json` dans le dossier Téléchargements (`-2`…`-9` si le nom est pris). |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Socket du démon (JSON lignes). |
 | `~/.config/control-bar/colors.plm` | Optionnel : palette de couleurs (template matugen), rechargée à chaud. |
 
