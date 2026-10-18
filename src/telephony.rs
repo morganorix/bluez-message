@@ -186,6 +186,7 @@ impl Tracker {
     }
 
     fn set_ag(&mut self, path: OwnedObjectPath) -> Vec<HfEvent> {
+        tracing::debug!(ag = path.as_str(), "HFP audio gateway added");
         self.ag = Some(path);
         self.calls.clear();
         self.shown = None;
@@ -198,6 +199,7 @@ impl Tracker {
         if self.ag.take().is_none() {
             return vec![];
         }
+        tracing::debug!("HFP audio gateway lost");
         self.calls.clear();
         let mut evs = self.emit();
         evs.push(HfEvent::Disconnected);

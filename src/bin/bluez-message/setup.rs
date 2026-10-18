@@ -11,6 +11,8 @@ use bluez_message::gui::widgets as w;
 use bluez_message::t;
 use eframe::egui::{self, ScrollArea};
 
+use crate::ui::LinkDots;
+
 const STEPS: u8 = 4;
 
 #[derive(Default)]
@@ -234,13 +236,13 @@ fn adapter(ui: &mut egui::Ui, pal: &Palette, st: &State, cmds: &mut Vec<Cmd>) ->
 fn iphone(ui: &mut egui::Ui, pal: &Palette, st: &State) -> bool {
     w::hint(ui, pal, t!("On the iPhone: Settings > Bluetooth > (i) next to this PC, turn on Show Notifications and Sync Contacts."));
     ui.add_space(w::GAP * 2.0);
-    let map = if st.map_up { w::Link::On } else { w::Link::Off };
-    let pbap = match st.pbap {
-        Some(true) => w::Link::On,
-        Some(false) => w::Link::Pending,
-        None => w::Link::Off,
-    };
-    for (icon, link, label) in [(Icon::MessageText, map, t!("Messages (MAP)")), (Icon::Contacts, pbap, t!("Contacts (PBAP)"))] {
+    let LinkDots { hfp, map, pbap } = LinkDots::of(st);
+    let rows = [
+        (Icon::Phone, hfp, t!("Calls (HFP)")),
+        (Icon::MessageText, map, t!("Messages (MAP)")),
+        (Icon::Contacts, pbap, t!("Contacts (PBAP)")),
+    ];
+    for (icon, link, label) in rows {
         ui.horizontal(|ui| {
             w::status_dot(ui, pal, icon, link);
             ui.label(w::text(label, font::BODY, pal.fg));

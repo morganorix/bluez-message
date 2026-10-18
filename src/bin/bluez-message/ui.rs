@@ -22,6 +22,30 @@ use crate::prefs::Nav;
 use crate::setup::Wizard;
 use crate::thread::{self, ThreadAction};
 
+/// Link status dots (HFP calls, MAP messages, PBAP contacts), shared by the header and the wizard.
+pub struct LinkDots {
+    pub hfp: w::Link,
+    pub map: w::Link,
+    pub pbap: w::Link,
+}
+
+impl LinkDots {
+    pub fn of(st: &State) -> Self {
+        let hfp = match (st.hfp_up, st.slc) {
+            (true, true) => w::Link::On,
+            (true, false) => w::Link::Pending,
+            _ => w::Link::Off,
+        };
+        let map = if st.map_up { w::Link::On } else { w::Link::Off };
+        let pbap = match st.pbap {
+            Some(true) => w::Link::On,
+            Some(false) => w::Link::Pending,
+            None => w::Link::Off,
+        };
+        Self { hfp, map, pbap }
+    }
+}
+
 /// Language applied to the GUI texts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Lang {
@@ -148,17 +172,7 @@ impl App {
     /// Header (`MenuHeader`); on the right, the link status dots (HFP call, MAP messages, PBAP contacts).
     fn header(&mut self, ui: &mut egui::Ui) {
         let pal = self.pal;
-        let hfp = match (self.state.hfp_up, self.state.slc) {
-            (true, true) => w::Link::On,
-            (true, false) => w::Link::Pending,
-            _ => w::Link::Off,
-        };
-        let map = if self.state.map_up { w::Link::On } else { w::Link::Off };
-        let pbap = match self.state.pbap {
-            Some(true) => w::Link::On,
-            Some(false) => w::Link::Pending,
-            None => w::Link::Off,
-        };
+        let LinkDots { hfp, map, pbap } = LinkDots::of(&self.state);
         let rect = w::header(ui, &pal, Icon::Message, "MESSAGES");
         right_of(ui, rect.shrink2(egui::vec2(size::EDGE, 0.0)), |ui| {
             ui.spacing_mut().item_spacing.x = 16.0;

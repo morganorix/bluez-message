@@ -49,6 +49,9 @@ const WATCH_RESET_GAP: Duration = Duration::from_secs(2);
 const WATCH_CONNECT_EVERY: Duration = Duration::from_secs(60);
 /// Restarts without return to normal before giving up (HFP deliberately absent, iPhone taken elsewhere…).
 const WATCH_TRIES: u32 = 3;
+/// Delay before the first restart of an incomplete link, outside the strikes and the pause: an iPhone that
+/// reconnects by itself often leaves its profiles unresolved until a `Connect` (measured: 2 s after it).
+const WATCH_GRACE: Duration = Duration::from_secs(8);
 const WPCTL_TIMEOUT: Duration = Duration::from_secs(3);
 /// Wait for the notification thread at shutdown.
 const NOTIFY_FLUSH: Duration = Duration::from_secs(1);
@@ -688,11 +691,34 @@ struct LinkWatch {
     /// Last restart limited to `Connect`: the next one rebuilds the link.
     connected_once: bool,
     last: Option<Instant>,
+    /// Start of the current incomplete state.
+    bad_since: Option<Instant>,
+    /// Early restart ([`WATCH_GRACE`]) already made for this incomplete state.
+    early: bool,
 }
 
 impl LinkWatch {
     fn healthy(&mut self) {
         (self.strikes, self.connected_once, self.tries) = (0, false, 0);
+        (self.bad_since, self.early) = (None, false);
+    }
+
+    /// Incomplete link: true if the early restart is due now (once per incomplete state).
+    fn early_due(&mut self) -> bool {
+        let since = *self.bad_since.get_or_insert_with(Instant::now);
+        if self.early || since.elapsed() < WATCH_GRACE {
+            return false;
+        }
+        self.early = true;
+        true
+    }
+
+    /// Wait before the next check: [`WATCH_EVERY`], shortened to the early restart deadline.
+    fn next_check(&self) -> Duration {
+        match self.bad_since {
+            Some(t) if !self.early => WATCH_GRACE.saturating_sub(t.elapsed()).min(WATCH_EVERY),
+            _ => WATCH_EVERY,
+        }
     }
 
     /// Faulty check: true if a restart is needed now (threshold reached, attempts left, pause elapsed).
@@ -714,7 +740,8 @@ impl LinkWatch {
 /// - iPhone not linked and `auto_connect`: `Connect` every [`WATCH_CONNECT_EVERY`] (out of range: silent failure);
 /// - iPhone back (linked, profiles resolved): the MAP session is woken without waiting for its backoff;
 /// - linked without its profiles (no HFP or MAP, common after a spontaneous reconnection): `Connect`, then
-///   rebuilt link (`Disconnect` + `Connect`) if the profiles still do not come back. Nothing during a call.
+///   first after [`WATCH_GRACE`], then on strikes, rebuilt link (`Disconnect` + `Connect`) if the profiles
+///   still do not come back. Nothing during a call.
 async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudge) {
     let phone = loop {
         match bluez::Phone::new(&addr).await {
@@ -736,16 +763,25 @@ async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudg
     let mut up = None;
     let mut last_connect: Option<Instant> = None;
     let mut tick = false;
+    // Measurement of the profiles' return: (connected, resolved, HFP) logged on change, timed from `Connected`.
+    let mut seen = None;
+    let mut since: Option<Instant> = None;
     loop {
         let l = *links.borrow_and_update();
         let link = match phone.link().await {
             Ok(link) => link,
             Err(e) => {
                 tracing::debug!("Bluetooth watch: {e}");
-                tick = wait_link(&mut changes, &mut links).await;
+                tick = wait_link(&mut changes, &mut links, WATCH_EVERY).await;
                 continue;
             }
         };
+        if seen != Some((link, l.hfp)) {
+            seen = Some((link, l.hfp));
+            since = if link.connected { since.or_else(|| Some(Instant::now())) } else { None };
+            let ms = since.map(|t| t.elapsed().as_millis());
+            tracing::debug!(connected = link.connected, resolved = link.resolved, hfp = l.hfp, ms, "iPhone link state");
+        }
         let now_up = link.connected && link.resolved;
         if now_up && up == Some(false) {
             tracing::info!("iPhone connected: MAP session woken up");
@@ -767,16 +803,27 @@ async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudg
             }
         } else if l.call || (link.resolved && l.hfp) {
             w.healthy();
-        } else if tick && w.strike() {
-            // Only periodic checks count: a signal often precedes the profiles by a little.
+        } else if w.early_due() {
             retry_link(&phone, &mut w, link, l).await;
+        } else if tick {
+            // Only periodic checks count: a signal often precedes the profiles by a little.
+            let retry = w.strike();
+            let ms = since.map(|t| t.elapsed().as_millis());
+            tracing::debug!(strikes = w.strikes, tries = w.tries, retry, ms, "iPhone link incomplete at check");
+            if retry {
+                retry_link(&phone, &mut w, link, l).await;
+            }
         }
-        tick = wait_link(&mut changes, &mut links).await;
+        tick = wait_link(&mut changes, &mut links, w.next_check()).await;
     }
 }
 
-/// Waits for a link, setting or call change, at most [`WATCH_EVERY`]; true: delay elapsed.
-async fn wait_link(changes: &mut Option<impl futures_util::Stream<Item = ()> + Unpin>, links: &mut watch::Receiver<Links>) -> bool {
+/// Waits for a link, setting or call change, at most `every`; true: delay elapsed.
+async fn wait_link(
+    changes: &mut Option<impl futures_util::Stream<Item = ()> + Unpin>,
+    links: &mut watch::Receiver<Links>,
+    every: Duration,
+) -> bool {
     let signal = async {
         match changes.as_mut() {
             Some(c) => c.next().await.is_some(),
@@ -784,7 +831,7 @@ async fn wait_link(changes: &mut Option<impl futures_util::Stream<Item = ()> + U
         }
     };
     let ended = tokio::select! {
-        () = tokio::time::sleep(WATCH_EVERY) => return true,
+        () = tokio::time::sleep(every) => return true,
         alive = signal => !alive,
         Ok(()) = links.changed() => false,
     };
@@ -923,5 +970,23 @@ async fn wpctl(args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         Err(format!("wpctl {}: {}", args[0], out.status))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn early_restart_once_after_grace() {
+        let mut w = LinkWatch::default();
+        assert!(!w.early_due());
+        assert!(w.next_check() <= WATCH_GRACE);
+        w.bad_since = Instant::now().checked_sub(WATCH_GRACE);
+        assert!(w.early_due());
+        assert!(!w.early_due());
+        assert_eq!(w.next_check(), WATCH_EVERY);
+        w.healthy();
+        assert!(!w.early_due());
     }
 }
