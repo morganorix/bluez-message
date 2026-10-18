@@ -2,6 +2,7 @@
 //! emoji picker; button 120 × 34. Only edits the draft: sending goes back to the window.
 
 use bluez_message::gui::emoji::Emojis;
+use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{Palette, size};
 use bluez_message::gui::widgets as w;
 use bluez_message::t;
@@ -41,7 +42,7 @@ impl Composer {
             if r.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
                 act = Some(ComposerAction::Leave);
             }
-            let pick = w::icon_button(ui, pal, "󰞅").on_hover_text(t!("Emoji"));
+            let pick = w::icon_button(ui, pal, Icon::Emoji).on_hover_text(t!("Emoji"));
             egui::Popup::from_toggle_button_response(&pick).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                 egui::Grid::new("emojis").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
                     for (i, e) in EMOJIS.iter().enumerate() {

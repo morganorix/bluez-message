@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use bluez_message::addr::BtAddr;
 use bluez_message::app::state::Prefs;
 use bluez_message::engine::Cmd;
+use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{CORNER, Palette, font, size};
 use bluez_message::gui::widgets as w;
 use bluez_message::i18n;
@@ -103,8 +104,8 @@ impl View {
         } else {
             (false, false, false, false)
         };
-        let rect = w::header_with(ui, pal, "󰒓", t!("SETTINGS"), 60.0);
-        let mut close = w::header_button(ui, pal, rect, "󰅖").on_hover_text(t!("Close (Esc)")).clicked();
+        let rect = w::header_with(ui, pal, Icon::Cog, t!("SETTINGS"), 60.0);
+        let mut close = w::header_button(ui, pal, rect, Icon::Close).on_hover_text(t!("Close (Esc)")).clicked();
         w::rule(ui, pal);
         ui.add_space(12.0);
         let Some(p) = prefs else {
@@ -207,8 +208,8 @@ impl View {
         let mut sections: Vec<Section> = vec![];
         // Chosen language on the right, before the chevron.
         let open = |m: Menu| self.menu.is_some_and(|(o, _)| o == m);
-        let lang_row = w::Row { hint: lang, ..row("󰗊", t!("Language"), "", open(Menu::Lang)) };
-        let country_row = w::Row { sub: Some(t!("Landlines stay out of SMS")), hint: country, ..row("󰇧", t!("Country of phone numbers"), "", open(Menu::Country)) };
+        let lang_row = w::Row { hint: lang, ..row(Some(Icon::Translate), t!("Language"), "", open(Menu::Lang)) };
+        let country_row = w::Row { sub: Some(t!("Landlines stay out of SMS")), hint: country, ..row(Some(Icon::Earth), t!("Country of phone numbers"), "", open(Menu::Country)) };
         sections.push((
             t!("Language"),
             vec![
@@ -217,14 +218,14 @@ impl View {
             ],
         ));
         // Click on the row or Enter: next size; click on a segment: that size.
-        let size_row = Item { row: row("󰛖", t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
+        let size_row = Item { row: row(Some(Icon::Font), t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
         sections.push((t!("Display"), vec![size_row]));
         sections.push((
             t!("Notifications"),
             vec![
-                Item { row: row("󰍡", t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
-                Item { row: row("󰏲", t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
-                Item { row: row("󰈉", t!("Hide message text"), "", false), ctl: Ctl::Switch(s.hide_preview), act: Act::Preview },
+                Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
+                Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
+                Item { row: row(Some(Icon::EyeOff), t!("Hide message text"), "", false), ctl: Ctl::Switch(s.hide_preview), act: Act::Preview },
             ],
         ));
         let mut devs = vec![];
@@ -240,30 +241,30 @@ impl View {
                 (false, _) if d.connected => t!("connected"),
                 _ => "",
             };
-            devs.push(Item { row: row("󰏳", &d.name, hint, current), ctl: Ctl::None, act: Act::Device(d.addr.clone()) });
+            devs.push(Item { row: row(Some(Icon::PhoneBluetooth), &d.name, hint, current), ctl: Ctl::None, act: Act::Device(d.addr.clone()) });
         }
         if !p.devices.iter().any(|d| d.addr == p.device) {
-            devs.insert(0, Item { row: row("󰏳", p.device.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(p.device.clone()) });
+            devs.insert(0, Item { row: row(Some(Icon::PhoneBluetooth), p.device.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(p.device.clone()) });
         }
-        devs.push(Item { row: row("󰑐", t!("Reconnect"), "", false), ctl: Ctl::None, act: Act::Reconnect });
-        devs.push(Item { row: row("󰂱", t!("Connect automatically"), "", false), ctl: Ctl::Switch(s.auto_connect), act: Act::AutoConnect });
+        devs.push(Item { row: row(Some(Icon::Refresh), t!("Reconnect"), "", false), ctl: Ctl::None, act: Act::Reconnect });
+        devs.push(Item { row: row(Some(Icon::BluetoothConnect), t!("Connect automatically"), "", false), ctl: Ctl::Switch(s.auto_connect), act: Act::AutoConnect });
         sections.push((t!("Bluetooth device"), devs));
-        let mut hist = vec![Item { row: row("󰋚", t!("Keep everything"), "", s.retention_days.is_none()), ctl: Ctl::None, act: Act::Retention(None) }];
+        let mut hist = vec![Item { row: row(Some(Icon::History), t!("Keep everything"), "", s.retention_days.is_none()), ctl: Ctl::None, act: Act::Retention(None) }];
         for d in RETENTIONS {
             let label = match d {
                 30 => t!("Keep 30 days"),
                 90 => t!("Keep 90 days"),
                 _ => t!("Keep 1 year"),
             };
-            hist.push(Item { row: row("󰋚", label, "", s.retention_days == Some(d)), ctl: Ctl::None, act: Act::Retention(Some(d)) });
+            hist.push(Item { row: row(Some(Icon::History), label, "", s.retention_days == Some(d)), ctl: Ctl::None, act: Act::Retention(Some(d)) });
         }
         hist.push(Item {
-            row: w::Row { sub: Some(t!("Erase their text from this PC")), ..row("󰃢", t!("Purge deleted messages"), "", false) },
+            row: w::Row { sub: Some(t!("Erase their text from this PC")), ..row(Some(Icon::Broom), t!("Purge deleted messages"), "", false) },
             ctl: Ctl::None,
             act: Act::Purge,
         });
         let clear_hint = if matches!(self.armed, Some((Armed::Clear, _))) { t!("Press again to confirm") } else { t!("Messages and calls on this PC") };
-        hist.push(Item { row: w::Row { sub: Some(clear_hint), ..row("󰆴", t!("Clear history"), "", false) }, ctl: Ctl::None, act: Act::Clear });
+        hist.push(Item { row: w::Row { sub: Some(clear_hint), ..row(Some(Icon::Delete), t!("Clear history"), "", false) }, ctl: Ctl::None, act: Act::Clear });
         sections.push((t!("History"), hist));
         sections
     }
@@ -303,8 +304,8 @@ impl View {
                     if let Some(m) = menu {
                         let y = resp.rect.center().y;
                         let open = self.menu.is_some_and(|(o, _)| o == m);
-                        let chevron = if open { "󰅃" } else { "󰅀" };
-                        ui.painter().text(egui::pos2(resp.rect.right() - size::EDGE, y), egui::Align2::RIGHT_CENTER, chevron, w::regular(14.0), pal.dim(0.5));
+                        let chevron = if open { Icon::ChevronUp } else { Icon::ChevronDown };
+                        w::paint_icon(ui, chevron, egui::pos2(resp.rect.right() - size::EDGE - 7.0, y), 14.0, pal.dim(0.5));
                         ui.painter().text(
                             egui::pos2(resp.rect.right() - 36.0, y),
                             egui::Align2::RIGHT_CENTER,
@@ -392,7 +393,7 @@ fn list(ui: &egui::Ui, pal: &Palette, anchor: egui::Rect, choices: &[(Option<&st
                         ui.spacing_mut().item_spacing.y = w::ROW_GAP;
                         let mut hit = None;
                         for (i, (code, name)) in choices.iter().enumerate() {
-                            let icon = if i == current { "󰄬" } else { "" };
+                            let icon = (i == current).then_some(Icon::Check);
                             let r = w::row(ui, pal, &w::Row { selected: i == cursor, ..row(icon, name, code.unwrap_or(""), i == current) });
                             if follow && i == cursor {
                                 r.scroll_to_me(None);
@@ -424,6 +425,6 @@ fn profiles((map, hfp, pbap): (bool, bool, bool)) -> &'static str {
     }
 }
 
-fn row<'a>(icon: &'a str, label: &'a str, hint: &'a str, selected: bool) -> w::Row<'a> {
+fn row<'a>(icon: Option<Icon>, label: &'a str, hint: &'a str, selected: bool) -> w::Row<'a> {
     w::Row { icon, label, sub: None, hint, badge: 0, selected, strong: selected }
 }

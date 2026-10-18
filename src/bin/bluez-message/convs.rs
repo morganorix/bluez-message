@@ -7,10 +7,11 @@ use bluez_message::app::state::{Conv, Rev, State, matches, shown_number};
 use bluez_message::engine::dial_number;
 use bluez_message::numbering::{self, Id};
 use bluez_message::gui::emoji::Emojis;
+use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{Palette, font, size};
 use bluez_message::gui::widgets as w;
 use bluez_message::t;
-use eframe::egui::{self, Key, ScrollArea};
+use eframe::egui::{self, Key, Margin, ScrollArea, vec2};
 
 use crate::thread::{preview, short_stamp};
 
@@ -103,9 +104,11 @@ impl ConvList {
     }
 
     /// Search field (34 high): Escape clears it, any input brings the cursor back to the top.
-    fn search_field(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn search_field(&mut self, ui: &mut egui::Ui, pal: &Palette) -> egui::Response {
         ui.spacing_mut().interact_size.y = size::FIELD_H;
-        let r = ui.add(w::field(&mut self.query, &format!("󰍉  {}", t!("Name or number  (Ctrl+F)"))).desired_width(f32::INFINITY));
+        let field = w::field(&mut self.query, t!("Name or number  (Ctrl+F)")).margin(Margin { left: 32, ..Margin::symmetric(10, 10) });
+        let r = ui.add(field.desired_width(f32::INFINITY));
+        w::paint_icon(ui, Icon::Magnify, r.rect.left_center() + vec2(16.0, 0.0), font::ICON, pal.muted());
         if std::mem::take(&mut self.focus) {
             r.request_focus();
         }
@@ -135,16 +138,17 @@ impl ConvList {
 
     /// `keys`: arrows and Enter are for the list (no message input, menu or Settings).
     pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, state: &State, target: &Target, keys: bool) -> Vec<ListAction> {
-        if w::section_action(ui, pal, t!("Contacts"), "󰐕").on_hover_text(t!("Write or call: search for a contact")).clicked() {
+        if w::section_action(ui, pal, t!("Contacts"), Icon::Plus).on_hover_text(t!("Write or call: search for a contact")).clicked() {
             self.focus = true;
         }
+        let r = self.search_field(ui, pal);
+        // Search under "Contacts +", set apart from the tabs that filter the list.
+        ui.add_space(3.0 * w::GAP);
         let tabs = [Tab::Sms, Tab::Calls];
         let on = tabs.iter().position(|t| *t == self.tab).unwrap_or_default();
         if let Some(i) = w::tabs(ui, pal, &[t!("SMS"), t!("Calls")], on) {
             (self.tab, self.cursor) = (tabs[i], 0);
         }
-        ui.add_space(w::GAP);
-        let r = self.search_field(ui);
         // Arrows: outside message input (search or no active field), they navigate the list.
         let typing = ui.ctx().memory(egui::Memory::focused).is_some_and(|id| id != r.id);
         let nav = keys && !typing && !egui::Popup::is_any_open(ui.ctx());
@@ -205,13 +209,13 @@ impl ConvList {
                 let stamp = last.map(|m| short_stamp(&m.timestamp)).unwrap_or_default();
                 let unread = if calls { state.unread_calls(c) } else { c.unread };
                 let row = w::Row {
-                    icon: if calls {
-                        "󰏲"
+                    icon: Some(if calls {
+                        Icon::Phone
                     } else if unread > 0 {
-                        "󰍡"
+                        Icon::Message
                     } else {
-                        "󰭹"
-                    },
+                        Icon::Chat
+                    }),
                     label: title,
                     sub: Some(&preview),
                     hint: &stamp,
@@ -226,7 +230,7 @@ impl ConvList {
                 // Deleting a conversation would also delete its SMS: calls are deleted one by one in the thread.
                 if !calls {
                     resp.context_menu(|ui| {
-                        ui.menu_button(format!("󰆴  {}", t!("Delete conversation…")), |ui| {
+                        ui.menu_image_text_button(w::small_icon(Icon::Delete, ui.visuals().text_color()), t!("Delete conversation…"), |ui| {
                             if ui.button(t!("Confirm deletion")).clicked() {
                                 del = Some(c.key.clone());
                             }
@@ -240,13 +244,13 @@ impl ConvList {
                 ui.add_space(w::GAP);
             }
             for (name, number) in contacts.iter() {
-                let row = w::Row { icon: "󰀄", label: name, sub: Some(number), hint: "", badge: 0, selected: false, strong: false };
+                let row = w::Row { icon: Some(Icon::Account), label: name, sub: Some(number), hint: "", badge: 0, selected: false, strong: false };
                 if line(ui, &row).clicked() {
                     pick = Some(Target::Contact { name: name.to_owned(), number: number.to_owned() });
                 }
             }
             if let Some(n) = free {
-                let row = w::Row { icon: "󰐕", label: n, sub: Some(t!("New number")), hint: "", badge: 0, selected: false, strong: false };
+                let row = w::Row { icon: Some(Icon::Plus), label: n, sub: Some(t!("New number")), hint: "", badge: 0, selected: false, strong: false };
                 if line(ui, &row).clicked() {
                     pick = Some(Target::Contact { name: String::new(), number: n.to_owned() });
                 }

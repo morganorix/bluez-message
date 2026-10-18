@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use bluez_message::app::state::{Call, Phase, State, shown_number};
 use bluez_message::engine::Cmd;
+use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{self, Palette, font, size};
 use bluez_message::gui::widgets::{self, Tone};
 use bluez_message::gui::{self, Client};
@@ -115,7 +116,7 @@ impl Popin {
             _ if c.hold => t!("ON HOLD"),
             _ => t!("IN CALL"),
         };
-        let rect = widgets::header(ui, pal, "󰏲", title);
+        let rect = widgets::header(ui, pal, Icon::Phone, title);
         if c.phase == Phase::Active {
             let at = rect.right_center() - vec2(size::EDGE, 0.0);
             ui.painter().text(at, Align2::RIGHT_CENTER, duration(c.since), egui::FontId::monospace(font::LABEL), pal.accent);
@@ -125,7 +126,7 @@ impl Popin {
     /// Card of the GUI call banner; sub-line: second call, muted microphone or number.
     fn card(&self, ui: &mut egui::Ui) {
         let (c, pal) = (&self.state.call, &self.pal);
-        let (glyph, tint) = if c.muted { ("󰍭", pal.danger) } else { ("󰏲", pal.accent) };
+        let (glyph, tint) = if c.muted { (Icon::MicOff, pal.danger) } else { (Icon::Phone, pal.accent) };
         let number = shown_number(c.number.as_deref());
         let title = c.name.as_deref().unwrap_or(number);
         let (sub, color) = match (&c.waiting, &c.held) {

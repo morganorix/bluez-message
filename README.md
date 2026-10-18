@@ -37,7 +37,7 @@ to install on the phone. Written in Rust, egui interface.
 - Linux with BlueZ, `bluez-obex`, PipeWire and WirePlumber (≥ 0.5, `org.pipewire.Telephony` service).
 - A notification server (mako, dunst, swaync…) for notifications.
 - Vulkan recommended (lighter rendering), OpenGL fallback otherwise.
-- Recommended fonts: JetBrainsMono Nerd Font (icons), Noto Color Emoji.
+- No font to install: icons (Material Design Icons) and emojis (Twemoji) are embedded.
 - To build: Rust ≥ 1.91 (2024 edition).
 
 ## Installation
@@ -189,7 +189,8 @@ src/
 ├── history.rs           SQLite database (user_version migrations)
 ├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
 ├── app/                 shared state (conversations, call), notifications, reactions
-└── gui/                 theme, widgets, emojis, egui startup
+└── gui/                 theme, widgets, icons (MDI), emojis (Twemoji), egui startup
+assets/mdi/              Material Design Icons SVG (white), LICENSE, NOTICE
 locales/                 fr.json (embedded), template.json, README
 packaging/arch/          PKGBUILD, systemd service, .desktop, icon, WirePlumber config
 packaging/aur/           AUR PKGBUILD (sources from the GitHub tag)
@@ -209,3 +210,7 @@ Every new `t!("…")` string must be added to `locales/template.json` (checked b
 ## License
 
 [MIT](LICENSE)
+
+Embedded assets:
+- [Material Design Icons](https://pictogrammers.com/library/mdi/) (Apache-2.0), recoloured, see [assets/mdi/NOTICE](assets/mdi/NOTICE).
+- [Twemoji](https://github.com/jdecked/twemoji) graphics (CC-BY 4.0) through the `twemoji-assets` crate.

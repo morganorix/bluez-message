@@ -5,11 +5,12 @@ use std::sync::Arc;
 
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
-    Align, Align2, Color32, CursorIcon, FontFamily, FontId, Galley, Label, Layout, Margin, Pos2, Rect, Response, RichText, Sense, Sides,
-    TextEdit, TextFormat, Ui, UiBuilder, vec2,
+    Align, Align2, Button, Color32, CursorIcon, FontFamily, FontId, Galley, Image, Label, Layout, Margin, Pos2, Rect, Response, RichText, Sense, Sides,
+    TextEdit, TextFormat, Ui, UiBuilder, Vec2, vec2,
 };
 
 use super::emoji::Emojis;
+use super::icons::Icon;
 use super::theme::{BOLD, CORNER, Palette, font, size};
 
 /// Gap between the rows of a list (`gap: 2` of `rows`).
@@ -40,6 +41,26 @@ pub fn text(s: impl Into<String>, size: f32, c: Color32) -> RichText {
     RichText::new(s).size(size).color(c)
 }
 
+/// `icon` of side `size` centred on `center`, tinted `c`.
+pub fn paint_icon(ui: &Ui, icon: Icon, center: Pos2, size: f32, c: Color32) {
+    icon.image().tint(c).paint_at(ui, Rect::from_center_size(center, Vec2::splat(size)));
+}
+
+/// `icon` of side `size` tinted `c`, placed in the layout.
+pub fn icon(ui: &mut Ui, icon: Icon, size: f32, c: Color32) -> Response {
+    ui.add(icon.image().tint(c).fit_to_exact_size(Vec2::splat(size)))
+}
+
+/// Icon of a button or menu entry with text: 14, tinted `c`.
+pub fn small_icon(icon: Icon, c: Color32) -> Image<'static> {
+    icon.image().tint(c).fit_to_exact_size(Vec2::splat(14.0))
+}
+
+/// Menu entry: icon then `label`, both in the text colour.
+pub fn menu_item(ui: &mut Ui, icon: Icon, label: &str) -> Response {
+    ui.add(Button::image_and_text(small_icon(icon, ui.visuals().text_color()), label))
+}
+
 /// A line truncated with "…" at `max_w`.
 fn line(ui: &Ui, s: &str, font: FontId, c: Color32, max_w: f32) -> Arc<Galley> {
     let mut job = LayoutJob::single_section(s.to_owned(), TextFormat::simple(font, c));
@@ -62,29 +83,29 @@ pub fn rule(ui: &mut Ui, pal: &Palette) {
 }
 
 /// `MenuHeader` / `ViewHeader` (44 high): icon 16 at 22 (50 %), title 15 bold at 44.
-pub fn header(ui: &mut Ui, pal: &Palette, icon: &str, title: &str) -> Rect {
+pub fn header(ui: &mut Ui, pal: &Palette, icon: Icon, title: &str) -> Rect {
     header_with(ui, pal, icon, title, 200.0)
 }
 
 /// [`header`] whose title leaves `reserve` on the right (indicators, buttons).
-pub fn header_with(ui: &mut Ui, pal: &Palette, icon: &str, title: &str, reserve: f32) -> Rect {
+pub fn header_with(ui: &mut Ui, pal: &Palette, icon: Icon, title: &str, reserve: f32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::HEADER_H), Sense::hover());
     let y = rect.center().y;
-    ui.painter().text(Pos2::new(rect.left() + ICON_X, y), Align2::CENTER_CENTER, icon, regular(font::ICON), pal.dim(0.5));
+    paint_icon(ui, icon, Pos2::new(rect.left() + ICON_X, y), font::ICON, pal.dim(0.5));
     let g = line(ui, title, bold_font(font::TITLE), pal.fg, rect.width() - TEXT_X - reserve);
     put(ui, g, Pos2::new(rect.left() + TEXT_X, y), false, pal.fg);
     rect
 }
 
 /// Square button (`icon_button`) to the right of a header drawn by `header`, 14 from the edge.
-pub fn header_button(ui: &mut Ui, pal: &Palette, header: Rect, glyph: &str) -> Response {
+pub fn header_button(ui: &mut Ui, pal: &Palette, header: Rect, icon: Icon) -> Response {
     let zone = Rect::from_center_size(header.right_center() - vec2(size::EDGE + 20.0, 0.0), vec2(40.0, 32.0));
-    ui.scope_builder(UiBuilder::new().max_rect(zone), |ui| icon_button(ui, pal, glyph)).inner
+    ui.scope_builder(UiBuilder::new().max_rect(zone), |ui| icon_button(ui, pal, icon)).inner
 }
 
-/// `NearHeader` (38 high): label 13 at 50 % centred at 22, action 30 × 28 on the right (glyph 16, 60 → 100 %),
+/// `NearHeader` (38 high): label 13 at 50 % centred at 22, action 30 × 28 on the right (icon 16, 60 → 100 %),
 /// rule at 36.
-pub fn section_action(ui: &mut Ui, pal: &Palette, label: &str, glyph: &str) -> Response {
+pub fn section_action(ui: &mut Ui, pal: &Palette, label: &str, icon: Icon) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::hover());
     let g = line(ui, label, regular(font::LABEL), pal.dim(0.5), rect.width() - 40.0);
     put(ui, g, Pos2::new(rect.left(), rect.top() + 22.0), false, pal.dim(0.5));
@@ -93,7 +114,7 @@ pub fn section_action(ui: &mut Ui, pal: &Palette, label: &str, glyph: &str) -> R
     let zone = Rect::from_min_size(Pos2::new(rect.right() - 34.0, rect.top() + 8.0), vec2(30.0, 28.0));
     let r = ui.interact(zone, ui.id().with(label), Sense::click());
     let a = if r.hovered() { 1.0 } else { 0.6 };
-    ui.painter().text(zone.center(), Align2::CENTER_CENTER, glyph, regular(font::ICON), pal.dim(a));
+    paint_icon(ui, icon, zone.center(), font::ICON, pal.dim(a));
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -104,7 +125,8 @@ pub fn hint(ui: &mut Ui, pal: &Palette, label: &str) {
 
 /// A list row.
 pub struct Row<'a> {
-    pub icon: &'a str,
+    /// Without icon: empty space (unticked choice).
+    pub icon: Option<Icon>,
     pub label: &'a str,
     /// Sub-line 11 at 40 % (row of 48, like `NearCard`); without it, row of 36 (`Row`).
     pub sub: Option<&'a str>,
@@ -134,7 +156,9 @@ pub fn row_with(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>
         let (x, w) = (rect.left(), rect.width());
         let ink = pal.fg.lerp_to_gamma(pal.accent, on);
         let icon_c = ink.gamma_multiply(0.6 + 0.4 * on);
-        ui.painter().text(Pos2::new(x + ICON_X, rect.center().y), Align2::CENTER_CENTER, r.icon, regular(font::TITLE), icon_c);
+        if let Some(icon) = r.icon {
+            paint_icon(ui, icon, Pos2::new(x + ICON_X, rect.center().y), font::TITLE, icon_c);
+        }
         let (y1, y2) = if r.sub.is_some() { (rect.top() + 16.0, rect.top() + 33.0) } else { (rect.center().y, 0.0) };
         let hint_w = put(ui, line(ui, r.hint, regular(font::SMALL), pal.muted(), 120.0), Pos2::new(x + w - size::EDGE, y1), true, pal.muted());
         let lc = pal.fg.gamma_multiply(0.7 + 0.3 * on);
@@ -174,12 +198,12 @@ pub fn right_of<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> R
 
 /// Call card (`NearCard` of the chosen device): 48 high, accent 7 %, icon 16 centred at 18 in `tint`,
 /// title 13 `fg` at 34, sub-line 11 in `sub_c`. Returns the card so buttons can be placed on it.
-pub fn call_card(ui: &mut Ui, pal: &Palette, icon: &str, tint: Color32, title: &str, sub: &str, sub_c: Color32) -> Rect {
+pub fn call_card(ui: &mut Ui, pal: &Palette, icon: Icon, tint: Color32, title: &str, sub: &str, sub_c: Color32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::CARD_H), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, CORNER, pal.accent.gamma_multiply(0.07));
     let at = |x: f32, y: f32| rect.left_top() + vec2(x, y);
-    p.text(at(18.0, size::CARD_H / 2.0), Align2::CENTER_CENTER, icon, regular(font::ICON), tint);
+    paint_icon(ui, icon, at(18.0, size::CARD_H / 2.0), font::ICON, tint);
     p.text(at(34.0, 16.0), Align2::LEFT_CENTER, title, regular(font::LABEL), pal.fg);
     p.text(at(34.0, 33.0), Align2::LEFT_CENTER, sub, regular(font::SMALL), sub_c);
     rect
@@ -187,15 +211,16 @@ pub fn call_card(ui: &mut Ui, pal: &Palette, icon: &str, tint: Color32, title: &
 
 /// Information or error banner (like `wifi_error`): 32 high, icon and text 12 in `color` truncated,
 /// cross on the right. `true`: closed.
-pub fn banner(ui: &mut Ui, pal: &Palette, icon: &str, msg: &str, color: Color32) -> bool {
+pub fn banner(ui: &mut Ui, pal: &Palette, icon: Icon, msg: &str, color: Color32) -> bool {
     let mut close = false;
     Sides::new().shrink_left().height(size::BANNER_H).show(
         ui,
         |ui| {
             ui.add_space(size::EDGE);
-            ui.add(Label::new(text(format!("{icon}  {msg}"), font::BODY, color)).truncate())
+            self::icon(ui, icon, font::ICON, color);
+            ui.add(Label::new(text(msg, font::BODY, color)).truncate())
         },
-        |ui| close = icon_button(ui, pal, "󰅖").on_hover_text(crate::t!("Dismiss")).clicked(),
+        |ui| close = icon_button(ui, pal, Icon::Close).on_hover_text(crate::t!("Dismiss")).clicked(),
     );
     close
 }
@@ -228,13 +253,13 @@ pub fn button(ui: &mut Ui, pal: &Palette, label: &str, tone: Tone) -> Response {
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Square `PowerBar` button: 40 × 32, `fg` 6 % (+12 % on hover), glyph 16 at 55 → 100 %.
-pub fn icon_button(ui: &mut Ui, pal: &Palette, glyph: &str) -> Response {
+/// Square `PowerBar` button: 40 × 32, `fg` 6 % (+12 % on hover), icon 16 at 55 → 100 %.
+pub fn icon_button(ui: &mut Ui, pal: &Palette, icon: Icon) -> Response {
     let (rect, r) = ui.allocate_exact_size(vec2(40.0, 32.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let h = if r.hovered() { 1.0 } else { 0.0 };
         ui.painter().rect_filled(rect, CORNER, pal.dim(0.06 + 0.12 * h));
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, regular(font::ICON), pal.dim(0.55 + 0.45 * h));
+        paint_icon(ui, icon, rect.center(), font::ICON, pal.dim(0.55 + 0.45 * h));
     }
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -316,12 +341,11 @@ pub enum Link {
 }
 
 /// `KnownCard` status dot (circle 4.5; halo 8 accent 22 % if linked; off `fg` 25 %, in progress accent2),
-/// icon (Nerd Font) 16 at 40 % to its left.
-pub fn status_dot(ui: &mut Ui, pal: &Palette, icon: &str, state: Link) -> Response {
-    let g = ui.painter().layout_no_wrap(icon.to_owned(), regular(font::ICON), pal.muted());
-    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0 + 16.0, 30.0), Sense::hover());
+/// icon 16 at 40 % to its left.
+pub fn status_dot(ui: &mut Ui, pal: &Palette, icon: Icon, state: Link) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(font::ICON + 8.0 + 16.0, 30.0), Sense::hover());
     let y = rect.center().y;
-    put(ui, g, Pos2::new(rect.left(), y), false, pal.muted());
+    paint_icon(ui, icon, Pos2::new(rect.left() + font::ICON / 2.0, y), font::ICON, pal.muted());
     let c = Pos2::new(rect.right() - 8.0, y);
     let dot = match state {
         Link::Off => pal.dim(0.25),

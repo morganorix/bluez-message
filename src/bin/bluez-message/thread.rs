@@ -8,10 +8,11 @@ use bluez_message::app::state::{Conv, Delivery, Msg, Rev};
 use bluez_message::app::tapback::{self, Badge};
 use bluez_message::engine::{CallKind, Item};
 use bluez_message::gui::emoji::{self, Emojis};
+use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{CORNER, Palette, font};
 use bluez_message::gui::widgets as w;
 use bluez_message::t;
-use eframe::egui::{self, Align, Align2, Frame, Label, Layout, Margin, ScrollArea};
+use eframe::egui::{self, Align, Align2, Frame, Layout, Margin, ScrollArea};
 
 /// Action requested in the thread, applied by the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,10 +96,11 @@ pub fn placeholder(ui: &mut egui::Ui, pal: &Palette, msg: &str) {
 fn call_line(ui: &mut egui::Ui, pal: &Palette, m: &Msg, kind: CallKind, secs: u64, acts: &mut Vec<ThreadAction>) {
     let color = if kind == CallKind::Missed { pal.danger } else { pal.muted() };
     let r = ui.vertical_centered(|ui| {
-        ui.add(Label::new(w::text(format!("󰏲  {}  ·  {}", call_label(kind, secs), short_stamp(&m.timestamp)), font::SMALL, color)).sense(egui::Sense::click()))
+        let label = w::text(format!("{}  ·  {}", call_label(kind, secs), short_stamp(&m.timestamp)), font::SMALL, color);
+        ui.add(egui::Button::image_and_text(w::small_icon(Icon::Phone, color), label).frame(false))
     });
     r.inner.context_menu(|ui| {
-        if ui.button(format!("󰆴  {}", t!("Delete"))).clicked() {
+        if w::menu_item(ui, Icon::Delete, t!("Delete")).clicked() {
             acts.push(ThreadAction::Delete(m.item()));
         }
     });
@@ -140,7 +142,7 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges
 /// (react, resend, copy, delete); no menu while sending.
 fn actions(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, shown: &egui::Response, badges: &[Badge], acts: &mut Vec<ThreadAction>) {
     badges_on(ui, pal, emojis, shown.rect, m.outgoing, badges);
-    if m.delivery == Delivery::Failed && w::icon_button(ui, pal, "󰑐").on_hover_text(t!("Resend")).clicked() {
+    if m.delivery == Delivery::Failed && w::icon_button(ui, pal, Icon::Refresh).on_hover_text(t!("Resend")).clicked() {
         acts.push(ThreadAction::Resend(m.text.clone()));
     }
     if m.delivery == Delivery::Pending {
@@ -158,13 +160,13 @@ fn actions(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, shown
             });
             ui.separator();
         }
-        if m.outgoing && ui.button(format!("󰑐  {}", t!("Resend"))).clicked() {
+        if m.outgoing && w::menu_item(ui, Icon::Refresh, t!("Resend")).clicked() {
             acts.push(ThreadAction::Resend(m.text.clone()));
         }
-        if ui.button(format!("󰆏  {}", t!("Copy"))).clicked() {
+        if w::menu_item(ui, Icon::Copy, t!("Copy")).clicked() {
             ui.ctx().copy_text(m.text.clone());
         }
-        if ui.button(format!("󰆴  {}", t!("Delete"))).clicked() {
+        if w::menu_item(ui, Icon::Delete, t!("Delete")).clicked() {
             acts.push(ThreadAction::Delete(m.item()));
         }
     });
@@ -272,8 +274,8 @@ fn progress(ui: &mut egui::Ui, pal: &Palette, width: f32) {
 /// `true` if that button is clicked.
 fn header(ui: &mut egui::Ui, pal: &Palette, name: &str, number: &str) -> bool {
     let (title, sub) = if name.is_empty() { (number, "") } else { (name, number) };
-    let rect = w::header(ui, pal, "󰭹", title);
-    let dial = w::header_button(ui, pal, rect, "󰏲").on_hover_text(t!("Call"));
+    let rect = w::header(ui, pal, Icon::Chat, title);
+    let dial = w::header_button(ui, pal, rect, Icon::Phone).on_hover_text(t!("Call"));
     ui.painter().text(dial.rect.left_center() - egui::vec2(12.0, 0.0), Align2::RIGHT_CENTER, sub, w::regular(font::SMALL), pal.muted());
     w::rule(ui, pal);
     ui.add_space(12.0);

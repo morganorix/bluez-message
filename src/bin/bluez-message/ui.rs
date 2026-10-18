@@ -6,6 +6,7 @@ use bluez_message::app::state::{Phase, State};
 use bluez_message::app::tapback;
 use bluez_message::engine::{Cmd, dial_number, validate_send};
 use bluez_message::gui::emoji::Emojis;
+use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{self, Palette, size};
 use bluez_message::gui::widgets::{self as w, right_of};
 use bluez_message::ipc::Link;
@@ -52,7 +53,7 @@ pub struct App {
     prefs: Option<crate::prefs::View>,
     /// Language applied to the GUI; survives reconnections.
     lang: Lang,
-    /// Colour emojis (Noto Color Emoji font).
+    /// Colour emojis (Twemoji SVG).
     emojis: Emojis,
     /// Text size applied (zoom); `None`: no setting received.
     text_size: Option<TextSize>,
@@ -150,15 +151,15 @@ impl App {
             Some(false) => w::Link::Pending,
             None => w::Link::Off,
         };
-        let rect = w::header(ui, &pal, "󰍡", "MESSAGES");
+        let rect = w::header(ui, &pal, Icon::Message, "MESSAGES");
         right_of(ui, rect.shrink2(egui::vec2(size::EDGE, 0.0)), |ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
-            w::status_dot(ui, &pal, "󰏲", hfp)
+            w::status_dot(ui, &pal, Icon::Phone, hfp)
                 .on_hover_text(t!("HFP (Hands-Free Profile): calls and call audio. Lit with a halo: ready; lit without a halo: connecting; dim: not connected."));
-            w::status_dot(ui, &pal, "󰍩", map)
+            w::status_dot(ui, &pal, Icon::MessageText, map)
                 .on_hover_text(t!("MAP (Message Access Profile): reading and sending texts. Lit with a halo: connected; dim: not connected."));
             let pbap_tip = t!("PBAP (Phone Book Access Profile): contact names, synced every 6 hours. Lit with a halo: last sync succeeded; lit without a halo: last sync failed (allow Sync Contacts on the iPhone); dim: not synced yet.");
-            w::status_dot(ui, &pal, "󰛋", pbap).on_hover_text(pbap_tip);
+            w::status_dot(ui, &pal, Icon::Contacts, pbap).on_hover_text(pbap_tip);
         });
     }
 
@@ -181,7 +182,7 @@ impl App {
             .scope_builder(egui::UiBuilder::new().max_rect(foot), |ui| {
                 w::rule(ui, &pal);
                 ui.add_space(w::GAP * 2.0);
-                let r = w::Row { icon: "󰒓", label: t!("Settings"), sub: None, hint: "Ctrl+,", badge: 0, selected: open, strong: open };
+                let r = w::Row { icon: Some(Icon::Cog), label: t!("Settings"), sub: None, hint: "Ctrl+,", badge: 0, selected: open, strong: open };
                 w::row(ui, &pal, &r).clicked()
             })
             .inner;
@@ -213,7 +214,7 @@ impl App {
     /// Daemon information (reconnection, purge): text in `fg`, like the error banner.
     fn info_banner(&mut self, ui: &mut egui::Ui) {
         if let Some(m) = &self.state.info
-            && w::banner(ui, &self.pal, "󰋽", m, self.pal.fg)
+            && w::banner(ui, &self.pal, Icon::Info, m, self.pal.fg)
         {
             self.state.info = None;
         }
@@ -222,7 +223,7 @@ impl App {
     /// Error (daemon stopped, link, send refused): text in danger, like `wifi_error`, and its cross.
     fn error_banner(&mut self, ui: &mut egui::Ui) {
         if let Some(e) = &self.state.error
-            && w::banner(ui, &self.pal, "󰀦", e, self.pal.danger)
+            && w::banner(ui, &self.pal, Icon::Alert, e, self.pal.danger)
         {
             self.state.error = None;
         }
@@ -240,7 +241,7 @@ impl App {
         let who = c.caller("  ·  ");
         let incoming = c.phase == Phase::Incoming;
         let pal = self.pal;
-        let rect = w::call_card(ui, &pal, "󰏲", pal.accent, &who, what, pal.muted());
+        let rect = w::call_card(ui, &pal, Icon::Phone, pal.accent, &who, what, pal.muted());
         let (mut answer, mut hangup) = (false, false);
         right_of(ui, rect.shrink2(egui::vec2(10.0, 0.0)), |ui| {
             hangup = w::button(ui, &pal, t!("HANG UP"), w::Tone::Danger).clicked();

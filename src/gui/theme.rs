@@ -1,13 +1,10 @@
-//! Bar colours (matugen template `colors.plm`), Nerd Font and measurements of ui/*.plm.
+//! Bar colours (matugen template `colors.plm`), fonts and measurements of ui/*.plm.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Visuals, vec2};
+use eframe::egui::{self, Color32, CornerRadius, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Visuals, vec2};
 
-const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf";
-const FONT_BOLD: &str = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf";
 /// Family of titles and badges (`weight: 700` of the bar).
 pub const BOLD: &str = "bold";
 /// Common rounding of cards, buttons and fields (`menuCorner` of control-bar.plm).
@@ -168,22 +165,12 @@ impl Palette {
     }
 }
 
-/// JetBrainsMono Nerd Font first in the families if present; otherwise default fonts.
-/// The `BOLD` family always exists (falls back to the normal font).
+/// egui's embedded fonts only: no system font is read. Icons and emojis are SVG images.
+/// The `BOLD` family aliases the proportional one until a bold font is embedded.
 #[must_use]
 pub fn fonts() -> FontDefinitions {
     let mut f = FontDefinitions::default();
-    if let Ok(bytes) = std::fs::read(FONT) {
-        f.font_data.insert("jbm".into(), Arc::new(FontData::from_owned(bytes)));
-        for fam in [FontFamily::Proportional, FontFamily::Monospace] {
-            f.families.entry(fam).or_default().insert(0, "jbm".into());
-        }
-    }
-    let mut bold = f.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    if let Ok(bytes) = std::fs::read(FONT_BOLD) {
-        f.font_data.insert("jbm-bold".into(), Arc::new(FontData::from_owned(bytes)));
-        bold.insert(0, "jbm-bold".into());
-    }
+    let bold = f.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     f.families.insert(FontFamily::Name(BOLD.into()), bold);
     f
 }
@@ -262,6 +249,8 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 pub fn apply(ctx: &egui::Context, p: &Palette) {
+    // SVG loader of `icons` and `emoji`.
+    egui_extras::install_image_loaders(ctx);
     ctx.set_fonts(fonts());
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_visuals_of(egui::Theme::Dark, p.visuals());

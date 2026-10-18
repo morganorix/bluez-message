@@ -40,13 +40,13 @@ clap = { version = "4.6.7", features = ["derive"] }
 # Without `accesskit` (screen reader): one less D-Bus connection and fewer threads. The rest = eframe defaults;
 # direct `winit` keeps its defaults (Wayland CSD, dynamic loading), which eframe's `winit/default` enabled.
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "links", "wayland", "wgpu", "x11"], optional = true }
+# SVG loader only (resvg without text: no system font is read).
+egui_extras = { version = "0.36.2", default-features = false, features = ["svg"], optional = true }
 futures-util = "0.3.34"
-image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
 libc = "0.2.190"
 notify-rust = { version = "4.18.2", optional = true }
 phonenumber = "=0.3.10"
 rusqlite = "0.32.1"
-rustybuzz = { version = "0.20.1", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
@@ -54,7 +54,9 @@ thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "time", "io-util", "signal", "process", "net", "sync", "io-std"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-# Already pulled in by egui and rustybuzz: grapheme clusters (UAX #29) and emoji properties (UTS #51).
+# Twemoji SVGs embedded in the binary: colour emojis without any system font.
+twemoji-assets = { version = "1.5.1", default-features = false, features = ["svg"], optional = true }
+# Already pulled in by egui: grapheme clusters (UAX #29) and emoji properties (UTS #51).
 unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"], optional = true }
 unicode-segmentation = { version = "1.13.3", optional = true }
 winit = { version = "0.30.13", optional = true }
@@ -62,7 +64,7 @@ zbus = "5"
 
 [features]
 notify = ["dep:notify-rust"]
-gui = ["notify", "dep:eframe", "dep:image", "dep:rustybuzz", "dep:unicode-properties", "dep:unicode-segmentation", "dep:winit"]
+gui = ["notify", "dep:eframe", "dep:egui_extras", "dep:twemoji-assets", "dep:unicode-properties", "dep:unicode-segmentation", "dep:winit"]
 
 [[bin]]
 name = "bluez-msg"

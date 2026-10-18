@@ -1,0 +1,5 @@
+Material Design Icons 7.4.47 (@mdi/svg) by Pictogrammers
+https://pictogrammers.com/library/mdi/ — Apache License 2.0 (see LICENSE).
+
+Modified for bluez-message: `id` attribute removed and `fill="#fff"` added
+on the root element so the icons can be tinted at runtime.

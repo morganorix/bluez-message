@@ -1,15 +1,13 @@
-//! Colour emojis. egui only rasterises monochrome glyphs: the PNG images of the
-//! Noto Color Emoji font (CBDT table) are loaded as textures, one per glyph after shaping
-//! (ZWJ sequences, skin tones, flags). Without the font, or for an emoji it lacks, the text
-//! is displayed as is.
+//! Colour emojis. egui only rasterises monochrome glyphs: each emoji (ZWJ sequence, skin tone,
+//! flag, keycap) is drawn from its Twemoji SVG embedded in the binary, no system font is read.
+//! An emoji Twemoji lacks is displayed as text.
 
 use std::collections::HashMap;
-use std::process::Command;
-use std::sync::{Arc, OnceLock};
 
 use eframe::egui::text::{LayoutJob, TextWrapping};
-use eframe::egui::{self, Color32, ColorImage, FontId, Pos2, TextFormat, TextureFilter, TextureHandle, TextureOptions};
-use rustybuzz::ttf_parser::{GlyphId, RasterImageFormat};
+use eframe::egui::load::{Bytes, SizeHint, SizedTexture, TexturePoll};
+use eframe::egui::{self, Color32, FontId, Pos2, TextFormat, TextureFilter, TextureOptions};
+use twemoji_assets::svg::SvgTwemojiAsset;
 use unicode_properties::{EmojiStatus, UnicodeEmoji};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -81,87 +79,123 @@ pub fn only(text: &str) -> bool {
 
 /// Longer emoji run: displayed as text (bounds the work per run).
 const MAX_RUN: usize = 32;
-/// Shaped runs kept; beyond that, the cache starts from zero.
+/// Resolved runs kept; beyond that, the runs not drawn in the current frame are dropped.
 const MAX_RUNS: usize = 1024;
-/// Loaded images (~70 KB each); beyond that, new emojis stay text. Received SMS
-/// are arbitrary: memory stays bounded.
-const MAX_GLYPHS: usize = 512;
+/// Rasterised emojis (64 KB each, kept by egui); beyond that, those not drawn in the current
+/// frame are released. Received SMS are arbitrary: memory stays bounded.
+const MAX_IMAGES: usize = 512;
+/// Rasterisation height: one texture per emoji, scaled down with mipmaps.
+const RASTER_H: u32 = 128;
 
-type Font = Option<rustybuzz::Face<'static>>;
-
-/// Colour emoji font, loaded in the background at the first emoji, and images already loaded.
-#[derive(Default)]
-pub struct Emojis {
-    /// `None`: loading not started yet; empty: in progress; `Some(None)`: font absent.
-    font: Option<Arc<OnceLock<Font>>>,
-    /// Glyphs of each run after shaping; `None`: an emoji is missing from the font.
-    runs: HashMap<String, Option<Vec<GlyphId>>>,
-    /// `None`: glyph without a PNG image.
-    glyphs: HashMap<GlyphId, Option<TextureHandle>>,
+/// Twemoji SVG of an emoji sequence; VS16 is absent from the keys of single characters (`❤`)
+/// but present inside ZWJ sequences (`👨🏻‍❤️‍👨🏻`), so both spellings are tried.
+fn asset(e: &str) -> Option<&'static SvgTwemojiAsset> {
+    SvgTwemojiAsset::from_emoji(e).or_else(|| e.contains('\u{FE0F}').then(|| SvgTwemojiAsset::from_emoji(&e.replace('\u{FE0F}', ""))).flatten())
 }
 
-/// System locations of fontconfig's `fc-match`.
-const FC_MATCH: [&str; 2] = ["/usr/bin/fc-match", "/bin/fc-match"];
-
-/// Looks for Noto Color Emoji through fontconfig (sometimes slow: off the interface thread).
-fn find_font() -> Font {
-    // Absolute path: a `fc-match` placed earlier in the PATH is not run.
-    let bytes = FC_MATCH
-        .iter()
-        .find(|p| std::path::Path::new(p).is_file())
-        .and_then(|p| Command::new(p).args(["-f", "%{file}", "Noto Color Emoji"]).output().ok())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        // fontconfig returns a fallback font if it is missing.
-        .filter(|p| p.contains("Emoji"))
-        .and_then(|p| std::fs::read(p).ok());
-    let Some(bytes) = bytes else {
-        tracing::info!("Noto Color Emoji font not found: emojis rendered as text");
+/// Twemoji images of a grapheme: the sequence itself, otherwise each part of a ZWJ sequence
+/// that Twemoji does not draw (as a font would); `None` if a part is missing.
+fn assets(g: &str, out: &mut Vec<&'static SvgTwemojiAsset>) -> Option<()> {
+    if let Some(a) = asset(g) {
+        out.push(a);
+        return Some(());
+    }
+    if !g.contains('\u{200D}') {
         return None;
-    };
-    // Read once, kept for the whole life of the process.
-    rustybuzz::Face::from_slice(Box::leak(bytes.into_boxed_slice()), 0)
+    }
+    for part in g.split('\u{200D}').filter(|p| !p.is_empty()) {
+        out.push(asset(part)?);
+    }
+    Some(())
+}
+
+/// Bytes URI of `a`, from its code points (`bytes://twemoji/1f44b-1f3fd.svg`).
+fn uri(a: &SvgTwemojiAsset) -> String {
+    let hex: Vec<String> = a.emoji.chars().map(|c| format!("{:x}", u32::from(c))).collect();
+    format!("bytes://twemoji/{}.svg", hex.join("-"))
+}
+
+/// URI and SVG of each emoji of a run.
+type Svgs = Vec<(String, &'static [u8])>;
+
+/// Twemoji images of emoji runs, rasterised by egui's SVG loader (`theme::apply` installs it).
+#[derive(Default)]
+pub struct Emojis {
+    /// Images of each run (`None`: an emoji has no Twemoji image) and last frame drawn.
+    runs: HashMap<String, (Option<Svgs>, u64)>,
+    /// URIs rasterised by egui and last frame drawn (see `MAX_IMAGES`).
+    loaded: HashMap<String, u64>,
+}
+
+/// Textures of `svgs`; `None` (text) while loading, or if this frame alone exceeds `MAX_IMAGES`.
+fn textures(loaded: &mut HashMap<String, u64>, ctx: &egui::Context, svgs: &Svgs, frame: u64) -> Option<Vec<SizedTexture>> {
+    let opts = TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR };
+    let mut out = Vec::with_capacity(svgs.len());
+    for (uri, svg) in svgs {
+        if !loaded.contains_key(uri) {
+            if loaded.len() >= MAX_IMAGES {
+                // Rasterised again if they come back on screen.
+                loaded.retain(|u, used| {
+                    *used == frame || {
+                        ctx.forget_image(u);
+                        false
+                    }
+                });
+                if loaded.len() >= MAX_IMAGES {
+                    return None;
+                }
+            }
+            // `forget_image` also drops the bytes: given again (the first call wins).
+            ctx.include_bytes(uri.clone(), Bytes::Static(svg));
+        }
+        match ctx.try_load_texture(uri, opts, SizeHint::Height(RASTER_H)) {
+            Ok(TexturePoll::Ready { texture }) => {
+                match loaded.get_mut(uri) {
+                    Some(used) => *used = frame,
+                    None => {
+                        loaded.insert(uri.clone(), frame);
+                    }
+                }
+                out.push(texture);
+            }
+            Ok(TexturePoll::Pending { .. }) => {
+                ctx.request_repaint();
+                return None;
+            }
+            Err(e) => {
+                tracing::debug!("emoji {uri}: {e}");
+                return None;
+            }
+        }
+    }
+    Some(out)
 }
 
 impl Emojis {
-    /// Loaded font, otherwise starts (once) its loading; `None` while it is missing.
-    fn face<'a>(font: &'a mut Option<Arc<OnceLock<Font>>>, ctx: &egui::Context) -> Option<&'a rustybuzz::Face<'static>> {
-        let slot = font.get_or_insert_with(|| {
-            let slot = Arc::new(OnceLock::new());
-            let (s, ctx) = (Arc::clone(&slot), ctx.clone());
-            std::thread::spawn(move || {
-                s.get_or_init(find_font);
-                ctx.request_repaint();
-            });
-            slot
-        });
-        slot.get()?.as_ref()
-    }
-
-    /// Images of the `run` (one per glyph); `None` (text) without the font, if an emoji is missing from it,
-    /// for a run that is too long or once the image cap is reached.
-    pub fn images(&mut self, ctx: &egui::Context, run: &str) -> Option<Vec<TextureHandle>> {
+    /// Images of the `run` (one per emoji); `None` (text) if an emoji has no Twemoji image,
+    /// for a run that is too long or while an image loads.
+    pub fn images(&mut self, ctx: &egui::Context, run: &str) -> Option<Vec<SizedTexture>> {
         if run.chars().nth(MAX_RUN).is_some() {
             return None;
         }
-        let face = Self::face(&mut self.font, ctx)?;
-        if !self.runs.contains_key(run) {
-            if self.runs.len() >= MAX_RUNS {
-                self.runs.clear();
-            }
-            self.runs.insert(run.to_owned(), shape(face, run));
+        let frame = ctx.cumulative_frame_nr();
+        if let Some((svgs, used)) = self.runs.get_mut(run) {
+            *used = frame;
+            return textures(&mut self.loaded, ctx, svgs.as_ref()?, frame);
         }
-        let ids = self.runs.get(run)?.as_ref()?;
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            if !self.glyphs.contains_key(id) {
-                if self.glyphs.len() >= MAX_GLYPHS {
-                    return None;
-                }
-                self.glyphs.insert(*id, load(ctx, face, *id));
-            }
-            out.push(self.glyphs.get(id)?.clone()?);
+        let mut found = vec![];
+        let svgs = run
+            .graphemes(true)
+            .try_for_each(|g| assets(g, &mut found))
+            .map(|()| found.iter().map(|a| (uri(a), a.data.0.as_bytes())).collect::<Svgs>());
+        let out = svgs.as_ref().and_then(|s| textures(&mut self.loaded, ctx, s, frame));
+        if self.runs.len() >= MAX_RUNS {
+            self.runs.retain(|_, (_, used)| *used == frame);
         }
-        Some(out)
+        if self.runs.len() < MAX_RUNS {
+            self.runs.insert(run.to_owned(), (svgs, frame));
+        }
+        out
     }
 
     /// Width of the `run` at height `h`; `None` if it is displayed as text.
@@ -171,8 +205,7 @@ impl Emojis {
 
     /// `text` at `size` and `ink`, colour emojis; wraps like a label.
     pub fn label(&mut self, ui: &mut egui::Ui, text: &str, size: f32, ink: Color32) -> egui::Response {
-        let absent = self.font.as_ref().is_some_and(|f| matches!(f.get(), Some(None)));
-        if absent || !any(text) {
+        if !any(text) {
             return ui.label(w::text(text, size, ink));
         }
         ui.vertical(|ui| {
@@ -283,14 +316,14 @@ impl Emojis {
             let mut x = r.max.x - imgs.iter().map(|t| width(t, h)).sum::<f32>();
             for t in &imgs {
                 let w = width(t, h);
-                painter.image(t.id(), egui::Rect::from_min_size(egui::pos2(x, r.center().y - h / 2.0), egui::vec2(w, h)), uv, Color32::WHITE);
+                painter.image(t.id, egui::Rect::from_min_size(egui::pos2(x, r.center().y - h / 2.0), egui::vec2(w, h)), uv, Color32::WHITE);
                 x += w;
             }
         }
         out.response.response
     }
 
-    /// Button of the emoji `emoji` at height `h`, in colour if the font has it (otherwise as text).
+    /// Button of the emoji `emoji` at height `h`, in colour if Twemoji has it (otherwise as text).
     pub fn button(&mut self, ctx: &egui::Context, emoji: &str, h: f32, ink: Color32) -> egui::Button<'static> {
         match self.images(ctx, emoji) {
             Some(imgs) if imgs.len() == 1 => egui::Button::image(image(&imgs[0], h, ink)),
@@ -319,47 +352,13 @@ const PAINT_MAX: usize = 1024;
 /// Height of an emoji in text, relative to the font size: the image has its margins.
 const EMOJI_SCALE: f32 = 1.25;
 
-fn width(t: &TextureHandle, h: f32) -> f32 {
-    let s = t.size_vec2();
-    h * s.x / s.y
+fn width(t: &SizedTexture, h: f32) -> f32 {
+    h * t.size.x / t.size.y
 }
 
 /// Image of an emoji at height `h` (width per its proportions), with the opacity of `ink`.
-fn image(t: &TextureHandle, h: f32, ink: Color32) -> egui::Image<'static> {
-    egui::Image::new((t.id(), egui::vec2(width(t, h), h))).tint(Color32::from_white_alpha(ink.a()))
-}
-
-/// Glyphs of `run` after shaping (ZWJ ligatures, skin tones, flags); `None` if a glyph
-/// is missing (`.notdef`).
-fn shape(face: &rustybuzz::Face, run: &str) -> Option<Vec<GlyphId>> {
-    let mut buf = rustybuzz::UnicodeBuffer::new();
-    buf.push_str(run);
-    let shaped = rustybuzz::shape(face, &[], buf);
-    let mut ids = vec![];
-    for g in shaped.glyph_infos() {
-        let id = GlyphId(u16::try_from(g.glyph_id).ok()?);
-        if id.0 == 0 {
-            return None;
-        }
-        // Glyph without an image (variation selector left alone): ignored.
-        if face.glyph_raster_image(id, u16::MAX).is_some() {
-            ids.push(id);
-        }
-    }
-    (!ids.is_empty()).then_some(ids)
-}
-
-/// PNG image of glyph `id` (the largest in the font), loaded as a texture.
-fn load(ctx: &egui::Context, face: &rustybuzz::Face, id: GlyphId) -> Option<TextureHandle> {
-    let img = face.glyph_raster_image(id, u16::MAX)?;
-    if img.format != RasterImageFormat::PNG {
-        return None;
-    }
-    let rgba = image::load_from_memory_with_format(img.data, image::ImageFormat::Png).ok()?.to_rgba8();
-    let size = [usize::try_from(rgba.width()).ok()?, usize::try_from(rgba.height()).ok()?];
-    let color = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-    let opts = TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR };
-    Some(ctx.load_texture(format!("emoji {}", id.0), color, opts))
+fn image(t: &SizedTexture, h: f32, ink: Color32) -> egui::Image<'static> {
+    egui::Image::new((t.id, egui::vec2(width(t, h), h))).tint(Color32::from_white_alpha(ink.a()))
 }
 
 #[cfg(test)]
@@ -385,5 +384,17 @@ mod tests {
         // Text by default without VS16 (☀, ©), emoji with it (☀️).
         assert_eq!(split("☀ © ☀️"), [Piece::Text("☀ © "), Piece::Emoji("☀️")]);
         assert!(split("").is_empty());
+    }
+
+    #[test]
+    fn twemoji_covers_sequences() {
+        // ZWJ, skin tone, flag, keycap, VS16 absent from the key, VS16 inside a ZWJ key, unknown ZWJ.
+        for (g, n) in [("👨‍👩‍👧", 1), ("👋🏽", 1), ("🇫🇷", 1), ("1️⃣", 1), ("❤️", 1), ("👨🏻‍❤️‍👨🏻", 1), ("😀\u{200D}😀", 2)] {
+            let mut out = vec![];
+            assert!(assets(g, &mut out).is_some(), "{g}");
+            assert_eq!(out.len(), n, "{g}");
+        }
+        assert!(assets("a", &mut vec![]).is_none());
+        assert_eq!(uri(asset("👋🏽").unwrap()), "bytes://twemoji/1f44b-1f3fd.svg");
     }
 }

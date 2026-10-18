@@ -2,6 +2,7 @@
 //! (tokio runtime, palette, daemon IPC client).
 
 pub mod emoji;
+pub mod icons;
 pub mod theme;
 pub mod widgets;
 
