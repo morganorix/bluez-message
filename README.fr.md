@@ -94,6 +94,14 @@ systemctl --user enable --now bluez-messaged
 
 Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disconnect` puis `connect`).
 
+### Volume des appels
+
+Le son reçu pendant un appel est amplifié de +18 dB (gain linéaire `8.0`), car l'iPhone l'envoie très
+bas en HFP (vers -34 dBFS en crête). Pour le modifier, copier le script dans
+`~/.local/share/wireplumber/scripts/bluez-message-call-gain.lua` (prioritaire sur
+`/usr/share/wireplumber/scripts/`), changer `local GAIN = 8.0` (`1.0` = sans gain, `4.0` ≈ +12 dB),
+puis `systemctl --user restart wireplumber` et reconnecter l'iPhone.
+
 ## Mise en route
 
 1. Ouvrir **bmessage** depuis le menu. Sans appareil configuré, l'assistant de configuration s'ouvre
@@ -220,6 +228,7 @@ src/
 assets/mdi/              SVG Material Design Icons (blancs), LICENSE, NOTICE
 locales/                 fr.json (embarqué), template.json, README
 packaging/arch/          PKGBUILD, service systemd, .desktop, icône, config WirePlumber
+packaging/aur/           PKGBUILD AUR (sources depuis le tag GitHub)
 ```
 
 ## Développement

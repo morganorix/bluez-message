@@ -8,7 +8,7 @@ post_install() {
 MSG
 }
 
-# Applique une action au service dans chaque session utilisateur ouverte (pacman tourne en root).
+# Applies an action to the service in each open user session (pacman runs as root).
 _each_user() {
   command -v loginctl >/dev/null || return 0
   loginctl list-users --no-legend 2>/dev/null | while read -r _uid user _rest; do

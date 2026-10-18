@@ -1,5 +1,5 @@
 [Unit]
-Description=Relais SMS/appels iPhone (bluez-messaged)
+Description=iPhone SMS/call relay (bluez-messaged)
 # default.target and not graphical-session.target: under Hyprland/sway, that target
 # (RefuseManualStart=yes) often stays inactive and the daemon never started.
 After=pipewire.service wireplumber.service
@@ -8,6 +8,20 @@ After=pipewire.service wireplumber.service
 ExecStart=/usr/bin/bluez-messaged
 Restart=on-failure
 RestartSec=5
+# Sandboxing kept compatible with D-Bus, PipeWire (wpctl), hyprctl and the call popup.
+# ProtectSystem=full and not strict: exports go to the XDG Downloads folder, which may be $HOME itself.
+# No PrivateTmp (obexd reads the bMessage temporary file) nor MemoryDenyWriteExecute (egui popup).
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=default.target

@@ -1,5 +1,5 @@
--- bluez-message : gain du son d'appel reçu de l'iPhone en HFP (il arrive vers -34 dBFS en crête).
--- 8.0 linéaire = +18 dB (= `wpctl set-volume <nœud> 2.0`), validé à l'oreille le 2026-10-15.
+-- bluez-message: gain on the call audio received from the iPhone over HFP (it peaks around -34 dBFS).
+-- 8.0 linear = +18 dB (= `wpctl set-volume <node> 2.0`), tuned by ear on 2026-10-15.
 local GAIN = 8.0
 
 local om = ObjectManager {

@@ -94,6 +94,14 @@ systemctl --user enable --now bluez-messaged
 
 After restarting WirePlumber, reconnect the iPhone (`bluetoothctl disconnect` then `connect`).
 
+### Call volume
+
+Received call audio is amplified by +18 dB (linear gain `8.0`), because the iPhone sends it very low
+over HFP (around -34 dBFS at peak). To change it, copy the script to
+`~/.local/share/wireplumber/scripts/bluez-message-call-gain.lua` (it takes precedence over
+`/usr/share/wireplumber/scripts/`), edit `local GAIN = 8.0` (`1.0` = no gain, `4.0` ≈ +12 dB), then
+`systemctl --user restart wireplumber` and reconnect the iPhone.
+
 ## Getting started
 
 1. Open **bmessage** from the menu. Without a configured device, the setup assistant opens (also
