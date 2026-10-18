@@ -115,7 +115,7 @@ Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
 ### Fenêtre principale
 
 - Colonne de gauche, « Contacts » : onglets **SMS** et **Appels** (moitié de largeur chacun). Les fixes
-  n'apparaissent que dans Appels, sous le nom du contact s'il est dans le carnet. Champ de recherche « Nom ou numéro » (accents ignorés, `06…` ou
+  n'apparaissent que dans Appels, sous le nom du contact s'il est dans le carnet. Champ « Rechercher » (accents ignorés, `06…` ou
   `+33…` ; Entrée ouvre le premier résultat). Dès 2 caractères, il cherche aussi dans le texte de tous
   les messages (section « Messages », accents et casse ignorés) : un clic ouvre la conversation sur ce message.
 - Clic droit sur une conversation : Sourdine (pas de notification SMS, les appels sonnent toujours),

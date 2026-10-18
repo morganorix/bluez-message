@@ -114,7 +114,7 @@ After restarting WirePlumber, reconnect the iPhone (`bluetoothctl disconnect` th
 ### Main window
 
 - Left column, "Contacts": **SMS** and **Calls** tabs (half width each). Landlines only appear in Calls,
-  under the contact name when they are in the address book. "Name or number" search field (accents ignored, local or `+33…` format;
+  under the contact name when they are in the address book. "Search" field (accents ignored, local or `+33…` format;
   Enter opens the first result). From 2 characters it also searches the text of every message
   ("Messages" section, accents and case ignored): a click opens the conversation on that message.
 - Right-click on a conversation: Mute (no SMS notification, calls still ring), Archive (moved to the
