@@ -165,7 +165,9 @@ impl MapClient {
         let raw = bounded(CALL_TIMEOUT, async {
             let ma = self.access().await?;
             ma.set_folder(&folder.path()).await?;
-            Ok::<_, Error>(ma.list_messages("", HashMap::new()).await?)
+            // MAP lists the most recent first: the phone truncates, `newest` still bounds a phone ignoring it.
+            let max = u16::try_from(LIST_MAX).unwrap_or(u16::MAX);
+            Ok::<_, Error>(ma.list_messages("", HashMap::from([("MaxCount", Variant::from(max))])).await?)
         })
         .await?;
         Ok(newest(raw.iter().map(|(p, props)| sms_from(p, props)).collect()))
