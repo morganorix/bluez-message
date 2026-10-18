@@ -58,5 +58,6 @@ package() {
   install -Dm644 -t "$pkgdir/usr/share/wireplumber/wireplumber.conf.d" 52-bluez-message-roles.conf 53-bluez-message-call-gain.conf
   install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname/mdi" "$_root/assets/mdi/LICENSE" "$_root/assets/mdi/NOTICE"
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname/twemoji" "$_root/assets/twemoji/NOTICE"
   install -Dm644 bluez-message-call-gain.lua "$pkgdir/usr/share/wireplumber/scripts/bluez-message-call-gain.lua"
 }
