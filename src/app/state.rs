@@ -491,10 +491,12 @@ impl State {
             }
             Out::Status { link: Profile::Map, up } => {
                 self.map_up = up;
+                self.forget_pbap();
                 vec![]
             }
             Out::Status { link: Profile::Hfp, up } => {
                 self.hfp_up = up;
+                self.forget_pbap();
                 if up {
                     return vec![];
                 }
@@ -942,6 +944,13 @@ impl State {
         }
     }
 
+    /// The iPhone is gone (MAP and HFP down): the last contacts sync no longer says anything.
+    fn forget_pbap(&mut self) {
+        if !self.map_up && !self.hfp_up {
+            self.pbap = None;
+        }
+    }
+
     fn end_call(&mut self) -> Vec<Effect> {
         let c = std::mem::take(&mut self.call);
         if c.is_idle() {
@@ -1205,6 +1214,18 @@ mod tests {
         assert_eq!((st.error.as_deref(), st.pbap), (Some("service unavailable"), Some(true)));
         st.apply(Out::Status { link: Profile::Pbap, up: false });
         assert_eq!(st.pbap, Some(false));
+    }
+
+    #[test]
+    fn pbap_forgotten_once_the_iphone_is_gone() {
+        let mut st = State::default();
+        st.apply(Out::Status { link: Profile::Map, up: true });
+        st.apply(Out::Status { link: Profile::Hfp, up: true });
+        st.apply(Out::Status { link: Profile::Pbap, up: true });
+        st.apply(Out::Status { link: Profile::Map, up: false });
+        assert_eq!(st.pbap, Some(true), "HFP still up");
+        st.apply(Out::Status { link: Profile::Hfp, up: false });
+        assert_eq!(st.pbap, None);
     }
 
     #[test]

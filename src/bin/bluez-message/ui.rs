@@ -40,7 +40,7 @@ impl LinkDots {
         let map = if st.map_up { w::Link::On } else { w::Link::Off };
         // A failed sync (refused on the iPhone) is off even if older contacts remain shown.
         let pbap = match st.pbap {
-            Some(true) => w::Link::On,
+            Some(true) if st.map_up || st.hfp_up => w::Link::On,
             None if st.map_up => w::Link::Pending,
             _ => w::Link::Off,
         };
