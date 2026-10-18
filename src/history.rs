@@ -628,20 +628,31 @@ impl Reader {
     /// # Errors
     /// SQLite or file error, or the file already exists.
     pub fn export_to(&self, dir: &Path, key: Option<&str>) -> crate::error::Result<PathBuf> {
-        let mut name = format!("bluez-message-{}", stamp::now().replace('T', "-"));
+        self.export_at(dir, key, &stamp::now())
+    }
+
+    /// [`Reader::export_to`] stamped `ts`: a name already taken gets `-2` to `-9`, then the export is refused.
+    fn export_at(&self, dir: &Path, key: Option<&str>, ts: &str) -> crate::error::Result<PathBuf> {
+        let mut name = format!("bluez-message-{}", ts.replace('T', "-"));
         if let Some(k) = key {
             name.push('-');
             name.extend(k.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '+').take(32));
         }
-        let path = dir.join(name + ".json");
         // `tempfile` creates it 0600; its errors name the path, kept out of the logs.
         let tmp = tempfile::Builder::new().prefix(".bluez-message-").suffix(".part").tempfile_in(dir).map_err(|e| std::io::Error::from(e.kind()))?;
         let mut w = std::io::BufWriter::new(tmp);
         self.export(key, &mut w)?;
-        let tmp = w.into_inner().map_err(std::io::IntoInnerError::into_error)?;
+        let mut tmp = w.into_inner().map_err(std::io::IntoInnerError::into_error)?;
         tmp.as_file().sync_all()?;
-        tmp.persist_noclobber(&path).map_err(|e| e.error)?;
-        Ok(path)
+        for n in 1..=9 {
+            let path = dir.join(if n == 1 { format!("{name}.json") } else { format!("{name}-{n}.json") });
+            match tmp.persist_noclobber(&path) {
+                Ok(_) => return Ok(path),
+                Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => tmp = e.file,
+                Err(e) => return Err(std::io::Error::from(e.error.kind()).into()),
+            }
+        }
+        Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into())
     }
 }
 
@@ -1270,12 +1281,17 @@ mod tests {
         assert_eq!(v["contacts"].as_array().unwrap().len(), 1);
         assert_eq!(v["messages"].as_array().unwrap().len(), 1);
         assert!(v["calls"].as_array().unwrap().is_empty());
-        // Same second: refused (existing file not overwritten), otherwise another name; no temporary file left behind.
+        // Existing file not overwritten; no temporary file left behind.
         let size = std::fs::metadata(&path).unwrap().len();
-        if let Ok(next) = h.reader().unwrap().export_to(&dir, Some("600000002")) {
-            assert_ne!(next, path);
-        }
+        let next = h.reader().unwrap().export_to(&dir, Some("600000002")).unwrap();
+        assert_ne!(next, path);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
+        // Same second: `-2` to `-9`, then refused.
+        let r = h.reader().unwrap();
+        let names: Vec<_> = (0..9).map(|_| r.export_at(&dir, None, "20261018T120000").unwrap().file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names[..3], ["bluez-message-20261018-120000.json", "bluez-message-20261018-120000-2.json", "bluez-message-20261018-120000-3.json"]);
+        assert_eq!(names[8], "bluez-message-20261018-120000-9.json");
+        assert!(r.export_at(&dir, None, "20261018T120000").is_err());
         assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
