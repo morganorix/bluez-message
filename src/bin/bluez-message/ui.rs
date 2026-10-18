@@ -267,6 +267,12 @@ impl App {
                 ListAction::Delete(key) => self.delete_conv(key),
                 ListAction::DeleteCalls(key) => self.delete_calls(&key),
                 ListAction::Open(t) => self.open(t),
+                ListAction::Search(q) => self.state.search_all(&q),
+                ListAction::More => self.state.more_hits(),
+                ListAction::Jump(hit) => {
+                    self.open(Target::Conv(hit.key.clone()));
+                    self.state.jump(&hit);
+                }
             }
         }
         let open = self.prefs.is_some();
@@ -475,7 +481,8 @@ impl App {
             return;
         };
         let previews = self.state.settings.as_ref().is_some_and(|p| p.settings.link_previews).then_some(&mut self.previews);
-        let acts = thread::conv(ui, &pal, &mut self.emojis, previews, c, self.state.rev(), calls);
+        let view = thread::View { rev: self.state.rev(), calls_only: calls, older: self.state.has_older(&key), focus: self.state.focus.as_ref() };
+        let acts = thread::conv(ui, &pal, &mut self.emojis, previews, c, &view);
         let number = c.number.clone();
         self.apply(&key, &number, acts);
     }
@@ -498,7 +505,15 @@ impl App {
                     self.submit(Cmd::Delete { key: key.to_owned(), item: Some(item) });
                 }
                 ThreadAction::Dial => self.dial(number),
+                ThreadAction::Older => self.state.older(key),
             }
+        }
+    }
+
+    /// Sends the commands queued by the state (history search, older pages).
+    fn flush(&mut self) {
+        for c in self.state.take_cmds() {
+            self.submit(c);
         }
     }
 
@@ -541,6 +556,7 @@ impl eframe::App for App {
             self.text_size = Some(z);
             ctx.set_zoom_factor(z.zoom());
         }
+        self.flush();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -602,6 +618,7 @@ impl eframe::App for App {
                 self.thread(ui);
             }
         });
+        self.flush();
     }
 
     fn on_exit(&mut self) {

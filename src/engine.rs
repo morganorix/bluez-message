@@ -89,6 +89,16 @@ pub enum Cmd {
     Confirm { ok: bool },
     /// Connects a paired device: handled by the daemon (setup).
     Connect { addr: BtAddr },
+    /// Searches the SMS of the history (accents and case ignored), newest first, page after `before`:
+    /// handled by the daemon, answered to the requester only ([`Out::Hits`]).
+    Search {
+        query: String,
+        #[serde(default)]
+        before: Option<Cursor>,
+    },
+    /// SMS of conversation `key` older than `before`, at most `limit` ([`MAX_OLDER`]): handled by the daemon,
+    /// answered to the requester only ([`Out::Older`]).
+    Older { key: String, before: Cursor, limit: u32 },
     Quit,
 }
 
@@ -99,6 +109,55 @@ impl Cmd {
         matches!(self, Self::Powered { .. } | Self::Discover { .. } | Self::Pair { .. } | Self::Confirm { .. } | Self::Connect { .. })
     }
 }
+
+/// Position in the history, newest first: the following page starts strictly before it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cursor {
+    /// MAP timestamp.
+    pub ts: String,
+    /// Row identifier, breaks ties between items with the same timestamp.
+    pub id: i64,
+}
+
+impl Cursor {
+    /// Just after everything dated `ts`: a page from it includes the items with that timestamp.
+    #[must_use]
+    pub fn after(ts: &str) -> Self {
+        Self { ts: ts.to_owned(), id: i64::MAX }
+    }
+
+    fn is_valid(&self) -> bool {
+        crate::stamp::is_valid(&self.ts) && self.id >= 0
+    }
+}
+
+/// SMS of the history found by [`Cmd::Search`] or loaded by [`Cmd::Older`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hit {
+    pub id: i64,
+    /// Conversation key (see [`crate::numbering::key`]).
+    pub key: String,
+    pub number: String,
+    /// MAP timestamp.
+    pub timestamp: String,
+    pub text: String,
+    pub outgoing: bool,
+}
+
+impl Hit {
+    /// Where the page after this item starts.
+    #[must_use]
+    pub fn cursor(&self) -> Cursor {
+        Cursor { ts: self.timestamp.clone(), id: self.id }
+    }
+}
+
+/// Characters of a [`Cmd::Search`] query.
+pub const MAX_QUERY: usize = 100;
+/// Results per [`Out::Hits`] page.
+pub const HITS_PAGE: usize = 100;
+/// Most SMS per [`Cmd::Older`].
+pub const MAX_OLDER: u32 = 200;
 
 /// Paired Bluetooth device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +279,10 @@ pub enum Out {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Page of [`Cmd::Search`] results for `query` (as sent), to the requester only; `next`: the following page, if any.
+    Hits { query: String, items: Vec<Hit>, next: Option<Cursor> },
+    /// SMS of conversation `key` asked by [`Cmd::Older`], newest first, to the requester only; `next`: the following page, if any.
+    Older { key: String, items: Vec<Hit>, next: Option<Cursor> },
     /// Inbox listing with the phone's read flags, for the daemon only: never serialised nor published.
     #[serde(skip)]
     Flags { items: Vec<Sms> },
@@ -317,6 +380,21 @@ fn validate_read(key: &str, until: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+fn validate_search(query: &str, before: Option<&Cursor>) -> std::result::Result<(), String> {
+    let n = crate::phone::clean(query, false).trim().chars().count();
+    if !(1..=MAX_QUERY).contains(&n) || before.is_some_and(|c| !c.is_valid()) {
+        return Err(t!("invalid search").into());
+    }
+    Ok(())
+}
+
+fn validate_older(key: &str, before: &Cursor, limit: u32) -> std::result::Result<(), String> {
+    if !is_key(key) || !before.is_valid() || !(1..=MAX_OLDER).contains(&limit) {
+        return Err(t!("invalid history request").into());
+    }
+    Ok(())
+}
+
 fn validate_delete(key: &str, item: Option<&Item>) -> std::result::Result<(), String> {
     if !is_key(key) || item.is_some_and(|i| !crate::stamp::is_valid(&i.timestamp) || (i.call && !i.text.is_empty())) {
         return Err(t!("invalid deletion").into());
@@ -336,6 +414,8 @@ pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
         Cmd::MarkRead { key, until } => validate_read(key, until)?,
         Cmd::Delete { key, item } => validate_delete(key, item.as_ref())?,
         Cmd::Settings { settings } => settings.validate()?,
+        Cmd::Search { query, before } => validate_search(query, before.as_ref())?,
+        Cmd::Older { key, before, limit } => validate_older(key, before, *limit)?,
         _ => {}
     }
     Ok(cmd)
@@ -430,7 +510,9 @@ impl Engine {
             | Cmd::Discover { .. }
             | Cmd::Pair { .. }
             | Cmd::Confirm { .. }
-            | Cmd::Connect { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
+            | Cmd::Connect { .. }
+            | Cmd::Search { .. }
+            | Cmd::Older { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
             Cmd::Quit => Ok(()),
         }
     }
@@ -658,6 +740,28 @@ mod tests {
             assert!(parse_cmd(&format!(r#"{{"cmd":"pair","addr":"{a}"}}"#)).is_err(), "{a}");
         }
         assert!(parse_cmd(r#"{"cmd":"powered"}"#).is_err());
+    }
+
+    #[test]
+    fn search_and_older_validated() {
+        let s = parse_cmd(r#"{"cmd":"search","query":"Éte"}"#);
+        assert_eq!(s, Ok(Cmd::Search { query: "Éte".into(), before: None }));
+        let page = r#"{"cmd":"search","query":"ok","before":{"ts":"20261015T120000","id":7}}"#;
+        assert!(matches!(parse_cmd(page), Ok(Cmd::Search { before: Some(Cursor { id: 7, .. }), .. })));
+        let long = "é".repeat(MAX_QUERY + 1);
+        for q in ["", "   ", "\u{200B}\u{202E}", long.as_str()] {
+            assert!(parse_cmd(&format!(r#"{{"cmd":"search","query":"{q}"}}"#)).is_err(), "{q:?}");
+        }
+        assert!(parse_cmd(&format!(r#"{{"cmd":"search","query":"{}"}}"#, "é".repeat(MAX_QUERY))).is_ok());
+        assert!(parse_cmd(r#"{"cmd":"search","query":"ok","before":{"ts":"x","id":1}}"#).is_err());
+        assert!(parse_cmd(r#"{"cmd":"search","query":"ok","before":{"ts":"20261015T120000","id":-1}}"#).is_err());
+        let older = |key: &str, ts: &str, limit: u32| format!(r#"{{"cmd":"older","key":"{key}","before":{{"ts":"{ts}","id":9223372036854775807}},"limit":{limit}}}"#);
+        assert!(parse_cmd(&older("612345678", "20261015T120000", MAX_OLDER)).is_ok());
+        assert!(parse_cmd(&older("612345678", "20261015T120000", MAX_OLDER + 1)).is_err());
+        assert!(parse_cmd(&older("612345678", "20261015T120000", 0)).is_err());
+        assert!(parse_cmd(&older("", "20261015T120000", 10)).is_err());
+        assert!(parse_cmd(&older("k", "2026'; --", 10)).is_err());
+        assert_eq!(Cursor::after("20261015T120000").id, i64::MAX);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::addr::BtAddr;
-use crate::engine::{CallKind, Cmd, Device, Item, Nearby, Out, Profile};
+use crate::engine::{CallKind, Cmd, Cursor, Device, Hit, Item, MAX_QUERY, Nearby, Out, Profile};
 use crate::history::SENT_ECHO_SECS;
 use crate::hfp::{HfEvent, Indicator};
 use crate::map::Sms;
@@ -261,6 +261,58 @@ impl Default for Rev {
     }
 }
 
+/// Search through the whole history (done by the daemon), one page after the other.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hits {
+    /// Query sent; a reply for another one is stale.
+    pub query: String,
+    /// Newest first.
+    pub items: Vec<Hit>,
+    pub next: Option<Cursor>,
+    /// A page is on its way.
+    pub busy: bool,
+}
+
+/// Message to bring into view (search result), highlighted for [`FOCUS_FOR`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Focus {
+    pub key: String,
+    pub timestamp: String,
+    pub text: String,
+    pub outgoing: bool,
+    pub at: Instant,
+}
+
+impl Focus {
+    /// `m` is the message to bring into view.
+    #[must_use]
+    pub fn is(&self, m: &Msg) -> bool {
+        m.call.is_none() && m.timestamp == self.timestamp && m.outgoing == self.outgoing && m.text == self.text
+    }
+}
+
+/// Highlight length of a search result reached.
+pub const FOCUS_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+/// Messages asked per "older" page.
+pub const OLDER_PAGE: u32 = 50;
+/// Pages loaded at most to reach a search result, then given up.
+const JUMP_PAGES: u32 = 50;
+
+/// Paging of a conversation's older messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Older {
+    More(Cursor),
+    Asked,
+    End,
+}
+
+/// Search result being reached through "older" pages.
+#[derive(Debug, Clone)]
+struct Jump {
+    hit: Hit,
+    pages: u32,
+}
+
 #[derive(Default)]
 pub struct State {
     /// Sorted by last message, most recent first.
@@ -290,6 +342,13 @@ pub struct State {
     reads: HashMap<String, String>,
     /// Changes with every change made through the methods (not through direct access to `convs`).
     rev: Rev,
+    pub hits: Hits,
+    pub focus: Option<Focus>,
+    /// Per conversation key; absent: not asked yet.
+    older: HashMap<String, Older>,
+    jump: Option<Jump>,
+    /// Commands to send to the daemon, see [`State::take_cmds`].
+    out: Vec<Cmd>,
 }
 
 /// Unread: arrived unread after the last recorded read mark.
@@ -444,6 +503,8 @@ impl State {
                 self.convs.clear();
                 self.reads.clear();
                 self.handles.clear();
+                self.older.clear();
+                (self.hits, self.focus, self.jump) = (Hits::default(), None, None);
                 vec![]
             }
             Out::Adapter { present, powered, discovering } => {
@@ -464,8 +525,114 @@ impl State {
                 self.pairing.paired = Some((addr, r));
                 vec![]
             }
+            Out::Hits { query, items, next } => {
+                if query == self.hits.query && self.hits.busy {
+                    self.hits.items.extend(items);
+                    (self.hits.next, self.hits.busy) = (next, false);
+                }
+                vec![]
+            }
+            Out::Older { key, items, next } => {
+                self.on_older(&key, items, next);
+                vec![]
+            }
             // Never leaves the daemon.
             Out::Flags { .. } | Out::Open { .. } => vec![],
+        }
+    }
+
+    /// Commands queued for the daemon (search, older pages), in order.
+    pub fn take_cmds(&mut self) -> Vec<Cmd> {
+        std::mem::take(&mut self.out)
+    }
+
+    /// Searches `query` through the whole history (from 2 characters, cut to [`MAX_QUERY`]); a new
+    /// query drops the previous results.
+    pub fn search_all(&mut self, query: &str) {
+        let query: String = query.trim().chars().take(MAX_QUERY).collect();
+        if query == self.hits.query {
+            return;
+        }
+        self.rev = Rev::next();
+        let short = query.chars().count() < 2;
+        self.hits = Hits { busy: !short, ..Hits::default() };
+        if !short {
+            self.out.push(Cmd::Search { query: query.clone(), before: None });
+        }
+        self.hits.query = query;
+    }
+
+    /// Asks for the following page of search results, if any and none is on its way.
+    pub fn more_hits(&mut self) {
+        if let Some(c) = self.hits.next.clone().filter(|_| !self.hits.busy) {
+            self.hits.busy = true;
+            self.out.push(Cmd::Search { query: self.hits.query.clone(), before: Some(c) });
+        }
+    }
+
+    /// Conversation `key` may have older messages in the history (unknown until asked).
+    #[must_use]
+    pub fn has_older(&self, key: &str) -> bool {
+        self.older.get(key).is_none_or(|o| matches!(o, Older::More(_)))
+    }
+
+    /// Asks for the page of messages before the oldest one shown in conversation `key`.
+    pub fn older(&mut self, key: &str) {
+        let before = match self.older.get(key) {
+            Some(Older::More(c)) => c.clone(),
+            Some(Older::Asked | Older::End) => return,
+            None => {
+                let oldest = self.conv(key).and_then(|c| c.msgs.iter().find(|m| m.call.is_none()));
+                Cursor::after(oldest.map_or("99991231T235959", |m| m.timestamp.as_str()))
+            }
+        };
+        self.older.insert(key.to_owned(), Older::Asked);
+        self.out.push(Cmd::Older { key: key.to_owned(), before, limit: OLDER_PAGE });
+    }
+
+    /// Opens on search result `hit`: brought into view once present, older pages loaded meanwhile.
+    pub fn jump(&mut self, hit: &Hit) {
+        self.rev = Rev::next();
+        self.focus = None;
+        self.jump = Some(Jump { hit: hit.clone(), pages: 0 });
+        self.reach();
+    }
+
+    /// Next step towards the pending search result: focus if loaded, else one more page or give up.
+    fn reach(&mut self) {
+        let Some(j) = &self.jump else { return };
+        let key = j.hit.key.clone();
+        let target = Focus { key: key.clone(), timestamp: j.hit.timestamp.clone(), text: j.hit.text.clone(), outgoing: j.hit.outgoing, at: Instant::now() };
+        if self.conv(&key).is_some_and(|c| c.msgs.iter().any(|m| target.is(m))) {
+            (self.focus, self.jump) = (Some(target), None);
+        } else if self.older.get(&key) == Some(&Older::Asked) {
+            // Wait for the page on its way.
+        } else if j.pages < JUMP_PAGES && self.has_older(&key) {
+            if let Some(j) = self.jump.as_mut() {
+                j.pages += 1;
+            }
+            self.older(&key);
+        } else {
+            self.jump = None;
+            self.info = Some(t!("Message not found in the history").to_owned());
+        }
+    }
+
+    /// Merges a page of older messages, without duplicates (already shown, or same date, direction, text).
+    fn on_older(&mut self, key: &str, items: Vec<Hit>, next: Option<Cursor>) {
+        self.older.insert(key.to_owned(), next.map_or(Older::End, Older::More));
+        for h in items {
+            if !self.handles.insert(format!("db{}", h.id)) {
+                continue;
+            }
+            let msg = Msg { text: h.text, timestamp: h.timestamp, outgoing: h.outgoing, ..Msg::default() };
+            let same = |m: &Msg| m.call.is_none() && m.timestamp == msg.timestamp && m.outgoing == msg.outgoing && m.text == msg.text;
+            if !self.conv(&h.key).is_some_and(|c| c.msgs.iter().any(same)) {
+                self.push(&h.number, "", msg, false);
+            }
+        }
+        if self.jump.as_ref().is_some_and(|j| j.hit.key == key) {
+            self.reach();
         }
     }
 
@@ -747,6 +914,71 @@ mod tests {
         ];
         // Stops at the first unread one; an unread oldest SMS gives nothing.
         assert_eq!(phone_reads(&items, None), [("612345678".to_owned(), "20261015T110000".to_owned())]);
+    }
+
+    fn hit(id: i64, ts: &str, text: &str) -> Hit {
+        Hit { id, key: "600000001".into(), number: "+33600000001".into(), timestamp: ts.into(), text: text.into(), outgoing: false }
+    }
+
+    #[test]
+    fn search_pages_and_stale_replies() {
+        let mut st = State::default();
+        st.search_all("e");
+        assert!(st.take_cmds().is_empty(), "under 2 characters: nothing asked");
+        st.search_all(" été ");
+        assert_eq!(st.take_cmds(), [Cmd::Search { query: "été".into(), before: None }]);
+        st.search_all("été");
+        assert!(st.take_cmds().is_empty(), "same query: not asked again");
+        drop(st.apply(Out::Hits { query: "ét".into(), items: vec![hit(9, "20261015T100000", "x")], next: None }));
+        assert!(st.hits.items.is_empty() && st.hits.busy, "reply for another query ignored");
+        let next = Some(Cursor { ts: "20261015T100000".into(), id: 1 });
+        drop(st.apply(Out::Hits { query: "été".into(), items: vec![hit(1, "20261015T100000", "été")], next: next.clone() }));
+        assert_eq!(st.hits.items.len(), 1);
+        st.more_hits();
+        st.more_hits();
+        assert_eq!(st.take_cmds(), [Cmd::Search { query: "été".into(), before: next }], "one page at a time");
+        drop(st.apply(Out::Hits { query: "été".into(), items: vec![hit(0, "20261014T100000", "été 2")], next: None }));
+        assert_eq!(st.hits.items.len(), 2);
+        st.more_hits();
+        assert!(st.take_cmds().is_empty(), "last page reached");
+        st.search_all("x".repeat(MAX_QUERY + 5).as_str());
+        assert!(matches!(&st.take_cmds()[..], [Cmd::Search { query, .. }] if query.len() == MAX_QUERY));
+    }
+
+    #[test]
+    fn older_merges_and_jump_reaches_the_hit() {
+        let mut st = State::default();
+        let sms = Sms { handle: "db5".into(), address: "+33600000001".into(), timestamp: "20261015T120000".into(), text: "recent".into(), ..Default::default() };
+        drop(st.apply(Out::Sms { sms, folder: Folder::Inbox, new: false }));
+        assert!(st.has_older("600000001"));
+        // Target not loaded: older pages asked one after the other, from the oldest message shown.
+        let target = hit(1, "20261001T080000", "ancient");
+        st.jump(&target);
+        let first = Cmd::Older { key: "600000001".into(), before: Cursor::after("20261015T120000"), limit: OLDER_PAGE };
+        assert_eq!(st.take_cmds(), [first]);
+        assert!(!st.has_older("600000001"), "page on its way");
+        let c2 = Cursor { ts: "20261010T000000".into(), id: 3 };
+        // Already shown (same handle, or same date/direction/text): not duplicated.
+        let page = vec![hit(5, "20261015T120000", "recent"), hit(4, "20261015T120000", "recent"), hit(3, "20261010T000000", "mid")];
+        drop(st.apply(Out::Older { key: "600000001".into(), items: page, next: Some(c2.clone()) }));
+        let texts: Vec<_> = st.conv("600000001").unwrap().msgs.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["mid", "recent"]);
+        assert_eq!(st.take_cmds(), [Cmd::Older { key: "600000001".into(), before: c2, limit: OLDER_PAGE }]);
+        assert!(st.focus.is_none());
+        drop(st.apply(Out::Older { key: "600000001".into(), items: vec![target.clone()], next: None }));
+        let f = st.focus.clone().unwrap();
+        assert!(f.key == "600000001" && f.text == "ancient");
+        assert!(!st.has_older("600000001"), "start of the history reached");
+        // Already loaded: focused at once, nothing asked.
+        st.jump(&target);
+        assert!(st.take_cmds().is_empty() && st.focus.is_some());
+        // Not found before the start of the history: given up with a notice.
+        st.jump(&hit(2, "20261002T000000", "gone"));
+        assert!(st.focus.is_none() && st.take_cmds().is_empty() && st.info.is_some());
+        // Unknown conversation: newest page asked first.
+        let mut st = State::default();
+        st.older("700000000");
+        assert!(matches!(&st.take_cmds()[..], [Cmd::Older { before, .. }] if *before == Cursor::after("99991231T235959")));
     }
 
     #[test]

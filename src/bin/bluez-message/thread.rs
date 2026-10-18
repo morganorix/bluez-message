@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use bluez_message::app::state::{Conv, Delivery, Msg, Rev};
+use bluez_message::app::state::{Conv, Delivery, FOCUS_FOR, Focus, Msg, Rev};
 use bluez_message::app::tapback::{self, Badge};
 use bluez_message::engine::{CallKind, Item};
 use bluez_message::gui::emoji::{self, Emojis};
@@ -23,11 +23,25 @@ pub enum ThreadAction {
     React(&'static str, String),
     Delete(Item),
     Dial,
+    /// Next page of older messages from the history.
+    Older,
 }
 
-/// Thread of conversation `c`, from the state at revision `rev`; `calls_only`: call lines only;
-/// `previews`: link previews, `None` when disabled.
-pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, mut previews: Option<&mut Previews>, c: &Conv, rev: Rev, calls_only: bool) -> Vec<ThreadAction> {
+/// How a thread is shown.
+pub struct View<'a> {
+    /// State revision (cache of the folded reactions).
+    pub rev: Rev,
+    /// Call lines only.
+    pub calls_only: bool,
+    /// The history may hold older messages: "Older messages" offered at the top.
+    pub older: bool,
+    /// Message to bring into view and highlight (search result).
+    pub focus: Option<&'a Focus>,
+}
+
+/// Thread of conversation `c` shown as `v`; `previews`: link previews, `None` when disabled.
+pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, mut previews: Option<&mut Previews>, c: &Conv, v: &View) -> Vec<ThreadAction> {
+    let (rev, calls_only) = (v.rev, v.calls_only);
     let dial = header(ui, pal, &c.name, &c.number);
     if calls_only && c.last_call().is_none() {
         placeholder(ui, pal, t!("No calls"));
@@ -45,8 +59,20 @@ pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, mut previews:
         // Rank of each emoji message among those with the same text and direction: stable identity
         // despite a deletion, a history loaded earlier or a pending bubble replaced at send time.
         let mut rank: std::collections::HashMap<(&str, bool), usize> = std::collections::HashMap::new();
+        if v.older && !calls_only {
+            ui.vertical_centered(|ui| {
+                if w::button(ui, pal, t!("Older messages"), w::Tone::Accent).clicked() {
+                    acts.push(ThreadAction::Older);
+                }
+            });
+        }
         for (i, m) in c.msgs.iter().enumerate() {
             if fold.folded[i] || (calls_only && m.call.is_none()) {
+                continue;
+            }
+            if let Some(f) = v.focus.filter(|f| f.key == c.key && f.is(m)) {
+                let r = ui.scope(|ui| bubble(ui, pal, emojis, previews.as_deref_mut(), m, &fold.badges[i], max_w, &mut acts)).response;
+                spotlight(ui, pal, f, &r);
                 continue;
             }
             if let Some((kind, secs)) = m.call {
@@ -68,6 +94,21 @@ pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, mut previews:
         acts.push(ThreadAction::Dial);
     }
     acts
+}
+
+/// Search result reached: brought into view once, outlined while [`FOCUS_FOR`] fades.
+fn spotlight(ui: &egui::Ui, pal: &Palette, f: &Focus, r: &egui::Response) {
+    let id = egui::Id::new(("focus", &f.key));
+    if ui.data(|d| d.get_temp::<std::time::Instant>(id)) != Some(f.at) {
+        ui.data_mut(|d| d.insert_temp(id, f.at));
+        r.scroll_to_me(Some(Align::Center));
+    }
+    let left = FOCUS_FOR.saturating_sub(f.at.elapsed()).as_secs_f32() / FOCUS_FOR.as_secs_f32();
+    if left > 0.0 {
+        let stroke = egui::Stroke::new(2.0, pal.accent.gamma_multiply(left));
+        ui.painter().rect_stroke(r.rect.expand(3.0), CORNER, stroke, egui::StrokeKind::Outside);
+        ui.ctx().request_repaint();
+    }
 }
 
 /// [`tapback::fold`] of `c`, kept in egui's memory as long as the state stays at revision `rev`.
@@ -387,6 +428,33 @@ mod tests {
         harness.step();
         let opened = harness.output().platform_output.commands.iter().any(|c| matches!(c, OutputCommand::OpenUrl(u) if u.url == "https://example.com/a"));
         assert!(opened);
+    }
+
+    #[test]
+    fn older_messages_button_only_when_offered() {
+        use egui_kittest::kittest::Queryable;
+        let c = Conv { key: "600000001".into(), number: "+33600000001".into(), name: "Alice".into(), msgs: vec![], unread: 0 };
+        let mut acts = vec![];
+        let mut emojis = Emojis::default();
+        for older in [false, true] {
+            let mut fonts = false;
+            let mut harness = egui_kittest::Harness::new_ui(|ui| {
+                if !std::mem::replace(&mut fonts, true) {
+                    ui.ctx().set_fonts(bluez_message::gui::theme::fonts());
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                let v = View { rev: Rev::default(), calls_only: false, older, focus: None };
+                acts.extend(conv(ui, &Palette::default(), &mut emojis, None, &c, &v));
+            });
+            if older {
+                harness.get_by_label(t!("Older messages")).click();
+                harness.run();
+            } else {
+                assert!(harness.query_by_label(t!("Older messages")).is_none());
+            }
+        }
+        assert!(matches!(acts.as_slice(), [ThreadAction::Older]));
     }
 
     #[test]

@@ -1,12 +1,13 @@
 //! Generic components, modelled value for value on the bar's menu
 //! (ui/menu.plm, ui/menuview.plm, ui/common.plm, ui/wifi.plm, ui/energy.plm).
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
     Align, Align2, Button, Color32, CursorIcon, FontFamily, FontId, Galley, Image, Label, Layout, Margin, Pos2, Rect, Response, RichText, Sense, Sides,
-    TextEdit, TextFormat, Ui, UiBuilder, Vec2, vec2,
+    TextEdit, TextFormat, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, vec2,
 };
 
 use super::emoji::Emojis;
@@ -146,8 +147,18 @@ pub fn row(ui: &mut Ui, pal: &Palette, r: &Row) -> Response {
 
 /// [`row`] whose sub-line shows its emojis in colour.
 pub fn row_with(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>) -> Response {
+    paint_row(ui, pal, r, emojis, None)
+}
+
+/// [`row`] whose sub-line shows `mark` (byte range of the sub-line, a search match) in bold.
+pub fn hit_row(ui: &mut Ui, pal: &Palette, r: &Row, mark: Option<Range<usize>>) -> Response {
+    paint_row(ui, pal, r, None, mark)
+}
+
+fn paint_row(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>, mark: Option<Range<usize>>) -> Response {
     let h = if r.sub.is_some() { size::CARD_H } else { size::ROW_H };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+    resp.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), r.selected, r.label));
     if ui.is_rect_visible(rect) {
         let on = if r.selected || resp.hovered() { 1.0 } else { 0.0 };
         if on > 0.0 {
@@ -168,7 +179,14 @@ pub fn row_with(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>
             let badge_w = if r.badge > 0 { badge_at(ui, pal, &r.badge.to_string(), Pos2::new(x + w - size::EDGE, y2)) + 8.0 } else { 0.0 };
             let sc = pal.dim(if r.strong { 0.6 } else { 0.4 });
             let (p, max_w) = (Pos2::new(x + TEXT_X, y2), w - TEXT_X - size::EDGE - badge_w);
-            if !emojis.is_some_and(|e| e.paint_line(ui, sub, p, &regular(font::SMALL), sc, max_w)) {
+            if let Some(m) = mark.filter(|m| sub.get(m.clone()).is_some()) {
+                let mut job = LayoutJob::default();
+                job.append(&sub[..m.start], 0.0, TextFormat::simple(regular(font::SMALL), sc));
+                job.append(&sub[m.clone()], 0.0, TextFormat::simple(bold_font(font::SMALL), pal.fg));
+                job.append(&sub[m.end..], 0.0, TextFormat::simple(regular(font::SMALL), sc));
+                job.wrap = TextWrapping::truncate_at_width(max_w.max(0.0));
+                put(ui, ui.painter().layout_job(job), p, false, sc);
+            } else if !emojis.is_some_and(|e| e.paint_line(ui, sub, p, &regular(font::SMALL), sc, max_w)) {
                 put(ui, line(ui, sub, regular(font::SMALL), sc, max_w), p, false, sc);
             }
         }
@@ -245,6 +263,7 @@ pub fn button(ui: &mut Ui, pal: &Palette, label: &str, tone: Tone) -> Response {
     let g = ui.painter().layout_no_wrap(label.to_owned(), regular(font::SMALL), ink);
     let dim = vec2((g.size().x + 24.0).max(size::BUTTON_W), ui.spacing().interact_size.y);
     let (rect, r) = ui.allocate_exact_size(dim, Sense::click());
+    r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
     if ui.is_rect_visible(rect) {
         let a = base + if r.hovered() { hover } else { 0.0 };
         ui.painter().rect_filled(rect, CORNER, tint.gamma_multiply(a));

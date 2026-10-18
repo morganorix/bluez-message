@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::addr::BtAddr;
-use crate::engine::{CallKind, Out};
+use crate::engine::{CallKind, Cursor, HITS_PAGE, Hit, Out};
 use crate::error::Error;
 use crate::map::{Folder, Sms};
 use crate::numbering::{self, Id};
@@ -487,11 +487,69 @@ impl History {
         Ok(v)
     }
 
+    /// SMS of the active device whose text contains `query` (accents and case ignored, see [`fold`]),
+    /// newest first, at most [`HITS_PAGE`] strictly before `before`; deleted ones left out.
+    /// Returns the page and the cursor of the following one, if any.
+    ///
+    /// # Errors
+    /// SQLite error.
+    pub fn search(&self, query: &str, before: Option<&Cursor>) -> rusqlite::Result<(Vec<Hit>, Option<Cursor>)> {
+        let pattern = format!("%{}%", like_escape(&fold(crate::phone::clean(query, false).trim())));
+        let top = Cursor::after("99991231T235959");
+        let c = before.unwrap_or(&top);
+        let st = self.db.prepare_cached(
+            "SELECT id, key, number, ts, text, outgoing FROM messages WHERE device = ?1 AND hidden = 0 \
+             AND folded LIKE ?2 ESCAPE '\\' AND (ts < ?3 OR (ts = ?3 AND id < ?4)) ORDER BY ts DESC, id DESC LIMIT ?5",
+        )?;
+        page(st, params![self.device, pattern, c.ts, c.id, page_limit(HITS_PAGE)], HITS_PAGE)
+    }
+
+    /// SMS of conversation `key` strictly before `before`, newest first, at most `limit`; deleted ones left out.
+    /// Returns the page and the cursor of the following one, if any.
+    ///
+    /// # Errors
+    /// SQLite error.
+    pub fn older(&self, key: &str, before: &Cursor, limit: usize) -> rusqlite::Result<(Vec<Hit>, Option<Cursor>)> {
+        let st = self.db.prepare_cached(
+            "SELECT id, key, number, ts, text, outgoing FROM messages WHERE device = ?1 AND key = ?2 AND hidden = 0 \
+             AND (ts < ?3 OR (ts = ?3 AND id < ?4)) ORDER BY ts DESC, id DESC LIMIT ?5",
+        )?;
+        page(st, params![self.device, key, before.ts, before.id, page_limit(limit)], limit)
+    }
+
     #[cfg(test)]
     fn set_since(&mut self, s: &str) {
         self.db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", [&since_key(&self.device), s]).unwrap();
         self.since = s.to_owned();
     }
+}
+
+/// `LIMIT` of a page of `n`: one more row tells whether a following page exists.
+fn page_limit(n: usize) -> i64 {
+    i64::try_from(n).map_or(i64::MAX, |n| n.saturating_add(1))
+}
+
+/// Rows `id, key, number, ts, text, outgoing` of `st`: the first `n`, and the cursor after them if more came.
+fn page(mut st: rusqlite::CachedStatement<'_>, p: impl rusqlite::Params, n: usize) -> rusqlite::Result<(Vec<Hit>, Option<Cursor>)> {
+    let mut items = st
+        .query_map(p, |r| Ok(Hit { id: r.get(0)?, key: r.get(1)?, number: r.get(2)?, timestamp: r.get(3)?, text: r.get(4)?, outgoing: r.get(5)? }))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let more = items.len() > n;
+    items.truncate(n);
+    let next = more.then(|| items.last().map(Hit::cursor)).flatten();
+    Ok((items, next))
+}
+
+/// `s` taken literally by `LIKE … ESCAPE '\'`.
+fn like_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `meta` key of a device's history start.
@@ -948,6 +1006,54 @@ mod tests {
         h.db.execute("INSERT INTO convs (device, key, muted) VALUES (?1, '+33600000001', 1), ('66:77:88:99:AA:BB', 'x', 1)", [DEV]).unwrap();
         h.clear().unwrap();
         assert_eq!(count(&h.db, "convs"), 1, "other device kept");
+    }
+
+    #[test]
+    fn search_and_older_pages() {
+        let dir = tmp("search");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("history.db");
+        let h = History::open(&db, &dev()).unwrap();
+        h.add_sms(&sms("+33600000001", "20261015T100000", "Bel été à Noël"), false).unwrap();
+        h.add_sms(&sms("+33600000001", "20261015T100100", "100% sûr"), false).unwrap();
+        h.add_sms(&sms("+33600000001", "20261015T100200", "a_b"), false).unwrap();
+        h.add_sms(&sms("+33600000002", "20261015T100300", "ETE encore"), false).unwrap();
+        let texts = |v: &[Hit]| v.iter().map(|x| x.text.clone()).collect::<Vec<_>>();
+        let (v, next) = h.search("Éte", None).unwrap();
+        assert_eq!(texts(&v), ["ETE encore", "Bel été à Noël"], "accents and case ignored, newest first");
+        assert!(next.is_none());
+        assert_eq!(v[1].key, "600000001");
+        assert_eq!(texts(&h.search("%", None).unwrap().0), ["100% sûr"], "% taken literally");
+        assert_eq!(texts(&h.search("_", None).unwrap().0), ["a_b"], "_ taken literally");
+        assert!(h.search("\\", None).unwrap().0.is_empty());
+        // Deleted messages and another device's history left out.
+        let item = crate::engine::Item { timestamp: "20261015T100300".into(), text: "ETE encore".into(), outgoing: false, call: false };
+        h.delete("600000002", Some(&item)).unwrap();
+        let other = History::open(&db, &"00:11:22:33:44:66".parse().unwrap()).unwrap();
+        other.add_sms(&sms("+33600000001", "20261015T110000", "été ailleurs"), false).unwrap();
+        assert_eq!(texts(&h.search("ete", None).unwrap().0), ["Bel été à Noël"]);
+        // Pagination: 100 per page, the cursor resumes strictly after the last one, same-second rows kept.
+        for i in 0..150 {
+            h.add_sms(&sms("+33600000003", &format!("20261016T{:02}{:02}00", i / 60, i % 60), &format!("page {i}")), false).unwrap();
+        }
+        h.add_sms(&sms("+33600000004", "20261016T000000", "page bis"), false).unwrap();
+        let (p1, next) = h.search("page", None).unwrap();
+        assert_eq!(p1.len(), HITS_PAGE);
+        let (p2, end) = h.search("page", next.as_ref()).unwrap();
+        assert_eq!(p2.len(), 51);
+        assert!(end.is_none());
+        let mut all: Vec<_> = p1.iter().chain(&p2).map(|x| x.id).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 151, "no row lost nor repeated across pages");
+        // Older: one conversation only, before the cursor.
+        let (o, next) = h.older("600000003", &Cursor::after("20261016T000500"), 3).unwrap();
+        assert_eq!(texts(&o), ["page 5", "page 4", "page 3"], "same timestamp as the cursor included");
+        let (o, end) = h.older("600000003", next.as_ref().unwrap(), 3).unwrap();
+        assert_eq!(texts(&o), ["page 2", "page 1", "page 0"]);
+        assert!(end.is_none());
+        drop((h, other));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

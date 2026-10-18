@@ -410,6 +410,11 @@ impl Daemon {
                 Err(e) => Err(e),
             },
             Cmd::PurgeHidden => self.purge_hidden(reply.as_ref()),
+            Cmd::Search { query, before } => self.lookup(reply.as_ref(), |h| h.search(&query, before.as_ref()).map(|(items, next)| Out::Hits { query, items, next })),
+            Cmd::Older { key, before, limit } => {
+                let n = usize::try_from(limit).unwrap_or(usize::MAX);
+                self.lookup(reply.as_ref(), |h| h.older(&key, &before, n).map(|(items, next)| Out::Older { key, items, next }))
+            }
             Cmd::ClearHistory => self.clear_history(),
             Cmd::Open { number } => open_conversation(&number, &self.hub),
             cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
@@ -556,6 +561,23 @@ impl Daemon {
         config::write_device(new).map_err(|e| t!("cannot save the device: {0}", e))?;
         tracing::info!("device changed: restarting");
         Ok(true)
+    }
+
+    /// History read for the requester only (search, older page): never published nor replayed.
+    /// Synchronous: indexed by `device`, one bounded page per request.
+    fn lookup(&self, reply: Option<&mpsc::Sender<Out>>, read: impl FnOnce(&History) -> rusqlite::Result<Out>) -> Result<(), String> {
+        match read(&need(self.dev.as_ref())?.history) {
+            Ok(out) => {
+                if let Some(reply) = reply {
+                    let _ = reply.try_send(out);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!("history (lookup): {e}");
+                Err(t!("cannot read the history").to_owned())
+            }
+        }
     }
 
     fn purge_hidden(&mut self, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
