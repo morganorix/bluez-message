@@ -120,6 +120,8 @@ impl History {
     fn init(mut db: Connection, device: &BtAddr, path: Option<PathBuf>) -> crate::error::Result<Self> {
         // Deleted rows are overwritten with zeros on disk (and in the journal).
         db.pragma_update(None, "secure_delete", true)?;
+        // WAL: the slow reads of a [`Reader`] never block a write (stays "memory" for an in-memory database).
+        db.pragma_update_and_check(None, "journal_mode", "wal", |r| r.get::<_, String>(0))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let start = usize::try_from(version).ok().filter(|&v| v <= MIGRATIONS.len()).ok_or(Error::DbVersion(version))?;
         let device = device.to_string();
@@ -385,6 +387,8 @@ impl History {
         if is_empty(&self.db)? {
             self.db.execute_batch("VACUUM")?;
         }
+        // Old pages left in the WAL are written back and the file emptied.
+        self.db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
 
@@ -995,6 +999,26 @@ mod tests {
         let rows: Vec<(String, bool)> =
             h.db.prepare("SELECT key, hidden FROM messages").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
         assert_eq!(rows, [("+33600000001".to_owned(), true)], "deleted in either copy: stays deleted");
+    }
+
+    #[test]
+    fn a_long_read_does_not_block_the_writer() {
+        let dir = tmp("wal");
+        let mut h = History::open(&dir.join("history.db"), &dev()).unwrap();
+        h.set_since("20261001T000000");
+        h.db.busy_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let r = h.reader().unwrap();
+        // Read transaction left open, as during an export.
+        r.db.execute_batch("BEGIN").unwrap();
+        let n: i64 = r.db.query_row("SELECT count(*) FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        assert!(h.add_sms(&sms("+33600000001", "20261015T100000", "a"), false).unwrap());
+        r.db.execute_batch("COMMIT").unwrap();
+        let wal = dir.join("history.db-wal");
+        assert_eq!(std::fs::metadata(&wal).unwrap().permissions().mode() & 0o777, 0o600);
+        h.clear().unwrap();
+        assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0, "emptied by the purge");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
