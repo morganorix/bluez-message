@@ -239,6 +239,7 @@
   "reconnection failed: {0}": "échec de la reconnexion : {0}",
   "send queue full": "file d'envoi pleine",
   "service missing": "service absent",
+  "settings changed elsewhere, try again": "réglages modifiés ailleurs, réessayez",
   "setup queue full": "file des commandes Bluetooth pleine",
   "timed out": "délai dépassé",
   "unknown country": "pays inconnu",

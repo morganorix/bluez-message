@@ -77,13 +77,15 @@ pub struct Settings {
     pub quick_replies: Vec<String>,
     /// Preview card under a web link (title, image): the GUI contacts the linked site.
     pub link_previews: bool,
+    /// Bumped by the daemon on each change: a change based on an older revision is refused ([`Settings::rebase`]).
+    pub rev: u64,
 }
 
 /// The default quick replies are in the active language (`t!`): written to `settings.json` on the first save,
 /// they do not follow a later language change.
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None, quick_replies: vec![t!("Can't talk now, I'll call you back.").to_owned(), t!("I'm in a meeting.").to_owned()], link_previews: false }
+        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None, quick_replies: vec![t!("Can't talk now, I'll call you back.").to_owned(), t!("I'm in a meeting.").to_owned()], link_previews: false, rev: 0 }
     }
 }
 
@@ -101,6 +103,18 @@ pub fn valid_lang(code: &str) -> bool {
 }
 
 impl Settings {
+    /// `self` as the next revision of `current`.
+    ///
+    /// # Errors
+    /// `self` was edited from an older revision: changed elsewhere meanwhile, it would undo that change.
+    pub fn rebase(mut self, current: &Self) -> Result<Self, String> {
+        if self.rev != current.rev {
+            return Err(t!("settings changed elsewhere, try again").to_owned());
+        }
+        self.rev = current.rev.wrapping_add(1);
+        Ok(self)
+    }
+
     /// Check of the values received from a client.
     ///
     /// # Errors
@@ -159,6 +173,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_revision_is_refused() {
+        let current = Settings { rev: 3, ..Settings::default() };
+        let next = Settings { notify_sms: false, ..current.clone() }.rebase(&current).unwrap();
+        assert_eq!((next.rev, next.notify_sms), (4, false));
+        // Edited from revision 3 while 4 is current: refused.
+        assert!(Settings { notify_calls: false, ..current.clone() }.rebase(&next).is_err());
+    }
 
     #[test]
     fn defaults_and_partial_json() {

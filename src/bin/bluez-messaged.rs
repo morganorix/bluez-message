@@ -509,6 +509,7 @@ impl Daemon {
     }
 
     async fn set_settings(&mut self, new: Settings) -> Result<(), String> {
+        let new = new.rebase(&self.settings)?;
         // Other country: conversations regrouped before anything changes; failure: settings refused.
         let old_home = self.state.home();
         let regrouped = self.rekey(numbering::home(new.country.as_deref(), new.lang.as_deref()))?;
