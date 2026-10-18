@@ -297,12 +297,15 @@ pub const FOCUS_FOR: std::time::Duration = std::time::Duration::from_secs(2);
 pub const OLDER_PAGE: u32 = 50;
 /// Pages loaded at most to reach a search result, then given up.
 const JUMP_PAGES: u32 = 50;
+/// Longest wait for a page of search results or older messages: past it the reply is taken as lost.
+pub const REPLY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Paging of a conversation's older messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Older {
     More(Cursor),
-    Asked,
+    /// Page before this cursor asked at this instant.
+    Asked(Cursor, Instant),
     End,
 }
 
@@ -345,6 +348,8 @@ pub struct State {
     /// Changes with every change made through the methods (not through direct access to `convs`).
     rev: Rev,
     pub hits: Hits,
+    /// When the page of `hits` on its way was asked.
+    hits_asked: Option<Instant>,
     pub focus: Option<Focus>,
     /// Per conversation key; absent: not asked yet.
     older: HashMap<String, Older>,
@@ -570,6 +575,7 @@ impl State {
         self.rev = Rev::next();
         let short = query.chars().count() < 2;
         self.hits = Hits { busy: !short, ..Hits::default() };
+        self.hits_asked = (!short).then(Instant::now);
         if !short {
             self.out.push(Cmd::Search { query: query.clone(), before: None });
         }
@@ -579,7 +585,7 @@ impl State {
     /// Asks for the following page of search results, if any and none is on its way.
     pub fn more_hits(&mut self) {
         if let Some(c) = self.hits.next.clone().filter(|_| !self.hits.busy) {
-            self.hits.busy = true;
+            (self.hits.busy, self.hits_asked) = (true, Some(Instant::now()));
             self.out.push(Cmd::Search { query: self.hits.query.clone(), before: Some(c) });
         }
     }
@@ -594,14 +600,52 @@ impl State {
     pub fn older(&mut self, key: &str) {
         let before = match self.older.get(key) {
             Some(Older::More(c)) => c.clone(),
-            Some(Older::Asked | Older::End) => return,
+            Some(Older::Asked(..) | Older::End) => return,
             None => {
                 let oldest = self.conv(key).and_then(|c| c.msgs.iter().find(|m| m.call.is_none()));
                 Cursor::after(oldest.map_or("99991231T235959", |m| m.timestamp.as_str()))
             }
         };
-        self.older.insert(key.to_owned(), Older::Asked);
+        self.older.insert(key.to_owned(), Older::Asked(before.clone(), Instant::now()));
         self.out.push(Cmd::Older { key: key.to_owned(), before, limit: OLDER_PAGE });
+    }
+
+    /// Gives up the pages asked [`REPLY_WAIT`] ago or more without a reply (lost on the way), so that
+    /// they can be asked again; a search result being reached through them is given up too.
+    /// Returns how long until the next page on its way expires, if any.
+    pub fn expire_reads(&mut self, now: Instant) -> Option<std::time::Duration> {
+        let mut soonest: Option<std::time::Duration> = None;
+        let mut expired = |at: Instant| {
+            let left = REPLY_WAIT.saturating_sub(now.saturating_duration_since(at));
+            if left.is_zero() {
+                return true;
+            }
+            soonest = Some(soonest.map_or(left, |s| s.min(left)));
+            false
+        };
+        let mut lost = false;
+        if let Some(at) = self.hits_asked.filter(|_| self.hits.busy)
+            && expired(at)
+        {
+            (self.hits.busy, self.hits_asked, lost) = (false, None, true);
+        }
+        for o in self.older.values_mut() {
+            if let Older::Asked(c, at) = o
+                && expired(*at)
+            {
+                *o = Older::More(c.clone());
+                lost = true;
+            }
+        }
+        if lost {
+            self.rev = Rev::next();
+            // Pending only while its page is on its way.
+            if self.jump.as_ref().is_some_and(|j| !matches!(self.older.get(&j.hit.key), Some(Older::Asked(..)))) {
+                self.jump = None;
+            }
+            self.error = Some(t!("no reply from the daemon").to_owned());
+        }
+        soonest
     }
 
     /// Opens on search result `hit`: brought into view once present, older pages loaded meanwhile.
@@ -619,7 +663,7 @@ impl State {
         let target = Focus { key: key.clone(), timestamp: j.hit.timestamp.clone(), text: j.hit.text.clone(), outgoing: j.hit.outgoing, at: Instant::now() };
         if self.conv(&key).is_some_and(|c| c.msgs.iter().any(|m| target.is(m))) {
             (self.focus, self.jump) = (Some(target), None);
-        } else if self.older.get(&key) == Some(&Older::Asked) {
+        } else if matches!(self.older.get(&key), Some(Older::Asked(..))) {
             // Wait for the page on its way.
         } else if j.pages < JUMP_PAGES && self.has_older(&key) {
             if let Some(j) = self.jump.as_mut() {
@@ -1003,6 +1047,27 @@ mod tests {
         let mut st = State::default();
         st.older("700000000");
         assert!(matches!(&st.take_cmds()[..], [Cmd::Older { before, .. }] if *before == Cursor::after("99991231T235959")));
+    }
+
+    #[test]
+    fn lost_reads_expire() {
+        let mut st = State::default();
+        st.search_all("été");
+        drop(st.take_cmds());
+        let now = Instant::now();
+        assert!(st.expire_reads(now).is_some_and(|w| w <= REPLY_WAIT), "search on its way");
+        assert!(st.hits.busy && st.error.is_none());
+        assert!(st.expire_reads(now + REPLY_WAIT).is_none());
+        assert!(!st.hits.busy && st.hits.query == "été" && st.error.is_some(), "search given up, kept");
+        // Lost older page during a jump: page asked again later, jump given up.
+        let mut st = State::default();
+        st.jump(&hit(1, "20261001T080000", "ancient"));
+        let first = st.take_cmds();
+        assert!(!st.has_older("600000001") && st.jump.is_some());
+        assert!(st.expire_reads(Instant::now() + REPLY_WAIT).is_none());
+        assert!(st.has_older("600000001") && st.jump.is_none() && st.error.is_some());
+        st.older("600000001");
+        assert_eq!(st.take_cmds(), first, "same page asked again");
     }
 
     #[test]

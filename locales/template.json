@@ -180,6 +180,7 @@
   "cannot export the history": "",
   "cannot purge the history": "",
   "history busy, try again": "",
+  "no reply from the daemon": "",
   "cannot read the history": "",
   "cannot save settings": "",
   "cannot save the conversation state (history)": "",

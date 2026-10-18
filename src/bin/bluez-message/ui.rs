@@ -549,6 +549,9 @@ impl eframe::App for App {
             // Send bar animation.
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
+        if let Some(wait) = self.state.expire_reads(std::time::Instant::now()) {
+            ctx.request_repaint_after(wait);
+        }
         if let Some(p) = self.colors.poll(ctx) {
             self.pal = p;
         }
