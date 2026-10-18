@@ -52,7 +52,17 @@ pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, mut previews:
     // First frame of the thread: emojis already present do not animate, only new ones.
     let now = ui.input(|i| i.time);
     let opened = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(egui::Id::new(("thread", &c.key)), || now));
-    ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+    // Opening (another conversation, or no thread on the previous pass): a fresh scroll state, stuck to the end, so the
+    // thread starts at the last message instead of the offset left by the previous one. A search jump scrolls itself.
+    let (shown, pass, key) = (egui::Id::new("thread-shown"), ui.ctx().cumulative_pass_nr(), egui::Id::new(&c.key));
+    let last = ui.data_mut(|d| d.get_temp::<(egui::Id, u64, u64)>(shown));
+    let opening = last.is_none_or(|(k, p, _)| k != key || p + 1 < pass) && v.focus.is_none_or(|f| f.key != c.key);
+    let generation = match last {
+        Some((_, _, g)) if !opening => g,
+        _ => pass,
+    };
+    ui.data_mut(|d| d.insert_temp(shown, (key, pass, generation)));
+    ScrollArea::vertical().id_salt(("thread", generation)).stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = w::GAP;
         // Reactions folded into a badge on the targeted message: computed again only when the state changes.
         let fold = folded(ui, c, rev);
