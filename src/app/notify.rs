@@ -1,7 +1,7 @@
 //! "Navi" notifications (pleamar server) in a dedicated thread: a slow server does not freeze the UI.
 //! The call notification's actions come back as a [`Cmd`] through `on_cmd`.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -15,6 +15,8 @@ use super::state::{Call, Decline, Effect, Phase};
 use crate::t;
 
 const APP: &str = "Navi";
+const DEST: &str = "org.freedesktop.Notifications";
+const PATH: &str = "/org/freedesktop/Notifications";
 
 /// The text of an SMS is controlled by the sender: neutralises the markup allowed by the spec.
 fn escape(s: &str) -> String {
@@ -29,34 +31,21 @@ const KEPT: usize = 64;
 /// Ends once every sender is dropped and the pending effects are applied.
 pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 'static) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let mut sms = SmsCards { link: None, cards: Arc::default(), on_cmd: on_cmd.clone() };
         let mut bubble = Bubble { on_cmd, id: Arc::new(AtomicU32::new(0)), number: None, decline: Arc::default() };
-        let mut shown = VecDeque::with_capacity(KEPT);
         loop {
             match effects.recv_timeout(TICK) {
-                Ok(Effect::Sms { from, text, reply }) => match sms(&from, &text, reply, &bubble.on_cmd) {
-                    Ok(id) => {
-                        // The oldest is closed: its "Reply" listener ends with it.
-                        if shown.len() == KEPT
-                            && let Some(old) = shown.pop_front()
-                            && let Err(e) = close(old)
-                        {
-                            tracing::debug!("closing notification: {e}");
-                        }
-                        shown.push_back(id);
+                Ok(Effect::Sms { from, text, reply }) => {
+                    if let Err(e) = sms.show(&from, &text, reply) {
+                        tracing::warn!("SMS notification: {e}");
                     }
-                    Err(e) => tracing::warn!("SMS notification: {e}"),
-                },
+                }
                 Ok(Effect::Call(c)) => bubble.show(&c, None),
                 Ok(Effect::Ring(c, d)) => bubble.show(&c, d),
                 Ok(Effect::CallEnd(_)) => bubble.close(),
                 Ok(Effect::CloseAll) => {
                     bubble.close();
-                    for id in shown.drain(..) {
-                        // Already closed (expired, dismissed): the server ignores it.
-                        if let Err(e) = close(id) {
-                            tracing::debug!("closing notification: {e}");
-                        }
-                    }
+                    sms.close_all();
                 }
                 Err(RecvTimeoutError::Timeout) => bubble.tick(),
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -66,27 +55,109 @@ pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 's
     })
 }
 
-/// SMS notification; with `reply`, a "Reply" action that opens the conversation, listened to in a thread that
-/// ends when the card closes (action, expiry, ×).
-fn sms(from: &str, text: &str, reply: Option<String>, on_cmd: &(impl Fn(Cmd) + Clone + Send + 'static)) -> notify_rust::error::Result<u32> {
-    let mut n = Notification::new();
-    n.appname(APP).summary(&escape(from)).body(&escape(text)).icon("phone");
-    if reply.is_some() {
-        n.action("reply", t!("Reply"));
+/// SMS cards shown, oldest first, with the number their "Reply" action opens.
+#[derive(Default)]
+struct Cards {
+    shown: VecDeque<(u32, Option<String>)>,
+    /// Unique name of the server that showed the last card: the only sender of signals listened to.
+    server: Option<String>,
+}
+
+impl Cards {
+    /// Remembers card `id`; returns the oldest one forgotten beyond [`KEPT`], to close.
+    fn push(&mut self, id: u32, reply: Option<String>) -> Option<u32> {
+        let old = if self.shown.len() == KEPT { self.shown.pop_front().map(|(id, _)| id) } else { None };
+        self.shown.push_back((id, reply));
+        old
     }
-    let h = n.show()?;
-    let id = h.id();
-    if let Some(number) = reply {
-        let on_cmd = on_cmd.clone();
-        thread::spawn(move || {
-            h.wait_for_action(|a| {
-                if a == "reply" {
-                    on_cmd(Cmd::Open { number: Some(number) });
+
+    /// Card `id` closed (action, expiry, ×): forgotten; returns the number of its "Reply" action, if any.
+    fn closed(&mut self, id: u32) -> Option<String> {
+        let i = self.shown.iter().position(|(c, _)| *c == id)?;
+        self.shown.remove(i).and_then(|(_, reply)| reply)
+    }
+}
+
+/// SMS notifications, shown and listened to on one session connection: a single thread receives the server's
+/// signals (broadcast or sent to the sender only), whatever the number of cards.
+struct SmsCards<F> {
+    /// Opened at the first SMS (the session bus may come up after the daemon); `None` again if it fails.
+    link: Option<zbus::blocking::Connection>,
+    cards: Arc<Mutex<Cards>>,
+    on_cmd: F,
+}
+
+impl<F: Fn(Cmd) + Clone + Send + 'static> SmsCards<F> {
+    /// Shows the card; with `reply`, a "Reply" action that opens the conversation.
+    fn show(&mut self, from: &str, text: &str, reply: Option<String>) -> zbus::Result<()> {
+        let conn = if let Some(c) = &self.link {
+            c.clone()
+        } else {
+            let c = zbus::blocking::Connection::session()?;
+            listen(&c, Arc::clone(&self.cards), self.on_cmd.clone())?;
+            self.link = Some(c.clone());
+            c
+        };
+        let actions: Vec<&str> = if reply.is_some() { vec!["reply", t!("Reply")] } else { vec![] };
+        let hints: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
+        let msg = conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, 0u32, "phone", escape(from), escape(text), actions, hints, -1i32))?;
+        let id: u32 = msg.body().deserialize()?;
+        let old = {
+            let mut cards = self.cards.lock().unwrap_or_else(PoisonError::into_inner);
+            cards.server = msg.header().sender().map(ToString::to_string);
+            cards.push(id, reply)
+        };
+        if let Some(old) = old
+            && let Err(e) = close_on(&conn, old)
+        {
+            tracing::debug!("closing notification: {e}");
+        }
+        Ok(())
+    }
+
+    fn close_all(&mut self) {
+        let shown = std::mem::take(&mut self.cards.lock().unwrap_or_else(PoisonError::into_inner).shown);
+        let Some(conn) = &self.link else { return };
+        for (id, _) in shown {
+            // Already closed (expired, dismissed): the server ignores it.
+            if let Err(e) = close_on(conn, id) {
+                tracing::debug!("closing notification: {e}");
+            }
+        }
+    }
+}
+
+/// Listens to the notification signals on `conn` in a thread that lives as long as the connection.
+fn listen(conn: &zbus::blocking::Connection, cards: Arc<Mutex<Cards>>, on_cmd: impl Fn(Cmd) + Send + 'static) -> zbus::Result<()> {
+    let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(DEST)?.path(PATH)?.build();
+    let signals = zbus::blocking::MessageIterator::for_match_rule(rule, conn, Some(KEPT))?;
+    thread::spawn(move || {
+        for msg in signals.flatten() {
+            let h = msg.header();
+            let mut cards = cards.lock().unwrap_or_else(PoisonError::into_inner);
+            if cards.server.is_none() || h.sender().map(ToString::to_string) != cards.server {
+                continue;
+            }
+            let open = match h.member().map(zbus::names::MemberName::as_str) {
+                Some("ActionInvoked") => match msg.body().deserialize::<(u32, &str)>() {
+                    Ok((id, "reply")) => cards.closed(id),
+                    _ => None,
+                },
+                Some("NotificationClosed") => {
+                    if let Ok((id, _reason)) = msg.body().deserialize::<(u32, u32)>() {
+                        cards.closed(id);
+                    }
+                    None
                 }
-            });
-        });
-    }
-    Ok(id)
+                _ => None,
+            };
+            drop(cards);
+            if let Some(number) = open {
+                on_cmd(Cmd::Open { number: Some(number) });
+            }
+        }
+    });
+    Ok(())
 }
 
 /// The ringing bubble (Answer / Decline, and SMS replies when the caller is a mobile), replaced in place (same id) while it rings.
@@ -191,14 +262,11 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
 }
 
 fn close(id: u32) -> zbus::Result<()> {
-    let c = zbus::blocking::Connection::session()?;
-    c.call_method(
-        Some("org.freedesktop.Notifications"),
-        "/org/freedesktop/Notifications",
-        Some("org.freedesktop.Notifications"),
-        "CloseNotification",
-        &(id,),
-    )?;
+    close_on(&zbus::blocking::Connection::session()?, id)
+}
+
+fn close_on(c: &zbus::blocking::Connection, id: u32) -> zbus::Result<()> {
+    c.call_method(Some(DEST), PATH, Some(DEST), "CloseNotification", &(id,))?;
     Ok(())
 }
 
@@ -221,6 +289,24 @@ mod tests {
         assert_eq!(c.caller("\n"), "+331");
         c.name = Some("Bob".into());
         assert_eq!(c.caller("\n"), "Bob\n+331");
+    }
+
+    #[test]
+    fn cards_map_ids_to_numbers_within_bounds() {
+        let mut c = Cards::default();
+        assert_eq!(c.push(1, Some("+33600000001".into())), None);
+        assert_eq!(c.push(2, None), None);
+        assert_eq!(c.closed(2), None);
+        // Reply action then close signal: opened once.
+        assert_eq!(c.closed(1).as_deref(), Some("+33600000001"));
+        assert_eq!(c.closed(1), None);
+        for id in 10..10 + u32::try_from(KEPT).unwrap() {
+            assert_eq!(c.push(id, Some("+33600000002".into())), None);
+        }
+        // Beyond KEPT, the oldest is forgotten and handed back to close.
+        assert_eq!(c.push(99, None), Some(10));
+        assert_eq!(c.closed(10), None);
+        assert_eq!(c.shown.len(), KEPT);
     }
 
 }
