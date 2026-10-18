@@ -4,15 +4,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
-use zbus::{Connection, proxy};
+use zbus::{Connection, ObjectPath, OwnedObjectPath, Variant, proxy};
 
 use crate::addr::BtAddr;
 use crate::error::{Error, Result};
 
 #[proxy(interface = "org.bluez.obex.Client1", default_service = "org.bluez.obex", default_path = "/org/bluez/obex")]
 trait Client {
-    fn create_session(&self, dest: &str, args: HashMap<&str, Value<'_>>) -> zbus::Result<OwnedObjectPath>;
+    fn create_session(&self, dest: &str, args: HashMap<&str, Variant<'_>>) -> zbus::Result<OwnedObjectPath>;
     fn remove_session(&self, session: &ObjectPath<'_>) -> zbus::Result<()>;
 }
 
@@ -36,7 +35,7 @@ impl Session {
     pub async fn open(addr: &BtAddr, target: &str) -> Result<Self> {
         let conn = Connection::session().await?;
         let client = ClientProxy::new(&conn).await?;
-        let path = client.create_session(addr.as_str(), HashMap::from([("Target", Value::from(target))])).await?;
+        let path = client.create_session(addr.as_str(), HashMap::from([("Target", Variant::from(target))])).await?;
         Ok(Self { conn, path })
     }
 
@@ -56,7 +55,7 @@ impl Session {
     /// # Errors
     /// [`Error::TransferFailed`], [`Error::TransferTimeout`] or D-Bus error.
     pub async fn wait_transfer(&self, path: OwnedObjectPath, max: Duration) -> Result<()> {
-        let transfer = TransferProxy::builder(&self.conn).path(path)?.build().await?;
+        let transfer = TransferProxy::builder(&self.conn).path(path).build().await?;
         let mut changes = transfer.receive_status_changed().await;
         let done = async {
             let mut status = transfer.status().await.map_err(|_| Error::TransferFailed)?;

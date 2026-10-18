@@ -6,8 +6,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use serde::{Deserialize, Serialize};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
-use zbus::{Connection, interface, proxy};
+use zbus::{Connection, ObjectPath, OwnedVariant, Variant, interface, proxy};
 
 use crate::addr::BtAddr;
 use crate::error::{Error, Result};
@@ -173,7 +172,7 @@ struct Agent {
 #[allow(clippy::unused_async)]
 #[interface(name = "org.bluez.Profile1")]
 impl Agent {
-    async fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::zvariant::OwnedFd, _props: HashMap<String, OwnedValue>) {
+    async fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::OwnedFd, _props: HashMap<String, OwnedVariant>) {
         if device.as_str().ends_with(&self.device_suffix) {
             let _ = self.tx.send(fd.into()).await;
         } // otherwise: fd closed on drop, foreign device ignored
@@ -190,7 +189,7 @@ impl Agent {
     default_path = "/org/bluez"
 )]
 trait ProfileManager {
-    fn register_profile(&self, profile: &ObjectPath<'_>, uuid: &str, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+    fn register_profile(&self, profile: &ObjectPath<'_>, uuid: &str, options: HashMap<&str, Variant<'_>>) -> zbus::Result<()>;
     fn unregister_profile(&self, profile: &ObjectPath<'_>) -> zbus::Result<()>;
 }
 
@@ -282,19 +281,19 @@ impl HfCmd {
 pub async fn run(addr: &BtAddr, mut cmds: mpsc::Receiver<HfCmd>, mut on_event: impl FnMut(&HfEvent)) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
     let conn = Connection::system().await?;
-    let path = ObjectPath::try_from(PROFILE_PATH).map_err(zbus::Error::from)?;
+    let path = ObjectPath::try_from(PROFILE_PATH)?;
     conn.object_server()
         .at(&path, Agent { device_suffix: addr.node(), tx })
         .await?;
     let pm = ProfileManagerProxy::new(&conn).await?;
     let opts = HashMap::from([
-        ("Name", Value::from("bluez-message HFP")),
-        ("Role", Value::from("client")),
+        ("Name", Variant::from("bluez-message HFP")),
+        ("Role", Variant::from("client")),
         // Paired and encrypted link required: without a link key, a spoofed address cannot inject RING/CLIP.
-        ("RequireAuthentication", Value::from(true)),
-        ("RequireAuthorization", Value::from(false)),
-        ("Version", Value::from(0x0107u16)),
-        ("Features", Value::from(0u16)),
+        ("RequireAuthentication", Variant::from(true)),
+        ("RequireAuthorization", Variant::from(false)),
+        ("Version", Variant::from(0x0107u16)),
+        ("Features", Variant::from(0u16)),
     ]);
     pm.register_profile(&path, UUID_HFP_HF, opts).await?;
     tracing::info!("HF profile registered, waiting for the device to connect");

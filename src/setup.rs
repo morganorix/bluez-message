@@ -8,8 +8,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
-use zbus::zvariant::{ObjectPath, Value};
-use zbus::{Connection, interface, proxy};
+use zbus::{Connection, ObjectPath, Variant, interface, proxy};
 
 use crate::addr::BtAddr;
 use crate::bluez::{self, ADAPTER, bounded, is_phone, prop_bool};
@@ -39,7 +38,7 @@ const QUEUE: usize = 8;
 trait Adapter {
     fn start_discovery(&self) -> zbus::Result<()>;
     fn stop_discovery(&self) -> zbus::Result<()>;
-    fn set_discovery_filter(&self, filter: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+    fn set_discovery_filter(&self, filter: HashMap<&str, Variant<'_>>) -> zbus::Result<()>;
     #[zbus(property)]
     fn powered(&self) -> zbus::Result<bool>;
     #[zbus(property)]
@@ -82,7 +81,7 @@ impl Setup {
     pub async fn start(conn: Connection, out: mpsc::UnboundedSender<Out>, clients: Clients) -> Result<Self> {
         let pairing = Shared::default();
         conn.object_server().at(AGENT_PATH, Agent { pairing: pairing.clone(), out: out.clone() }).await?;
-        let adapter = AdapterProxy::builder(&conn).path(ADAPTER)?.cache_properties(zbus::proxy::CacheProperties::No).build().await?;
+        let adapter = AdapterProxy::builder(&conn).path(ADAPTER).cache_properties(zbus::proxy::CacheProperties::No).build().await?;
         let (tx, rx) = mpsc::channel(QUEUE);
         let actor = Actor { conn, adapter, out, clients, pairing, agent: false, search: None, adapter_state: None, found: None };
         Ok(Self { tx, task: tokio::spawn(actor.run(rx)) })
@@ -165,7 +164,7 @@ impl Actor {
             Cmd::Powered { on } => bounded(CALL, self.adapter.set_powered(on)).await?,
             Cmd::Discover { on: true } => {
                 // Classic Bluetooth only: phones (HFP, MAP) are BR/EDR. Filter refused: unfiltered search.
-                let filter = HashMap::from([("Transport", Value::from("bredr"))]);
+                let filter = HashMap::from([("Transport", Variant::from("bredr"))]);
                 let _ = bounded(CALL, self.adapter.set_discovery_filter(filter)).await;
                 match bounded(CALL, self.adapter.start_discovery()).await {
                     Err(e) if !bluez::is_error(&e, "org.bluez.Error.InProgress") => return Err(e),

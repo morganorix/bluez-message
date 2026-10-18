@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
-use zbus::proxy;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::{OwnedObjectPath, OwnedVariant, Variant, proxy};
 
 use crate::addr::BtAddr;
 use crate::bmsg;
@@ -22,14 +21,14 @@ trait MessageAccess {
     fn list_messages(
         &self,
         folder: &str,
-        filter: HashMap<&str, Value<'_>>,
-    ) -> zbus::Result<HashMap<OwnedObjectPath, HashMap<String, OwnedValue>>>;
+        filter: HashMap<&str, Variant<'_>>,
+    ) -> zbus::Result<HashMap<OwnedObjectPath, HashMap<String, OwnedVariant>>>;
     fn push_message(
         &self,
         file: &str,
         folder: &str,
-        args: HashMap<&str, Value<'_>>,
-    ) -> zbus::Result<(OwnedObjectPath, HashMap<String, OwnedValue>)>;
+        args: HashMap<&str, Variant<'_>>,
+    ) -> zbus::Result<(OwnedObjectPath, HashMap<String, OwnedVariant>)>;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,11 +46,11 @@ pub struct Sms {
 }
 
 /// Cleaned text property ([`clean`]): sender and text are controlled by the SMS sender.
-fn str_prop(p: &HashMap<String, OwnedValue>, k: &str, multiline: bool) -> String {
+fn str_prop(p: &HashMap<String, OwnedVariant>, k: &str, multiline: bool) -> String {
     clean(prop_str(p, k).unwrap_or_default(), multiline)
 }
 
-fn sms_from(path: &OwnedObjectPath, p: &HashMap<String, OwnedValue>) -> Sms {
+fn sms_from(path: &OwnedObjectPath, p: &HashMap<String, OwnedVariant>) -> Sms {
     Sms {
         handle: path.as_str().rsplit('/').next().unwrap_or_default().to_owned(),
         sender: str_prop(p, "Sender", false),
@@ -140,7 +139,7 @@ impl MapClient {
 
     async fn access(&self) -> Result<MessageAccessProxy<'_>> {
         Ok(MessageAccessProxy::builder(&self.session.conn)
-            .path(self.session.path.as_ref())?
+            .path(self.session.path.as_ref())
             .build()
             .await?)
     }
@@ -171,7 +170,7 @@ impl MapClient {
         let ma = self.access().await?;
         ma.set_folder(&Folder::Outbox.path()).await?;
         // Pitfall: "UTF-8"/"utf-8" => InvalidArguments; only "utf8" is accepted.
-        let args = HashMap::from([("Charset", Value::from("utf8"))]);
+        let args = HashMap::from([("Charset", Variant::from("utf8"))]);
         let (tpath, _) = ma.push_message(&path, "", args).await?;
         self.session.wait_transfer(tpath, Duration::from_secs(15)).await
     }

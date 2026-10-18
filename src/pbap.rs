@@ -4,8 +4,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use zbus::proxy;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::{OwnedObjectPath, OwnedVariant, Variant, proxy};
 
 use crate::addr::BtAddr;
 use crate::bluez::bounded;
@@ -26,7 +25,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 trait PhonebookAccess {
     fn select(&self, location: &str, phonebook: &str) -> zbus::Result<()>;
     fn get_size(&self) -> zbus::Result<u16>;
-    fn pull_all(&self, targetfile: &str, filters: HashMap<&str, Value<'_>>) -> zbus::Result<(OwnedObjectPath, HashMap<String, OwnedValue>)>;
+    fn pull_all(&self, targetfile: &str, filters: HashMap<&str, Variant<'_>>) -> zbus::Result<(OwnedObjectPath, HashMap<String, OwnedVariant>)>;
 }
 
 /// Internal phonebook read through PBAP.
@@ -65,7 +64,7 @@ pub async fn size(addr: &BtAddr) -> Result<u16> {
 }
 
 async fn select_pb(session: &Session) -> zbus::Result<PhonebookAccessProxy<'_>> {
-    let pb = PhonebookAccessProxy::builder(&session.conn).path(session.path.as_ref())?.build().await?;
+    let pb = PhonebookAccessProxy::builder(&session.conn).path(session.path.as_ref()).build().await?;
     pb.select("int", "pb").await?;
     Ok(pb)
 }
@@ -73,7 +72,7 @@ async fn select_pb(session: &Session) -> zbus::Result<PhonebookAccessProxy<'_>> 
 async fn pull_in(session: &Session) -> Result<Phonebook> {
     let pb = select_pb(session).await?;
     let size = pb.get_size().await.ok();
-    let filters = HashMap::from([("Format", Value::from("vcard30")), ("Fields", Value::from(vec!["FN", "N", "TEL"]))]);
+    let filters = HashMap::from([("Format", Variant::from("vcard30")), ("Fields", Variant::from(vec!["FN", "N", "TEL"]))]);
     // Empty file: obexd chooses the temporary file and returns it in `Filename`.
     let (transfer, props) = pb.pull_all("", filters).await?;
     let file = crate::bluez::prop_str(&props, "Filename").map(str::to_owned);

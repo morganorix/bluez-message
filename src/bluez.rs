@@ -7,8 +7,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use zbus::fdo::ManagedObjects;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
-use zbus::{Connection, proxy};
+use zbus::{Connection, OwnedObjectPath, OwnedVariant, proxy};
 
 use crate::addr::BtAddr;
 use crate::engine::Device;
@@ -18,12 +17,12 @@ use crate::error::{Error, Result};
 pub(crate) const ADAPTER: &str = "/org/bluez/hci0";
 
 /// Textual D-Bus property of an `a{sv}` dictionary.
-pub(crate) fn prop_str<'a>(p: &'a HashMap<String, OwnedValue>, k: &str) -> Option<&'a str> {
+pub(crate) fn prop_str<'a>(p: &'a HashMap<String, OwnedVariant>, k: &str) -> Option<&'a str> {
     p.get(k).and_then(|v| <&str>::try_from(v).ok())
 }
 
 /// Boolean D-Bus property; absent: false.
-pub(crate) fn prop_bool(p: &HashMap<String, OwnedValue>, k: &str) -> bool {
+pub(crate) fn prop_bool(p: &HashMap<String, OwnedVariant>, k: &str) -> bool {
     p.get(k).and_then(|v| bool::try_from(v).ok()).unwrap_or(false)
 }
 
@@ -64,8 +63,8 @@ pub(crate) trait Device {
 /// # Errors
 /// D-Bus path refused.
 pub(crate) async fn device(conn: &Connection, addr: &BtAddr) -> Result<DeviceProxy<'static>> {
-    let path = OwnedObjectPath::try_from(addr.path()).map_err(zbus::Error::from)?;
-    Ok(DeviceProxy::builder(conn).path(path)?.cache_properties(zbus::proxy::CacheProperties::No).build().await?)
+    let path = OwnedObjectPath::try_from(addr.path())?;
+    Ok(DeviceProxy::builder(conn).path(path).cache_properties(zbus::proxy::CacheProperties::No).build().await?)
 }
 
 #[proxy(interface = "org.bluez.Battery1", default_service = "org.bluez")]
@@ -105,7 +104,7 @@ impl Phone {
         let conn = Connection::system().await?;
         let dev = device(&conn, addr).await?;
         let battery = BatteryProxy::builder(&conn)
-            .path(dev.inner().path().clone())?
+            .path(dev.inner().path().clone())
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await?;
@@ -160,8 +159,8 @@ impl Phone {
     /// `PropertiesChanged` signals of the device touching one of the `watched` (interface, properties).
     async fn changes(&self, watched: &'static [Watched]) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
         let props = zbus::fdo::PropertiesProxy::builder(self.dev.inner().connection())
-            .destination("org.bluez")?
-            .path(self.dev.inner().path().clone())?
+            .destination("org.bluez")
+            .path(self.dev.inner().path().clone())
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await?;
@@ -256,12 +255,12 @@ async fn list_paired() -> Result<Vec<Device>> {
 /// # Errors
 /// BlueZ unreachable.
 pub(crate) async fn managed(conn: &Connection) -> Result<ManagedObjects> {
-    let om = zbus::fdo::ObjectManagerProxy::builder(conn).destination("org.bluez")?.path("/")?.build().await?;
+    let om = zbus::fdo::ObjectManagerProxy::builder(conn).destination("org.bluez").path("/").build().await?;
     Ok(om.get_managed_objects().await?)
 }
 
 /// `Device1` properties of the devices of `hci0` whose address is valid.
-pub(crate) fn devices(objs: &ManagedObjects) -> impl Iterator<Item = (BtAddr, &HashMap<String, OwnedValue>)> {
+pub(crate) fn devices(objs: &ManagedObjects) -> impl Iterator<Item = (BtAddr, &HashMap<String, OwnedVariant>)> {
     objs.iter()
         .filter(|(p, _)| p.as_str().strip_prefix(ADAPTER).is_some_and(|r| r.starts_with("/dev_")))
         .filter_map(|(_, ifs)| {
@@ -276,18 +275,18 @@ pub(crate) fn devices(objs: &ManagedObjects) -> impl Iterator<Item = (BtAddr, &H
 }
 
 /// Name shown for a device: `Alias`, otherwise `Name`, otherwise the address.
-pub(crate) fn name(d: &HashMap<String, OwnedValue>, addr: &BtAddr) -> String {
+pub(crate) fn name(d: &HashMap<String, OwnedVariant>, addr: &BtAddr) -> String {
     prop_str(d, "Alias").or_else(|| prop_str(d, "Name")).map_or_else(|| addr.to_string(), str::to_owned)
 }
 
 /// Device announcing the phone profiles (HFP AG or MAP MSE).
-fn phone_profiles(d: &HashMap<String, OwnedValue>) -> bool {
+fn phone_profiles(d: &HashMap<String, OwnedVariant>) -> bool {
     let uuids = d.get("UUIDs").and_then(|v| <Vec<String>>::try_from(v.try_clone().ok()?).ok()).unwrap_or_default();
     uuids.iter().any(|u| PHONE_UUIDS.iter().any(|p| u.eq_ignore_ascii_case(p)))
 }
 
 /// Phone by its profiles, its class or its icon (not yet paired: profiles often unknown).
-pub(crate) fn is_phone(d: &HashMap<String, OwnedValue>) -> bool {
+pub(crate) fn is_phone(d: &HashMap<String, OwnedVariant>) -> bool {
     let class = d.get("Class").and_then(|v| u32::try_from(v).ok()).is_some_and(|c| c & 0x1F00 == CLASS_PHONE);
     class || prop_str(d, "Icon").is_some_and(|i| i.starts_with("phone")) || phone_profiles(d)
 }
@@ -295,25 +294,25 @@ pub(crate) fn is_phone(d: &HashMap<String, OwnedValue>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zbus::zvariant::Value;
+    use zbus::Variant;
 
-    fn props(kv: &[(&str, Value<'_>)]) -> HashMap<String, OwnedValue> {
-        kv.iter().map(|(k, v)| ((*k).to_owned(), OwnedValue::try_from(v.try_clone().unwrap()).unwrap())).collect()
+    fn props(kv: &[(&str, Variant<'_>)]) -> HashMap<String, OwnedVariant> {
+        kv.iter().map(|(k, v)| ((*k).to_owned(), OwnedVariant::try_from(v.try_clone().unwrap()).unwrap())).collect()
     }
 
     #[test]
     fn phone_detection() {
-        assert!(is_phone(&props(&[("Class", Value::U32(0x5a_020c))])));
-        assert!(is_phone(&props(&[("Icon", Value::from("phone"))])));
-        assert!(!is_phone(&props(&[("Class", Value::U32(0x24_0404)), ("Icon", Value::from("audio-headset"))])));
+        assert!(is_phone(&props(&[("Class", Variant::U32(0x5a_020c))])));
+        assert!(is_phone(&props(&[("Icon", Variant::from("phone"))])));
+        assert!(!is_phone(&props(&[("Class", Variant::U32(0x24_0404)), ("Icon", Variant::from("audio-headset"))])));
         assert!(!is_phone(&props(&[])));
     }
 
     #[test]
     fn display_name() {
         let addr: BtAddr = "00:11:22:33:44:55".parse().unwrap();
-        assert_eq!(name(&props(&[("Alias", Value::from("A")), ("Name", Value::from("N"))]), &addr), "A");
-        assert_eq!(name(&props(&[("Name", Value::from("N"))]), &addr), "N");
+        assert_eq!(name(&props(&[("Alias", Variant::from("A")), ("Name", Variant::from("N"))]), &addr), "A");
+        assert_eq!(name(&props(&[("Name", Variant::from("N"))]), &addr), "N");
         assert_eq!(name(&props(&[]), &addr), addr.to_string());
     }
 

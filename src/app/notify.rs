@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use zbus::blocking::Connection;
-use zbus::zvariant::Value;
+use futures_util::StreamExt;
+use zbus::{Connection, Variant, block_on};
 
 use super::state::{Call, Effect, Phase};
 use crate::engine::Cmd;
@@ -72,12 +72,12 @@ impl Card<'_> {
     /// the server.
     fn show(&self, conn: &Connection, markup: bool) -> zbus::Result<(u32, Option<String>)> {
         let body = if markup { escape(self.body) } else { self.body.to_owned() };
-        let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
+        let mut hints: HashMap<&str, Variant<'_>> = HashMap::new();
         if self.critical {
-            hints.insert("urgency", Value::U8(2));
+            hints.insert("urgency", Variant::U8(2));
         }
         let expire = if self.critical { 0i32 } else { -1 };
-        let msg = conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, self.replaces, self.icon, self.summary, body, &self.actions, hints, expire))?;
+        let msg = block_on(conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, self.replaces, self.icon, self.summary, body, &self.actions, hints, expire)))?;
         let id: u32 = msg.body().deserialize()?;
         Ok((id, msg.header().sender().map(ToString::to_string)))
     }
@@ -163,7 +163,7 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
         if let Some(c) = &self.link {
             return Ok(c.clone());
         }
-        let c = Connection::session()?;
+        let c = block_on(Connection::session())?;
         listen(&c, Arc::clone(&self.shared), self.on_cmd.clone())?;
         self.markup = markup(&c);
         self.link = Some(c.clone());
@@ -269,11 +269,19 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
 }
 
 /// Listens to the notification signals on `conn` in a thread that lives as long as the connection.
+/// `on_cmd` must not block: this thread drives the signal stream.
 fn listen(conn: &Connection, shared: Arc<Shared>, on_cmd: impl Fn(Cmd) + Send + 'static) -> zbus::Result<()> {
-    let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(DEST)?.path(PATH)?.build();
-    let signals = zbus::blocking::MessageIterator::for_match_rule(rule, conn, Some(KEPT))?;
-    thread::spawn(move || {
-        for msg in signals.flatten() {
+    let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(DEST).path(PATH).build()?;
+    let mut signals = block_on(zbus::MessageStream::for_match_rule(rule, conn, std::num::NonZeroUsize::new(KEPT)))?;
+    thread::spawn(move || block_on(async move {
+        while let Some(msg) = signals.next().await {
+            let msg = match msg {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::debug!("notification signal: {e}");
+                    continue;
+                }
+            };
             let h = msg.header();
             let server = shared.server.lock().unwrap_or_else(PoisonError::into_inner).clone();
             if server.is_none() || h.sender().map(ToString::to_string) != server {
@@ -294,7 +302,7 @@ fn listen(conn: &Connection, shared: Arc<Shared>, on_cmd: impl Fn(Cmd) + Send + 
                 on_cmd(cmd);
             }
         }
-    });
+    }));
     Ok(())
 }
 
@@ -305,20 +313,20 @@ pub fn exported(r: &Result<String, String>) {
         Err(msg) => (t!("History not exported"), msg, "dialog-error"),
     };
     let card = Card { summary, body, icon, actions: vec![], replaces: 0, critical: false };
-    if let Err(e) = Connection::session().and_then(|c| card.show(&c, markup(&c))) {
+    if let Err(e) = block_on(Connection::session()).and_then(|c| card.show(&c, markup(&c))) {
         tracing::warn!("export notification: {e}");
     }
 }
 
 /// The server announces `body-markup`; without an answer, plain text: entities would show literally.
 fn markup(c: &Connection) -> bool {
-    c.call_method(Some(DEST), PATH, Some(DEST), "GetCapabilities", &())
+    block_on(c.call_method(Some(DEST), PATH, Some(DEST), "GetCapabilities", &()))
         .and_then(|m| m.body().deserialize::<Vec<String>>())
         .is_ok_and(|caps| caps.iter().any(|c| c == "body-markup"))
 }
 
 fn close_on(c: &Connection, id: u32) -> zbus::Result<()> {
-    c.call_method(Some(DEST), PATH, Some(DEST), "CloseNotification", &(id,))?;
+    block_on(c.call_method(Some(DEST), PATH, Some(DEST), "CloseNotification", &(id,)))?;
     Ok(())
 }
 

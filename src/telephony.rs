@@ -3,13 +3,13 @@
 //! States are translated into [`HfEvent`] to keep the interface's call state machine.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use zbus::message::Type;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
-use zbus::{Connection, MatchRule, Message, MessageStream, fdo};
+use zbus::{Connection, MatchRule, Message, MessageStream, OwnedObjectPath, OwnedVariant, fdo};
 
 use crate::addr::BtAddr;
 use crate::bluez::prop_str;
@@ -27,8 +27,10 @@ const RETRY: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CALLS: usize = 8;
 const MAX_NUMBER: usize = 64;
+/// Signals queued before the oldest are dropped.
+const QUEUED: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
-type Props = HashMap<String, OwnedValue>;
+type Props = HashMap<String, OwnedVariant>;
 type Objects = HashMap<OwnedObjectPath, HashMap<String, Props>>;
 
 /// AG whose `Address` matches `addr` (case ignored: the address read is normalised).
@@ -340,7 +342,7 @@ async fn call(conn: &Connection, path: &str, iface: &str, method: &str) -> Resul
 
 async fn call_with<B>(conn: &Connection, path: &str, iface: &str, method: &str, body: &B) -> Result<Message>
 where
-    B: serde::Serialize + zbus::zvariant::DynamicType,
+    B: serde::Serialize + zbus::DynamicType,
 {
     tokio::time::timeout(CALL_TIMEOUT, conn.call_method(Some(SERVICE), path, Some(iface), method, body))
         .await
@@ -369,8 +371,8 @@ pub async fn run(
     // only applies to the unique name: the sender is checked against the current owner.
     let dbus = fdo::DBusProxy::new(&conn).await?;
     let mut owners = dbus.receive_name_owner_changed_with_args(&[(0, SERVICE)]).await?;
-    let rule = MatchRule::builder().msg_type(Type::Signal).path_namespace(ROOT)?.build();
-    let mut signals = MessageStream::for_match_rule(rule, &conn, Some(64)).await?;
+    let rule = MatchRule::builder().msg_type(Type::Signal).path_namespace(ROOT).build()?;
+    let mut signals = MessageStream::for_match_rule(rule, &conn, Some(QUEUED)).await?;
     let mut retry = tokio::time::interval(RETRY);
     retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -437,14 +439,14 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zbus::zvariant::Value;
+    use zbus::Variant;
 
     fn path(s: &str) -> OwnedObjectPath {
         OwnedObjectPath::try_from(s).unwrap()
     }
 
     fn props(kv: &[(&str, &str)]) -> Props {
-        kv.iter().map(|(k, v)| ((*k).to_owned(), OwnedValue::try_from(Value::from(*v)).unwrap())).collect()
+        kv.iter().map(|(k, v)| ((*k).to_owned(), OwnedVariant::try_from(Variant::from(*v)).unwrap())).collect()
     }
 
     fn ind(name: &str, value: u8) -> HfEvent {

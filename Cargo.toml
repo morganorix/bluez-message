@@ -70,7 +70,7 @@ unicode-segmentation = { version = "1.13.3", optional = true }
 # (anti-SSRF filter) is in ureq's `unversioned` module.
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
 winit = { version = "0.30.13", optional = true }
-zbus = "5"
+zbus = "6"
 
 [dev-dependencies]
 # Headless egui tests (accessibility tree): widgets and menus checked without a display.
