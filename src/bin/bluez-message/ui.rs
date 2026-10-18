@@ -446,11 +446,14 @@ impl App {
         {
             ui.horizontal_wrapped(|ui| {
                 for r in &p.settings.quick_replies {
-                    // Fills the input only: the text is read again before Enter.
+                    // Fills the input only: the text is read again before Enter. The chips go once used.
                     if w::button(ui, &self.pal, &ellipsis(r, CHIP_CHARS), w::Tone::Accent).on_hover_text(r).clicked() {
                         self.composer.draft.clone_from(r);
-                        self.composer.focus = true;
+                        (self.composer.focus, self.quick) = (true, false);
                     }
+                }
+                if w::icon_button(ui, &self.pal, Icon::Close).on_hover_text(t!("Dismiss")).clicked() {
+                    (self.composer.focus, self.quick) = (true, false);
                 }
             });
             ui.add_space(6.0);
