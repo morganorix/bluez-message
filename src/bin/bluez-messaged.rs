@@ -59,6 +59,9 @@ const WATCH_GRACE: Duration = Duration::from_secs(8);
 /// Battery level reread without signal (`Battery1` appears without `PropertiesChanged`).
 const BATTERY_EVERY: Duration = Duration::from_mins(1);
 const WPCTL_TIMEOUT: Duration = Duration::from_secs(3);
+/// `systemctl --user show-environment`: answer delay and largest output read.
+const SHOW_ENV_TIMEOUT: Duration = Duration::from_secs(3);
+const SHOW_ENV_MAX: u64 = 64 * 1024;
 /// Wait for the notification thread at shutdown.
 const NOTIFY_FLUSH: Duration = Duration::from_secs(1);
 
@@ -1092,12 +1095,8 @@ fn display_env() -> Vec<(String, String)> {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some() {
         return vec![];
     }
-    let out = match std::process::Command::new("systemctl").args(["--user", "show-environment"]).stdin(std::process::Stdio::null()).output() {
-        Ok(o) if o.status.success() => o.stdout,
-        Ok(o) => {
-            tracing::warn!("systemctl show-environment: {}", o.status);
-            return vec![];
-        }
+    let out = match show_environment() {
+        Ok(out) => out,
         Err(e) => {
             tracing::warn!("systemctl show-environment: {e}");
             return vec![];
@@ -1109,6 +1108,43 @@ fn display_env() -> Vec<(String, String)> {
         .filter(|(k, _)| KEYS.contains(k))
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect()
+}
+
+/// Output of `systemctl --user show-environment`, at most [`SHOW_ENV_MAX`] bytes; killed past
+/// [`SHOW_ENV_TIMEOUT`] (blocking: called from the window threads).
+fn show_environment() -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut child = std::process::Command::new("systemctl")
+        .args(["--user", "show-environment"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let r = stdout.take(SHOW_ENV_MAX).read_to_end(&mut out).map(|_| out);
+        let _ = tx.send(r);
+    });
+    let Ok(out) = rx.recv_timeout(SHOW_ENV_TIMEOUT) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::ErrorKind::TimedOut.into());
+    };
+    let out = out?;
+    if out.len() as u64 == SHOW_ENV_MAX {
+        // Output cut at the cap: `systemctl` may block on a full pipe.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("output too large"));
+    }
+    // Stdout closed: `systemctl` is exiting.
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(std::io::Error::other(status.to_string()));
+    }
+    Ok(out)
 }
 
 /// Microphone muted by the bubble: target node (the default source may change during a call) and previous state.

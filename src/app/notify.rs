@@ -19,6 +19,8 @@ use crate::t;
 const APP: &str = "Navi";
 const DEST: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
+/// Answer delay granted to the notification server for each call.
+const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The text of an SMS is controlled by the sender: neutralises the body markup of servers that support it.
 fn escape(s: &str) -> String {
@@ -163,7 +165,7 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
         if let Some(c) = &self.link {
             return Ok(c.clone());
         }
-        let c = block_on(Connection::session())?;
+        let c = session()?;
         listen(&c, Arc::clone(&self.shared), self.on_cmd.clone())?;
         self.markup = markup(&c);
         self.link = Some(c.clone());
@@ -318,9 +320,14 @@ pub fn exported(r: &Result<String, String>) {
         Err(msg) => (t!("History not exported"), msg, "dialog-error"),
     };
     let card = Card { summary, body, icon, actions: vec![], replaces: 0, critical: false };
-    if let Err(e) = block_on(Connection::session()).and_then(|c| card.show(&c, markup(&c))) {
+    if let Err(e) = session().and_then(|c| card.show(&c, markup(&c))) {
         tracing::warn!("export notification: {e}");
     }
+}
+
+/// Session bus connection whose method calls fail past [`CALL_TIMEOUT`] (hung server).
+fn session() -> zbus::Result<Connection> {
+    block_on(zbus::connection::Builder::session().method_timeout(CALL_TIMEOUT).build())
 }
 
 /// The server announces `body-markup`; without an answer, plain text: entities would show literally.

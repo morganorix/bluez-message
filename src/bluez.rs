@@ -76,6 +76,9 @@ trait Battery {
 /// Timeout of a battery level read.
 const BATTERY_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Timeout of a property read, a proxy setup or a signal subscription (local to BlueZ, no radio).
+const PROP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Device link as seen by BlueZ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Link {
@@ -99,27 +102,34 @@ impl Phone {
     /// `Device1` proxy of device `addr` on the system bus.
     ///
     /// # Errors
-    /// System bus unreachable or D-Bus path refused.
+    /// System bus unreachable, D-Bus path refused or timeout exceeded.
     pub async fn new(addr: &BtAddr) -> Result<Self> {
-        let conn = Connection::system().await?;
-        let dev = device(&conn, addr).await?;
-        let battery = BatteryProxy::builder(&conn)
-            .path(dev.inner().path().clone())
-            .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
-            .await?;
-        Ok(Self { dev, battery })
+        bounded(PROP_TIMEOUT, async {
+            let conn = Connection::system().await?;
+            let dev = device(&conn, addr).await?;
+            let battery = BatteryProxy::builder(&conn)
+                .path(dev.inner().path().clone())
+                .cache_properties(zbus::proxy::CacheProperties::No)
+                .build()
+                .await?;
+            Ok::<_, Error>(Self { dev, battery })
+        })
+        .await
     }
 
     /// Current link state (linked, profiles resolved).
     ///
     /// # Errors
-    /// D-Bus properties cannot be read.
+    /// D-Bus properties cannot be read, or timeout exceeded.
     pub async fn link(&self) -> Result<Link> {
-        Ok(Link { connected: self.dev.connected().await?, resolved: self.dev.services_resolved().await? })
+        bounded(PROP_TIMEOUT, async {
+            Ok::<_, Error>(Link { connected: self.dev.connected().await?, resolved: self.dev.services_resolved().await? })
+        })
+        .await
     }
 
-    /// Connects the device's profiles (no effect on those already connected).
+    /// Connects the device's profiles (no effect on those already connected); unbounded,
+    /// callers apply their own timeout (radio paging can last tens of seconds).
     ///
     /// # Errors
     /// Refusal or failure from BlueZ.
@@ -158,13 +168,16 @@ impl Phone {
 
     /// `PropertiesChanged` signals of the device touching one of the `watched` (interface, properties).
     async fn changes(&self, watched: &'static [Watched]) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
-        let props = zbus::fdo::PropertiesProxy::builder(self.dev.inner().connection())
-            .destination("org.bluez")
-            .path(self.dev.inner().path().clone())
-            .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
-            .await?;
-        let changes = props.receive_properties_changed().await?;
+        let changes = bounded(PROP_TIMEOUT, async {
+            let props = zbus::fdo::PropertiesProxy::builder(self.dev.inner().connection())
+                .destination("org.bluez")
+                .path(self.dev.inner().path().clone())
+                .cache_properties(zbus::proxy::CacheProperties::No)
+                .build()
+                .await?;
+            Ok::<_, Error>(props.receive_properties_changed().await?)
+        })
+        .await?;
         Ok(futures_util::StreamExt::filter_map(changes, move |sig| {
             let hit = sig.args().is_ok_and(|a| {
                 watched
@@ -175,7 +188,7 @@ impl Phone {
         }))
     }
 
-    /// Disconnects the device.
+    /// Disconnects the device; unbounded like [`Phone::connect`].
     ///
     /// # Errors
     /// Refusal or failure from BlueZ.
