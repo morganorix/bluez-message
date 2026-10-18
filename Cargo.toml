@@ -50,7 +50,6 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 libc = "0.2.190"
 # URL detection in SMS (clickable links): no dependency besides memchr.
 linkify = { version = "0.11.0", optional = true }
-notify-rust = { version = "4.18.2", optional = true }
 phonenumber = "=0.3.10"
 rusqlite = "0.32.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -78,7 +77,7 @@ zbus = "5"
 egui_kittest = "0.36.2"
 
 [features]
-notify = ["dep:notify-rust"]
+notify = []
 gui = ["notify", "dep:eframe", "dep:egui_extras", "dep:image", "dep:linkify", "dep:tl", "dep:twemoji-assets", "dep:unicode-properties", "dep:unicode-segmentation", "dep:ureq", "dep:winit"]
 
 [[bin]]

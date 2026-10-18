@@ -1,17 +1,19 @@
 //! "Navi" notifications (pleamar server) in a dedicated thread: a slow server does not freeze the UI.
-//! The call notification's actions come back as a [`Cmd`] through `on_cmd`.
+//! Raw `org.freedesktop.Notifications` calls on one session connection, whose signals (card actions)
+//! come back as a [`Cmd`] through `on_cmd`.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use crate::engine::Cmd;
-use notify_rust::{Notification, Timeout, Urgency};
+use zbus::blocking::Connection;
+use zbus::zvariant::Value;
 
 use super::state::{Call, Decline, Effect, Phase};
+use crate::engine::Cmd;
 use crate::t;
 
 const APP: &str = "Navi";
@@ -31,42 +33,58 @@ const KEPT: usize = 64;
 /// Ends once every sender is dropped and the pending effects are applied.
 pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 'static) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut sms = SmsCards { link: None, cards: Arc::default(), on_cmd: on_cmd.clone() };
-        let mut bubble = Bubble { on_cmd, id: Arc::new(AtomicU32::new(0)), number: None, decline: Arc::default() };
+        let mut n = Notifier { link: None, shared: Arc::default(), on_cmd, ringing: None };
         loop {
             match effects.recv_timeout(TICK) {
-                Ok(Effect::Sms { from, text, reply }) => {
-                    if let Err(e) = sms.show(&from, &text, reply) {
-                        tracing::warn!("SMS notification: {e}");
-                    }
-                }
-                Ok(Effect::Unsent { to, error, reply }) => {
-                    if let Err(e) = sms.show(&t!("SMS not sent to {0}", to), &error, reply) {
-                        tracing::warn!("SMS notification: {e}");
-                    }
-                }
-                Ok(Effect::Call(c)) => bubble.show(&c, None),
-                Ok(Effect::Ring(c, d)) => bubble.show(&c, d),
-                Ok(Effect::CallEnd(_)) => bubble.close(),
+                Ok(Effect::Sms { from, text, reply }) => n.sms(&escape(&from), &text, reply),
+                Ok(Effect::Unsent { to, error, reply }) => n.sms(&escape(&t!("SMS not sent to {0}", to)), &error, reply),
+                Ok(Effect::Call(c)) => n.ring(&c, None),
+                Ok(Effect::Ring(c, d)) => n.ring(&c, d),
+                Ok(Effect::CallEnd(_)) => n.hang_up(),
                 Ok(Effect::Exported(r)) => exported(&r),
                 Ok(Effect::CloseAll) => {
-                    bubble.close();
-                    sms.close_all();
+                    n.hang_up();
+                    n.close_all();
                 }
-                Err(RecvTimeoutError::Timeout) => bubble.tick(),
+                Err(RecvTimeoutError::Timeout) => n.tick(),
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        bubble.close();
+        n.hang_up();
     })
+}
+
+/// A notification to show (`Notify` arguments); `summary` and `body` already escaped.
+struct Card<'a> {
+    summary: &'a str,
+    body: &'a str,
+    icon: &'a str,
+    /// Key, label pairs.
+    actions: Vec<&'a str>,
+    /// Card replaced in place; 0 = new one.
+    replaces: u32,
+    /// Critical urgency, never expires (ringing bubble).
+    critical: bool,
+}
+
+impl Card<'_> {
+    /// Shows the card on `conn`; returns its id and the unique name of the server.
+    fn show(&self, conn: &Connection) -> zbus::Result<(u32, Option<String>)> {
+        let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
+        if self.critical {
+            hints.insert("urgency", Value::U8(2));
+        }
+        let expire = if self.critical { 0i32 } else { -1 };
+        let msg = conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, self.replaces, self.icon, self.summary, self.body, &self.actions, hints, expire))?;
+        let id: u32 = msg.body().deserialize()?;
+        Ok((id, msg.header().sender().map(ToString::to_string)))
+    }
 }
 
 /// SMS cards shown, oldest first, with the number their "Reply" action opens.
 #[derive(Default)]
 struct Cards {
     shown: VecDeque<(u32, Option<String>)>,
-    /// Unique name of the server that showed the last card: the only sender of signals listened to.
-    server: Option<String>,
 }
 
 impl Cards {
@@ -84,205 +102,217 @@ impl Cards {
     }
 }
 
-/// SMS notifications, shown and listened to on one session connection: a single thread receives the server's
-/// signals (broadcast or sent to the sender only), whatever the number of cards.
-struct SmsCards<F> {
-    /// Opened at the first SMS (the session bus may come up after the daemon); `None` again if it fails.
-    link: Option<zbus::blocking::Connection>,
-    cards: Arc<Mutex<Cards>>,
-    on_cmd: F,
+/// State read by the signal listener.
+#[derive(Default)]
+struct Shared {
+    /// Unique name of the server that showed the last card: the only sender of signals listened to.
+    server: Mutex<Option<String>>,
+    cards: Mutex<Cards>,
+    /// Ringing bubble id; 0 = none. Reset to 0 by the listener on close (button, ×).
+    bubble: AtomicU32,
+    /// Read by the listener when a button is pressed: the number (CLIP) can arrive after the first display.
+    decline: Mutex<Option<Decline>>,
 }
 
-impl<F: Fn(Cmd) + Clone + Send + 'static> SmsCards<F> {
-    /// Shows the card; with `reply`, a "Reply" action that opens the conversation.
-    fn show(&mut self, from: &str, text: &str, reply: Option<String>) -> zbus::Result<()> {
-        let conn = if let Some(c) = &self.link {
-            c.clone()
-        } else {
-            let c = zbus::blocking::Connection::session()?;
-            listen(&c, Arc::clone(&self.cards), self.on_cmd.clone())?;
-            self.link = Some(c.clone());
-            c
-        };
-        let actions: Vec<&str> = if reply.is_some() { vec!["reply", t!("Reply")] } else { vec![] };
-        let hints: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
-        let msg = conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, 0u32, "phone", escape(from), escape(text), actions, hints, -1i32))?;
-        let id: u32 = msg.body().deserialize()?;
-        let old = {
-            let mut cards = self.cards.lock().unwrap_or_else(PoisonError::into_inner);
-            cards.server = msg.header().sender().map(ToString::to_string);
-            cards.push(id, reply)
-        };
-        if let Some(old) = old
-            && let Err(e) = close_on(&conn, old)
-        {
-            tracing::debug!("closing notification: {e}");
+impl Shared {
+    /// Signal about card `id` (`action` when a button was pressed, `None` once closed): its commands.
+    fn signal(&self, id: u32, action: Option<&str>) -> Vec<Cmd> {
+        // Bubble closed (button or ×): released before the command, the resulting state creates a new one.
+        if id != 0 && self.bubble.compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            let decline = self.decline.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            return action.map(|a| bubble_cmds(a, decline)).unwrap_or_default();
         }
-        Ok(())
+        let number = self.cards.lock().unwrap_or_else(PoisonError::into_inner).closed(id);
+        match (action, number) {
+            (Some("reply"), Some(number)) => vec![Cmd::Open { number: Some(number) }],
+            _ => vec![],
+        }
+    }
+}
+
+/// Commands of bubble button `action`; rejected first: the SMS or the window must not wait for the end of the ringing.
+fn bubble_cmds(action: &str, decline: Option<Decline>) -> Vec<Cmd> {
+    let then = match action {
+        "answer" => return vec![Cmd::Answer],
+        "reject" => None,
+        "decline_sms" | "decline_write" => decline.and_then(|Decline { number, text }| match (action, text) {
+            ("decline_sms", Some(text)) => Some(Cmd::Send { to: number, text }),
+            ("decline_write", _) => Some(Cmd::Open { number: Some(number) }),
+            _ => None,
+        }),
+        _ => return vec![],
+    };
+    std::iter::once(Cmd::Reject).chain(then).collect()
+}
+
+/// SMS cards and the ringing bubble (Answer / Decline, and SMS replies when the caller is a mobile), replaced in
+/// place (same id) while it rings; answered, outgoing: the `bluez-msg-call` window takes over, the bubble closes.
+/// One session connection: a single thread receives the server's signals (broadcast or sent to the sender only).
+struct Notifier<F> {
+    /// Opened at the first card (the session bus may come up after the daemon); `None` again after a failure.
+    link: Option<Connection>,
+    shared: Arc<Shared>,
+    on_cmd: F,
+    /// Caller displayed while ringing; `None`: no bubble.
+    ringing: Option<String>,
+}
+
+impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
+    /// Session connection, opened with its listener if needed.
+    fn conn(&mut self) -> zbus::Result<Connection> {
+        if let Some(c) = &self.link {
+            return Ok(c.clone());
+        }
+        let c = Connection::session()?;
+        listen(&c, Arc::clone(&self.shared), self.on_cmd.clone())?;
+        self.link = Some(c.clone());
+        Ok(c)
+    }
+
+    /// Shows `card`; returns its id.
+    fn show(&mut self, card: &Card<'_>) -> zbus::Result<u32> {
+        let r = self.conn().and_then(|c| card.show(&c));
+        match r {
+            Ok((id, server)) => {
+                *self.shared.server.lock().unwrap_or_else(PoisonError::into_inner) = server;
+                Ok(id)
+            }
+            Err(e) => Err(self.failed(e)),
+        }
+    }
+
+    /// A broken connection is dropped, reopened at the next card (its listener ends with it); a server's
+    /// error reply (no notification server, timeout) keeps it: no new connection or listener per card.
+    fn failed(&mut self, e: zbus::Error) -> zbus::Error {
+        if !matches!(e, zbus::Error::MethodError(..) | zbus::Error::FDO(_)) {
+            self.link = None;
+        }
+        e
+    }
+
+    /// Shows the card (`from` already escaped); with `reply`, a "Reply" action that opens the conversation.
+    fn sms(&mut self, from: &str, text: &str, reply: Option<String>) {
+        let actions = if reply.is_some() { vec!["reply", t!("Reply")] } else { vec![] };
+        let card = Card { summary: from, body: &escape(text), icon: "phone", actions, replaces: 0, critical: false };
+        match self.show(&card) {
+            Ok(id) => {
+                let old = self.shared.cards.lock().unwrap_or_else(PoisonError::into_inner).push(id, reply);
+                if let Some(old) = old {
+                    self.close(old);
+                }
+            }
+            Err(e) => tracing::warn!("SMS notification: {e}"),
+        }
     }
 
     fn close_all(&mut self) {
-        let shown = std::mem::take(&mut self.cards.lock().unwrap_or_else(PoisonError::into_inner).shown);
-        let Some(conn) = &self.link else { return };
+        let shown = std::mem::take(&mut self.shared.cards.lock().unwrap_or_else(PoisonError::into_inner).shown);
         for (id, _) in shown {
-            // Already closed (expired, dismissed): the server ignores it.
-            if let Err(e) = close_on(conn, id) {
-                tracing::debug!("closing notification: {e}");
+            self.close(id);
+        }
+    }
+
+    fn ring(&mut self, c: &Call, decline: Option<Decline>) {
+        if c.phase != Phase::Incoming {
+            self.hang_up();
+            return;
+        }
+        let number = c.caller("\n");
+        *self.shared.decline.lock().unwrap_or_else(PoisonError::into_inner) = decline;
+        self.display(&number);
+        self.ringing = Some(number);
+    }
+
+    /// Keeps the bubble displayed; a closed one (button, ×) is not recreated.
+    fn tick(&mut self) {
+        if let Some(n) = self.ringing.clone()
+            && self.shared.bubble.load(Ordering::Acquire) != 0
+        {
+            self.display(&n);
+        }
+    }
+
+    fn hang_up(&mut self) {
+        self.ringing = None;
+        *self.shared.decline.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let id = self.shared.bubble.swap(0, Ordering::AcqRel);
+        if id != 0 {
+            self.close(id);
+        }
+    }
+
+    fn display(&mut self, number: &str) {
+        let mut actions = vec!["answer", t!("Answer"), "reject", t!("Decline")];
+        if let Some(d) = &*self.shared.decline.lock().unwrap_or_else(PoisonError::into_inner) {
+            if d.text.is_some() {
+                actions.extend(["decline_sms", t!("Decline + SMS")]);
             }
+            actions.extend(["decline_write", t!("Decline and write")]);
+        }
+        // Same id: pleamar updates the card without making it drop again.
+        let replaces = self.shared.bubble.load(Ordering::Acquire);
+        let card = Card { summary: t!("Incoming call"), body: &escape(number), icon: "call-start", actions, replaces, critical: true };
+        match self.show(&card) {
+            // Closed by the listener meanwhile: left at 0, the button's command is under way.
+            Ok(id) => {
+                let _ = self.shared.bubble.compare_exchange(replaces, id, Ordering::AcqRel, Ordering::Acquire);
+            }
+            Err(e) => tracing::warn!("call notification: {e}"),
+        }
+    }
+
+    /// Already closed (expired, dismissed): the server ignores it. Reconnects if needed: a ringing bubble
+    /// must not outlive the call.
+    fn close(&mut self, id: u32) {
+        if let Err(e) = self.conn().and_then(|c| close_on(&c, id)) {
+            tracing::debug!("closing notification: {}", self.failed(e));
         }
     }
 }
 
 /// Listens to the notification signals on `conn` in a thread that lives as long as the connection.
-fn listen(conn: &zbus::blocking::Connection, cards: Arc<Mutex<Cards>>, on_cmd: impl Fn(Cmd) + Send + 'static) -> zbus::Result<()> {
+fn listen(conn: &Connection, shared: Arc<Shared>, on_cmd: impl Fn(Cmd) + Send + 'static) -> zbus::Result<()> {
     let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(DEST)?.path(PATH)?.build();
     let signals = zbus::blocking::MessageIterator::for_match_rule(rule, conn, Some(KEPT))?;
     thread::spawn(move || {
         for msg in signals.flatten() {
             let h = msg.header();
-            let mut cards = cards.lock().unwrap_or_else(PoisonError::into_inner);
-            if cards.server.is_none() || h.sender().map(ToString::to_string) != cards.server {
+            let server = shared.server.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            if server.is_none() || h.sender().map(ToString::to_string) != server {
                 continue;
             }
-            let open = match h.member().map(zbus::names::MemberName::as_str) {
+            let cmds = match h.member().map(zbus::names::MemberName::as_str) {
                 Some("ActionInvoked") => match msg.body().deserialize::<(u32, &str)>() {
-                    Ok((id, "reply")) => cards.closed(id),
-                    _ => None,
+                    Ok((id, action)) => shared.signal(id, Some(action)),
+                    Err(_) => continue,
                 },
-                Some("NotificationClosed") => {
-                    if let Ok((id, _reason)) = msg.body().deserialize::<(u32, u32)>() {
-                        cards.closed(id);
-                    }
-                    None
-                }
-                _ => None,
+                Some("NotificationClosed") => match msg.body().deserialize::<(u32, u32)>() {
+                    Ok((id, _reason)) => shared.signal(id, None),
+                    Err(_) => continue,
+                },
+                _ => continue,
             };
-            drop(cards);
-            if let Some(number) = open {
-                on_cmd(Cmd::Open { number: Some(number) });
+            for cmd in cmds {
+                on_cmd(cmd);
             }
         }
     });
     Ok(())
 }
 
-/// The ringing bubble (Answer / Decline, and SMS replies when the caller is a mobile), replaced in place (same id) while it rings.
-/// Answered, outgoing: the `bluez-msg-call` window takes over, the bubble closes.
-struct Bubble<F> {
-    on_cmd: F,
-    /// Displayed id; 0 = none. Reset to 0 by the listener on close (button, manual close).
-    id: Arc<AtomicU32>,
-    /// Number displayed while ringing; `None`: no bubble.
-    number: Option<String>,
-    /// Read by the listener when a button is pressed: the number (CLIP) can arrive after the first display.
-    decline: Arc<Mutex<Option<Decline>>>,
-}
-
-impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
-    fn show(&mut self, c: &Call, decline: Option<Decline>) {
-        if c.phase != Phase::Incoming {
-            self.close();
-            return;
-        }
-        let number = c.caller("\n");
-        *self.decline.lock().unwrap_or_else(PoisonError::into_inner) = decline;
-        self.display(&number);
-        self.number = Some(number);
-    }
-
-    /// Keeps the card displayed; a closed bubble (button, ×) is not recreated.
-    fn tick(&mut self) {
-        if let Some(n) = &self.number
-            && self.id.load(Ordering::Acquire) != 0
-        {
-            self.display(n);
-        }
-    }
-
-    fn close(&mut self) {
-        self.number = None;
-        *self.decline.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        let id = self.id.swap(0, Ordering::AcqRel);
-        if id != 0
-            && let Err(e) = close(id)
-        {
-            tracing::warn!("closing notification: {e}");
-        }
-    }
-
-    fn display(&self, number: &str) {
-        let mut n = Notification::new();
-        n.appname(APP)
-            .summary(t!("Incoming call"))
-            .body(&escape(number))
-            .icon("call-start")
-            .urgency(Urgency::Critical)
-            .timeout(Timeout::Never)
-            .action("answer", t!("Answer"))
-            .action("reject", t!("Decline"));
-        if let Some(d) = &*self.decline.lock().unwrap_or_else(PoisonError::into_inner) {
-            if d.text.is_some() {
-                n.action("decline_sms", t!("Decline + SMS"));
-            }
-            n.action("decline_write", t!("Decline and write"));
-        }
-        // Same id: pleamar updates the card without making it drop again; the existing listener stays valid.
-        let current = self.id.load(Ordering::Acquire);
-        if current != 0 {
-            n.id(current);
-        }
-        match n.show() {
-            Ok(h) if h.id() != current => {
-                let id = h.id();
-                self.id.store(id, Ordering::Release);
-                let (on_cmd, slot, decline) = (self.on_cmd.clone(), Arc::clone(&self.id), Arc::clone(&self.decline));
-                thread::spawn(move || {
-                    h.wait_for_action(|a| {
-                        // Card closed (button or ×): released before the command, the resulting state creates a new one.
-                        let _ = slot.compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire);
-                        let then = match a {
-                            "answer" => return on_cmd(Cmd::Answer),
-                            "reject" => None,
-                            "decline_sms" | "decline_write" => {
-                                let d = decline.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                                d.and_then(|Decline { number, text }| match (a, text) {
-                                    ("decline_sms", Some(text)) => Some(Cmd::Send { to: number, text }),
-                                    ("decline_write", _) => Some(Cmd::Open { number: Some(number) }),
-                                    _ => None,
-                                })
-                            }
-                            _ => return,
-                        };
-                        // Rejected first: the SMS or the window must not wait for the end of the ringing.
-                        on_cmd(Cmd::Reject);
-                        if let Some(cmd) = then {
-                            on_cmd(cmd);
-                        }
-                    });
-                });
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("call notification: {e}"),
-        }
-    }
-}
-
-/// Plain card for the result of a history export.
+/// Plain card for the result of a history export, on its own connection (GUI or daemon).
 pub fn exported(r: &Result<String, String>) {
     let (summary, body, icon) = match r {
         Ok(path) => (t!("History exported"), path, "document-save"),
         Err(msg) => (t!("History not exported"), msg, "dialog-error"),
     };
-    if let Err(e) = Notification::new().appname(APP).summary(summary).body(&escape(body)).icon(icon).show() {
+    let card = Card { summary, body: &escape(body), icon, actions: vec![], replaces: 0, critical: false };
+    if let Err(e) = Connection::session().and_then(|c| card.show(&c)) {
         tracing::warn!("export notification: {e}");
     }
 }
 
-fn close(id: u32) -> zbus::Result<()> {
-    close_on(&zbus::blocking::Connection::session()?, id)
-}
-
-fn close_on(c: &zbus::blocking::Connection, id: u32) -> zbus::Result<()> {
+fn close_on(c: &Connection, id: u32) -> zbus::Result<()> {
     c.call_method(Some(DEST), PATH, Some(DEST), "CloseNotification", &(id,))?;
     Ok(())
 }
@@ -326,4 +356,38 @@ mod tests {
         assert_eq!(c.shown.len(), KEPT);
     }
 
+    #[test]
+    fn bubble_buttons_reject_first() {
+        let d = Decline { number: "+33600000001".into(), text: Some("Later".into()) };
+        assert_eq!(bubble_cmds("answer", Some(d.clone())), vec![Cmd::Answer]);
+        assert_eq!(bubble_cmds("reject", None), vec![Cmd::Reject]);
+        assert_eq!(
+            bubble_cmds("decline_sms", Some(d.clone())),
+            vec![Cmd::Reject, Cmd::Send { to: "+33600000001".into(), text: "Later".into() }]
+        );
+        assert_eq!(
+            bubble_cmds("decline_write", Some(d)),
+            vec![Cmd::Reject, Cmd::Open { number: Some("+33600000001".into()) }]
+        );
+        // Number unknown when pressed: the call is still declined.
+        assert_eq!(bubble_cmds("decline_sms", None), vec![Cmd::Reject]);
+        assert_eq!(bubble_cmds("unknown", None), vec![]);
+    }
+
+    #[test]
+    fn signals_route_bubble_then_cards() {
+        let s = Shared::default();
+        s.bubble.store(7, Ordering::Release);
+        s.cards.lock().unwrap().push(8, Some("+33600000002".into()));
+        // Button then close signal: one command only, the bubble is released.
+        assert_eq!(s.signal(7, Some("answer")), vec![Cmd::Answer]);
+        assert_eq!(s.signal(7, None), vec![]);
+        assert_eq!(s.bubble.load(Ordering::Acquire), 0);
+        // A bubble closed by × sends nothing.
+        s.bubble.store(9, Ordering::Release);
+        assert_eq!(s.signal(9, None), vec![]);
+        assert_eq!(s.signal(8, Some("reply")), vec![Cmd::Open { number: Some("+33600000002".into()) }]);
+        assert_eq!(s.signal(8, Some("reply")), vec![]);
+        assert_eq!(s.signal(0, Some("reply")), vec![]);
+    }
 }
