@@ -607,6 +607,12 @@ impl State {
         self.older.get(key).is_none_or(|o| matches!(o, Older::More(_)))
     }
 
+    /// A page of conversation `key` is on its way (jump to a message not loaded yet).
+    #[must_use]
+    pub fn loading(&self, key: &str) -> bool {
+        matches!(self.older.get(key), Some(Older::Asked(..)))
+    }
+
     /// Asks for the page of messages before the oldest one shown in conversation `key`.
     pub fn older(&mut self, key: &str) {
         let before = match self.older.get(key) {
@@ -1036,6 +1042,7 @@ mod tests {
         let first = Cmd::Older { key: "600000001".into(), before: Cursor::after("20261015T120000"), limit: OLDER_PAGE };
         assert_eq!(st.take_cmds(), [first]);
         assert!(!st.has_older("600000001"), "page on its way");
+        assert!(st.loading("600000001") && !st.loading("600000002"));
         let c2 = Cursor { ts: "20261010T000000".into(), id: 3 };
         // Already shown (same handle, or same date/direction/text): not duplicated.
         let page = vec![hit(5, "20261015T120000", "recent"), hit(4, "20261015T120000", "recent"), hit(3, "20261010T000000", "mid")];
@@ -1048,6 +1055,7 @@ mod tests {
         let f = st.focus.clone().unwrap();
         assert!(f.key == "600000001" && f.text == "ancient");
         assert!(!st.has_older("600000001"), "start of the history reached");
+        assert!(!st.loading("600000001"), "page received");
         // Already loaded: focused at once, nothing asked.
         st.jump(&target);
         assert!(st.take_cmds().is_empty() && st.focus.is_some());

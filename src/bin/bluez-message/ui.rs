@@ -486,8 +486,11 @@ impl App {
         if ui.ctx().input(|i| i.focused) && let Some(until) = self.state.mark_read(&key, calls) {
             self.submit(Cmd::MarkRead { key: key.clone(), until });
         }
+        // No message yet: a new conversation stays empty until its first one.
         let Some(c) = self.state.conv(&key) else {
-            w::hint(ui, &pal, t!("Sending…"));
+            if self.state.loading(&key) {
+                w::hint(ui, &pal, t!("Loading…"));
+            }
             return;
         };
         let previews = self.state.settings.as_ref().is_some_and(|p| p.settings.link_previews).then_some(&mut self.previews);
