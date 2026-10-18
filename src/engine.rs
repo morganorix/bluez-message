@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use crate::addr::BtAddr;
 use crate::bmsg;
-use crate::error::Result;
+use crate::error::{Error, Field, Queue, Result};
 use crate::hfp::{HfCmd, HfEvent};
 use crate::map::{self, Folder, MapClient, Sms};
 use crate::settings::Settings;
@@ -379,11 +379,11 @@ impl CallKind {
 /// Validates a send before any action; the error message is meant for the interface.
 ///
 /// # Errors
-/// Translated message: invalid recipient, empty or too long text.
-pub fn validate_send(to: &str, text: &str) -> std::result::Result<(), String> {
-    bmsg::validate_number(to).map_err(|e| e.to_string())?;
+/// Invalid recipient, empty or too long text.
+pub fn validate_send(to: &str, text: &str) -> Result<()> {
+    bmsg::validate_number(to)?;
     if text.trim().is_empty() || text.chars().count() > MAX_TEXT {
-        return Err(t!("empty text or longer than {0} characters", MAX_TEXT));
+        return Err(Error::Invalid(Field::Text));
     }
     Ok(())
 }
@@ -393,14 +393,14 @@ pub fn validate_send(to: &str, text: &str) -> std::result::Result<(), String> {
 /// "Call back" into an MMI code (call forwarding).
 ///
 /// # Errors
-/// Translated message if the number does not have that form.
-pub fn dial_number(n: &str) -> std::result::Result<String, String> {
+/// [`Error::InvalidNumber`] if the number does not have that form.
+pub fn dial_number(n: &str) -> Result<String> {
     let n = crate::phone::strip_separators(n);
     let body = n.strip_prefix('+').unwrap_or(&n);
     if (2..=30).contains(&body.len()) && body.bytes().all(|b| b.is_ascii_digit()) {
         Ok(n)
     } else {
-        Err(t!("invalid number: “{0}”", n))
+        Err(Error::InvalidNumber(n))
     }
 }
 
@@ -408,31 +408,31 @@ fn is_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 64 && !key.chars().any(char::is_control)
 }
 
-fn validate_read(key: &str, until: &str) -> std::result::Result<(), String> {
+fn validate_read(key: &str, until: &str) -> Result<()> {
     if !is_key(key) || !crate::stamp::is_valid(until) {
-        return Err(t!("invalid read marker").into());
+        return Err(Error::Invalid(Field::ReadMarker));
     }
     Ok(())
 }
 
-fn validate_search(query: &str, before: Option<&Cursor>) -> std::result::Result<(), String> {
+fn validate_search(query: &str, before: Option<&Cursor>) -> Result<()> {
     let n = crate::phone::clean(query, false).trim().chars().count();
     if !(1..=MAX_QUERY).contains(&n) || before.is_some_and(|c| !c.is_valid()) {
-        return Err(t!("invalid search").into());
+        return Err(Error::Invalid(Field::Search));
     }
     Ok(())
 }
 
-fn validate_older(key: &str, before: &Cursor, limit: u32) -> std::result::Result<(), String> {
+fn validate_older(key: &str, before: &Cursor, limit: u32) -> Result<()> {
     if !is_key(key) || !before.is_valid() || !(1..=MAX_OLDER).contains(&limit) {
-        return Err(t!("invalid history request").into());
+        return Err(Error::Invalid(Field::HistoryRequest));
     }
     Ok(())
 }
 
-fn validate_delete(key: &str, item: Option<&Item>) -> std::result::Result<(), String> {
+fn validate_delete(key: &str, item: Option<&Item>) -> Result<()> {
     if !is_key(key) || item.is_some_and(|i| !crate::stamp::is_valid(&i.timestamp) || (i.call && !i.text.is_empty())) {
-        return Err(t!("invalid deletion").into());
+        return Err(Error::Invalid(Field::Deletion));
     }
     Ok(())
 }
@@ -440,9 +440,9 @@ fn validate_delete(key: &str, item: Option<&Item>) -> std::result::Result<(), St
 /// Decodes and validates a JSON command.
 ///
 /// # Errors
-/// Translated message: unreadable JSON or field rejected by validation.
-pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
-    let cmd: Cmd = serde_json::from_str(line).map_err(|e| t!("unreadable command: {0}", e))?;
+/// [`Error::BadCommand`] (unreadable JSON) or field rejected by validation.
+pub fn parse_cmd(line: &str) -> Result<Cmd> {
+    let cmd: Cmd = serde_json::from_str(line).map_err(Error::BadCommand)?;
     match &cmd {
         Cmd::Send { to, text } => validate_send(to, text)?,
         Cmd::Dial { number } => drop(dial_number(number)?),
@@ -451,7 +451,7 @@ pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
         Cmd::Settings { settings } => settings.validate()?,
         Cmd::Search { query, before } => validate_search(query, before.as_ref())?,
         Cmd::Older { key, before, limit } => validate_older(key, before, *limit)?,
-        Cmd::ConvFlags { key, .. } | Cmd::Export { key: Some(key) } if !is_key(key) => return Err(t!("invalid conversation").into()),
+        Cmd::ConvFlags { key, .. } | Cmd::Export { key: Some(key) } if !is_key(key) => return Err(Error::Invalid(Field::Conversation)),
         _ => {}
     }
     Ok(cmd)
@@ -520,12 +520,12 @@ impl Engine {
     /// Forwards a command (non-blocking). `Quit` is for the caller to handle via [`Engine::shutdown`].
     ///
     /// # Errors
-    /// Translated message: field rejected, queue full, daemon-only command or engine stopped.
-    pub fn submit(&self, cmd: Cmd) -> std::result::Result<(), String> {
+    /// Field rejected, queue full, daemon-only command or engine stopped.
+    pub fn submit(&self, cmd: Cmd) -> Result<()> {
         match cmd {
             Cmd::Send { to, text } => {
                 validate_send(&to, &text)?;
-                self.send_tx.try_send((to, text)).map_err(|_| t!("send queue full").to_owned())
+                self.send_tx.try_send((to, text)).map_err(|_| Error::Busy(Queue::Send))
             }
             Cmd::Answer => self.call(HfCmd::Answer),
             Cmd::Hangup => self.call(HfCmd::Hangup),
@@ -551,7 +551,7 @@ impl Engine {
             | Cmd::Search { .. }
             | Cmd::Older { .. }
             | Cmd::ConvFlags { .. }
-            | Cmd::Export { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
+            | Cmd::Export { .. } => Err(Error::DaemonOnly),
             Cmd::Quit => Ok(()),
         }
     }
@@ -562,8 +562,8 @@ impl Engine {
         self.nudge.clone()
     }
 
-    fn call(&self, cmd: HfCmd) -> std::result::Result<(), String> {
-        self.hf_tx.try_send(cmd).map_err(|_| t!("HFP busy").to_owned())
+    fn call(&self, cmd: HfCmd) -> Result<()> {
+        self.hf_tx.try_send(cmd).map_err(|_| Error::Busy(Queue::Hfp))
     }
 
     /// Closing the channels stops the calls task cleanly; MAP is interrupted.
@@ -701,14 +701,14 @@ mod tests {
 
     #[test]
     fn parse_valid_commands() {
-        assert_eq!(parse_cmd(r#"{"cmd":"answer"}"#), Ok(Cmd::Answer));
-        assert_eq!(parse_cmd(r#"{"cmd":"hold_answer"}"#), Ok(Cmd::HoldAnswer));
+        assert_eq!(parse_cmd(r#"{"cmd":"answer"}"#).ok(), Some(Cmd::Answer));
+        assert_eq!(parse_cmd(r#"{"cmd":"hold_answer"}"#).ok(), Some(Cmd::HoldAnswer));
         assert_eq!(
-            parse_cmd(r#"{"cmd":"send","to":"+33712345601","text":"salut"}"#),
-            Ok(Cmd::Send { to: "+33712345601".into(), text: "salut".into() })
+            parse_cmd(r#"{"cmd":"send","to":"+33712345601","text":"salut"}"#).ok(),
+            Some(Cmd::Send { to: "+33712345601".into(), text: "salut".into() })
         );
-        assert_eq!(parse_cmd(r#"{"cmd":"dial","number":"+33 6 12-34.56 (78)"}"#), Ok(Cmd::Dial { number: "+33 6 12-34.56 (78)".into() }));
-        assert_eq!(dial_number("+33 6 12-34.56 (78)").as_deref(), Ok("+33612345678"));
+        assert_eq!(parse_cmd(r#"{"cmd":"dial","number":"+33 6 12-34.56 (78)"}"#).ok(), Some(Cmd::Dial { number: "+33 6 12-34.56 (78)".into() }));
+        assert_eq!(dial_number("+33 6 12-34.56 (78)").ok().as_deref(), Some("+33612345678"));
         assert!(parse_cmd(r#"{"cmd":"mark_read","key":"612345678","until":"20261015T120000"}"#).is_ok());
     }
 
@@ -773,11 +773,11 @@ mod tests {
     #[test]
     fn setup_commands() {
         let addr: BtAddr = "00:11:22:33:44:55".parse().unwrap();
-        assert_eq!(parse_cmd(r#"{"cmd":"powered","on":true}"#), Ok(Cmd::Powered { on: true }));
-        assert_eq!(parse_cmd(r#"{"cmd":"discover","on":false}"#), Ok(Cmd::Discover { on: false }));
-        assert_eq!(parse_cmd(r#"{"cmd":"confirm","ok":true}"#), Ok(Cmd::Confirm { ok: true }));
-        assert_eq!(parse_cmd(r#"{"cmd":"pair","addr":"00:11:22:33:44:55"}"#), Ok(Cmd::Pair { addr: addr.clone() }));
-        assert_eq!(parse_cmd(r#"{"cmd":"connect","addr":"00:11:22:33:44:55"}"#), Ok(Cmd::Connect { addr }));
+        assert_eq!(parse_cmd(r#"{"cmd":"powered","on":true}"#).ok(), Some(Cmd::Powered { on: true }));
+        assert_eq!(parse_cmd(r#"{"cmd":"discover","on":false}"#).ok(), Some(Cmd::Discover { on: false }));
+        assert_eq!(parse_cmd(r#"{"cmd":"confirm","ok":true}"#).ok(), Some(Cmd::Confirm { ok: true }));
+        assert_eq!(parse_cmd(r#"{"cmd":"pair","addr":"00:11:22:33:44:55"}"#).ok(), Some(Cmd::Pair { addr: addr.clone() }));
+        assert_eq!(parse_cmd(r#"{"cmd":"connect","addr":"00:11:22:33:44:55"}"#).ok(), Some(Cmd::Connect { addr }));
         for a in ["", "00:11:22:33:44", "00:11:22:33:44:GG", "../../x", "00:11:22:33:44:55:66"] {
             assert!(parse_cmd(&format!(r#"{{"cmd":"pair","addr":"{a}"}}"#)).is_err(), "{a}");
         }
@@ -786,8 +786,8 @@ mod tests {
 
     #[test]
     fn export_validated() {
-        assert_eq!(parse_cmd(r#"{"cmd":"export"}"#), Ok(Cmd::Export { key: None }));
-        assert_eq!(parse_cmd(r#"{"cmd":"export","key":"612345678"}"#), Ok(Cmd::Export { key: Some("612345678".into()) }));
+        assert_eq!(parse_cmd(r#"{"cmd":"export"}"#).ok(), Some(Cmd::Export { key: None }));
+        assert_eq!(parse_cmd(r#"{"cmd":"export","key":"612345678"}"#).ok(), Some(Cmd::Export { key: Some("612345678".into()) }));
         let long = "1".repeat(65);
         for k in ["", "a\nb", long.as_str()] {
             assert!(parse_cmd(&format!(r#"{{"cmd":"export","key":"{k}"}}"#)).is_err(), "{k:?}");
@@ -802,8 +802,8 @@ mod tests {
 
     #[test]
     fn search_and_older_validated() {
-        let s = parse_cmd(r#"{"cmd":"search","query":"Éte"}"#);
-        assert_eq!(s, Ok(Cmd::Search { query: "Éte".into(), before: None }));
+        let s = parse_cmd(r#"{"cmd":"search","query":"Éte"}"#).ok();
+        assert_eq!(s, Some(Cmd::Search { query: "Éte".into(), before: None }));
         let page = r#"{"cmd":"search","query":"ok","before":{"ts":"20261015T120000","id":7}}"#;
         assert!(matches!(parse_cmd(page), Ok(Cmd::Search { before: Some(Cursor { id: 7, .. }), .. })));
         let long = "é".repeat(MAX_QUERY + 1);
@@ -824,8 +824,8 @@ mod tests {
 
     #[test]
     fn conv_flags_round_trip() {
-        let c = parse_cmd(r#"{"cmd":"conv_flags","key":"600000001","muted":true}"#);
-        assert_eq!(c, Ok(Cmd::ConvFlags { key: "600000001".into(), flags: ConvFlags { muted: true, archived: false } }));
+        let c = parse_cmd(r#"{"cmd":"conv_flags","key":"600000001","muted":true}"#).ok();
+        assert_eq!(c, Some(Cmd::ConvFlags { key: "600000001".into(), flags: ConvFlags { muted: true, archived: false } }));
         assert!(parse_cmd(r#"{"cmd":"conv_flags","key":"","archived":true}"#).is_err());
         assert!(parse_cmd(&format!(r#"{{"cmd":"conv_flags","key":"{}"}}"#, "1".repeat(65))).is_err());
         let o = Out::Conv { key: "600000001".into(), flags: ConvFlags { muted: false, archived: true } };

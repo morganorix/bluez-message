@@ -167,7 +167,7 @@ fn export(key: Option<String>) -> Result<std::result::Result<String, String>> {
     use bluez_message::engine::Cmd as Request;
     /// Snapshot lines can carry a whole conversation page: generous bound, still finite.
     const MAX: u64 = 16 * 1024 * 1024;
-    let mut s = std::os::unix::net::UnixStream::connect(bluez_message::config::socket_path().map_err(std::io::Error::other)?)?;
+    let mut s = std::os::unix::net::UnixStream::connect(bluez_message::config::socket_path()?)?;
     s.set_write_timeout(Some(Duration::from_secs(5)))?;
     s.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut line = serde_json::to_vec(&Request::Export { key }).map_err(std::io::Error::other)?;

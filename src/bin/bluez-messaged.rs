@@ -13,6 +13,7 @@ use bluez_message::app::notify;
 use bluez_message::app::state::{Effect, Phase, State, phone_reads, sms_peer};
 use bluez_message::config;
 use bluez_message::engine::{Cmd, ConvFlags, Engine, Item, Nudge, Out, Profile};
+use bluez_message::error::Error;
 use bluez_message::history::History;
 use bluez_message::reads::{Job, Reads};
 use bluez_message::map::Sms;
@@ -107,7 +108,7 @@ async fn run(args: Args) -> Result<Exit, String> {
     // No device: setup mode (socket, settings and pairing only) until the wizard registers one.
     let addr = config::resolve_addr(args.addr).map_err(|e| e.to_string())?;
     let settings = Settings::load();
-    let path = config::socket_path()?;
+    let path = config::socket_path().map_err(|e| e.to_string())?;
     let bound = ipc::bind(&path).await.map_err(|e| e.to_string())?;
     let mut term = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut int = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
@@ -435,15 +436,15 @@ impl Daemon {
                 }
                 Ok(())
             }
-            Cmd::Open { number } => open_window(number.as_deref(), &mut self.windows),
+            Cmd::Open { number } => open_window(number.as_deref(), &mut self.windows).map_err(|e| e.to_string()),
             Cmd::Window => {
                 if let Some(w) = reply.clone() {
                     self.windows.add(w, Instant::now());
                 }
                 Ok(())
             }
-            cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
-            cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
+            cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()).map_err(|e| e.to_string()),
+            cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd).map_err(|e| e.to_string())),
         };
         if let Err(msg) = res {
             tracing::warn!("command rejected: {msg}");
@@ -455,7 +456,7 @@ impl Daemon {
     }
 
     async fn mute(&mut self) -> Result<(), String> {
-        for f in toggle_mute(&mut self.state, &mut self.mic).await? {
+        for f in toggle_mute(&mut self.state, &mut self.mic).await.map_err(|e| e.to_string())? {
             let _ = self.fx_tx.send(f);
         }
         self.publish(Out::Muted { on: self.state.call.muted });
@@ -480,7 +481,7 @@ impl Daemon {
         if !self.state.hfp_up || !self.state.call.is_idle() || self.dialing.is_some_and(|t| t.elapsed() < DIAL_GUARD) {
             return Err(t!("cannot call: phone not linked or a call is already in progress").to_owned());
         }
-        need(self.dev.as_ref())?.engine.submit(cmd).inspect(|()| self.dialing = Some(Instant::now()))
+        need(self.dev.as_ref())?.engine.submit(cmd).map_err(|e| e.to_string()).inspect(|()| self.dialing = Some(Instant::now()))
     }
 
     /// Only a known conversation can be flagged: `convs` stays bounded.
@@ -512,7 +513,7 @@ impl Daemon {
     }
 
     async fn set_settings(&mut self, new: Settings) -> Result<(), String> {
-        let new = new.rebase(&self.settings)?;
+        let new = new.rebase(&self.settings).map_err(|e| e.to_string())?;
         // Other country: conversations regrouped before anything changes; failure: settings refused.
         let old_home = self.state.home();
         let regrouped = self.rekey(numbering::home(new.country.as_deref(), new.lang.as_deref()))?;
@@ -569,7 +570,7 @@ impl Daemon {
         tokio::spawn(async move {
             let r = match bluez::Phone::new(&addr).await {
                 Ok(p) => p.reconnect(RECONNECT_TIMEOUT).await,
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e),
             };
             running.store(false, Ordering::Release);
             let o = match r {
@@ -1063,13 +1064,14 @@ fn run_ui(bin: &str, env: &[(&str, &str)]) {
 /// Brings the window forward, on the conversation with `number` if any: a subscribed window receives
 /// [`Out::Open`]; one holding its lock without being subscribed yet, or being started, gets it on
 /// [`Cmd::Window`]; otherwise one is started. The number is not logged: a rejection only says it is invalid.
-fn open_window(number: Option<&str>, windows: &mut ipc::Windows) -> Result<(), String> {
+fn open_window(number: Option<&str>, windows: &mut ipc::Windows) -> bluez_message::error::Result<()> {
     // One launch at a time: repeated `Open` before the window subscribes start nothing more.
     static LAUNCHING: AtomicBool = AtomicBool::new(false);
     let number = number
         .map(|n| {
             let n = bluez_message::phone::strip_separators(n);
-            if bluez_message::bmsg::validate_number(&n).is_ok() { Ok(n) } else { Err(t!("open: invalid number").to_owned()) }
+            bluez_message::bmsg::validate_number(&n)?;
+            Ok::<_, Error>(n)
         })
         .transpose()?;
     if windows.deliver(number.as_deref()) {
@@ -1162,24 +1164,25 @@ impl MicHold {
 }
 
 /// Call mute: mutes the default PipeWire source (the one feeding the call), not the iPhone.
-async fn toggle_mute(state: &mut State, mic: &mut Option<MicHold>) -> Result<Vec<Effect>, String> {
+async fn toggle_mute(state: &mut State, mic: &mut Option<MicHold>) -> bluez_message::error::Result<Vec<Effect>> {
     if state.call.is_idle() {
-        return Err(t!("microphone: no call in progress").to_owned());
+        return Err(Error::MicNoCall);
     }
     let on = !state.call.muted;
     if on {
-        if mic.is_none() {
+        let node = if let Some(h) = mic.as_ref() {
+            h.node.clone()
+        } else {
             let id = wpctl(&["inspect", "@DEFAULT_AUDIO_SOURCE@"]).await?;
             let node = id
                 .strip_prefix("id ")
                 .and_then(|r| r.split(',').next())
                 .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-                .ok_or(t!("microphone: default source not found"))?
+                .ok_or(Error::MicNoSource)?
                 .to_owned();
             let was_muted = wpctl(&["get-volume", &node]).await?.contains("[MUTED]");
-            *mic = Some(MicHold { node, was_muted });
-        }
-        let node = mic.as_ref().map(|h| h.node.clone()).unwrap_or_default();
+            mic.insert(MicHold { node, was_muted }).node.clone()
+        };
         wpctl(&["set-mute", &node, "1"]).await?;
     } else if let Some(h) = mic.take() {
         wpctl(&["set-mute", &h.node, "0"]).await?;
@@ -1187,16 +1190,15 @@ async fn toggle_mute(state: &mut State, mic: &mut Option<MicHold>) -> Result<Vec
     Ok(state.set_muted(on))
 }
 
-async fn wpctl(args: &[&str]) -> Result<String, String> {
+async fn wpctl(args: &[&str]) -> std::io::Result<String> {
     let run = tokio::process::Command::new("wpctl").args(args).kill_on_drop(true).output();
     let out = tokio::time::timeout(WPCTL_TIMEOUT, run)
         .await
-        .map_err(|_| "wpctl: timed out".to_owned())?
-        .map_err(|e| format!("wpctl: {e}"))?;
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "wpctl"))??;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        Err(format!("wpctl {}: {}", args[0], out.status))
+        Err(std::io::Error::other(format!("wpctl {}: {}", args[0], out.status)))
     }
 }
 

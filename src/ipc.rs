@@ -454,8 +454,8 @@ async fn read_commands(mut r: BufReader<tokio::net::unix::OwnedReadHalf>, reply:
                     return;
                 }
             }
-            Err(msg) => {
-                let _ = reply.send(Out::Error { msg }).await;
+            Err(e) => {
+                let _ = reply.send(Out::Error { msg: e.to_string() }).await;
             }
         }
     }

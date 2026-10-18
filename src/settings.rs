@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Error, Field, Result};
 use crate::t;
 
 /// Offered retention periods (days); `None`: keep everything.
@@ -107,9 +108,9 @@ impl Settings {
     ///
     /// # Errors
     /// `self` was edited from an older revision: changed elsewhere meanwhile, it would undo that change.
-    pub fn rebase(mut self, current: &Self) -> Result<Self, String> {
+    pub fn rebase(mut self, current: &Self) -> Result<Self> {
         if self.rev != current.rev {
-            return Err(t!("settings changed elsewhere, try again").to_owned());
+            return Err(Error::StaleSettings);
         }
         self.rev = current.rev.wrapping_add(1);
         Ok(self)
@@ -118,19 +119,19 @@ impl Settings {
     /// Check of the values received from a client.
     ///
     /// # Errors
-    /// Translated message: invalid language, retention, country or quick replies.
-    pub fn validate(&self) -> Result<(), String> {
+    /// [`Error::Invalid`]: language, retention, country or quick replies.
+    pub fn validate(&self) -> Result<()> {
         if self.lang.as_deref().is_some_and(|l| !valid_lang(l)) {
-            return Err(t!("invalid language code").to_owned());
+            return Err(Error::Invalid(Field::Language));
         }
         if self.retention_days.is_some_and(|d| !RETENTIONS.contains(&d)) {
-            return Err(t!("invalid retention").to_owned());
+            return Err(Error::Invalid(Field::Retention));
         }
         if self.country.as_deref().is_some_and(|c| crate::numbering::parse_code(c).is_none()) {
-            return Err(t!("unknown country").to_owned());
+            return Err(Error::Invalid(Field::Country));
         }
         if self.quick_replies.len() > QUICK_REPLIES_MAX || self.quick_replies.iter().any(|r| r.is_empty() || clean_reply(r) != *r) {
-            return Err(t!("invalid quick replies").to_owned());
+            return Err(Error::Invalid(Field::QuickReplies));
         }
         Ok(())
     }
@@ -150,7 +151,7 @@ impl Settings {
                 return Self::default();
             }
         };
-        match serde_json::from_str::<Self>(&raw).map_err(|e| e.to_string()).and_then(|s| s.validate().map(|()| s)) {
+        match serde_json::from_str::<Self>(&raw).map_err(|e| e.to_string()).and_then(|s| s.validate().map(|()| s).map_err(|e| e.to_string())) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(path = %p.display(), "settings ignored: {e}");

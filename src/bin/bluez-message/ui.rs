@@ -112,7 +112,7 @@ impl App {
         if let Cmd::Send { to, text } = &cmd
             && let Err(e) = validate_send(to, text)
         {
-            self.state.error = Some(e);
+            self.state.error = Some(e.to_string());
             return false;
         }
         match &self.tx {
@@ -529,7 +529,7 @@ impl App {
         } else if !self.state.call.is_idle() {
             Some(t!("cannot call: a call is already in progress").to_owned())
         } else {
-            dial_number(number).err()
+            dial_number(number).err().map(|e| e.to_string())
         };
         match err {
             Some(e) => self.state.error = Some(e),

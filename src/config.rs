@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use crate::addr::BtAddr;
 use crate::error::Error;
-use crate::t;
 
 /// XDG `var` directory if absolute, otherwise `~/{fallback}`; a relative or empty `HOME` is
 /// refused (the data would land in the working directory).
@@ -47,17 +46,17 @@ pub fn resolve_addr(arg: Option<BtAddr>) -> crate::error::Result<Option<BtAddr>>
 /// Daemon socket in `$XDG_RUNTIME_DIR` (0700 directory owned by the user).
 ///
 /// # Errors
-/// Translated message if `XDG_RUNTIME_DIR` is missing or relative.
-pub fn socket_path() -> Result<PathBuf, String> {
+/// [`Error::NoRuntimeDir`] if `XDG_RUNTIME_DIR` is missing or relative.
+pub fn socket_path() -> crate::error::Result<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
-    dir.map(|d| d.join("bluez-message.sock")).ok_or_else(|| t!("XDG_RUNTIME_DIR missing or relative").to_owned())
+    dir.map(|d| d.join("bluez-message.sock")).ok_or(Error::NoRuntimeDir)
 }
 
 /// Window instance lock, next to the daemon socket: held while a window is open.
 ///
 /// # Errors
 /// As [`socket_path`].
-pub fn gui_lock_path() -> Result<PathBuf, String> {
+pub fn gui_lock_path() -> crate::error::Result<PathBuf> {
     socket_path().map(|s| s.with_file_name("bluez-message-gui.lock"))
 }
 

@@ -13,9 +13,8 @@ use zbus::{Connection, ObjectPath, Variant, interface, proxy};
 use crate::addr::BtAddr;
 use crate::bluez::{self, ADAPTER, bounded, is_phone, prop_bool};
 use crate::engine::{Cmd, Nearby, Out};
-use crate::error::{Error, Result};
+use crate::error::{Error, Queue, Result};
 use crate::ipc::Clients;
-use crate::t;
 
 /// Agent object exported on the system bus.
 const AGENT_PATH: &str = "/org/bluez_message/agent";
@@ -90,9 +89,9 @@ impl Setup {
     /// Queues a setup command ([`Cmd::is_setup`]); its error goes to `reply` only.
     ///
     /// # Errors
-    /// Translated message: queue full or actor stopped.
-    pub fn submit(&self, cmd: Cmd, reply: Option<mpsc::Sender<Out>>) -> std::result::Result<(), String> {
-        self.tx.try_send((cmd, reply)).map_err(|_| t!("setup queue full").to_owned())
+    /// [`Error::Busy`]: queue full or actor stopped.
+    pub fn submit(&self, cmd: Cmd, reply: Option<mpsc::Sender<Out>>) -> Result<()> {
+        self.tx.try_send((cmd, reply)).map_err(|_| Error::Busy(Queue::Setup))
     }
 
     /// Stops the search started here, cancels the pairing, unregisters the agent (5 s at most).

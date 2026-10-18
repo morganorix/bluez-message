@@ -59,8 +59,8 @@ pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
             Ok(cmd) => engine.submit(cmd),
             Err(e) => Err(e),
         };
-        if let Err(msg) = r {
-            let _ = emit(&Out::Error { msg });
+        if let Err(e) = r {
+            let _ = emit(&Out::Error { msg: e.to_string() });
         }
     }
     engine.shutdown().await;

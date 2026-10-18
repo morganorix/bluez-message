@@ -201,8 +201,8 @@ impl Phone {
     /// Full restart of the link (`Disconnect`, 2 s, `Connect`), bounded by `limit`.
     ///
     /// # Errors
-    /// Translated message: `Disconnect`/`Connect` failed or timeout exceeded.
-    pub async fn reconnect(&self, limit: std::time::Duration) -> std::result::Result<(), String> {
+    /// `Disconnect`/`Connect` failed, or [`crate::error::Error::Timeout`].
+    pub async fn reconnect(&self, limit: std::time::Duration) -> crate::error::Result<()> {
         let r = tokio::time::timeout(limit, async {
             // Already disconnected: `Disconnect` fails harmlessly.
             let _ = self.disconnect().await;
@@ -211,8 +211,8 @@ impl Phone {
         })
         .await;
         match r {
-            Ok(r) => r.map_err(|e| e.to_string()),
-            Err(_) => Err(crate::t!("timed out").to_owned()),
+            Ok(r) => r,
+            Err(_) => Err(crate::error::Error::Timeout),
         }
     }
 }
