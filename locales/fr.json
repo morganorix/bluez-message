@@ -179,6 +179,7 @@
   "cannot delete (history)": "suppression impossible (historique)",
   "cannot export the history": "impossible d'exporter l'historique",
   "cannot purge the history": "impossible de purger l'historique",
+  "history busy, try again": "historique occupé, réessayez",
   "cannot read the history": "impossible de lire l’historique",
   "cannot save settings": "impossible d'enregistrer les réglages",
   "cannot save the conversation state (history)": "impossible d'enregistrer l'état de la conversation (historique)",

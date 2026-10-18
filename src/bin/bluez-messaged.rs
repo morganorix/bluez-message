@@ -14,6 +14,7 @@ use bluez_message::app::state::{Decline, Effect, Phase, State, phone_reads, sms_
 use bluez_message::config;
 use bluez_message::engine::{Cmd, ConvFlags, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
+use bluez_message::reads::{Job, Reads};
 use bluez_message::map::Sms;
 use bluez_message::settings::Settings;
 use bluez_message::setup::Setup;
@@ -109,8 +110,9 @@ async fn run(args: Args) -> Result<Exit, String> {
     let mut int = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
     let (dev, mut events) = if let Some(addr) = addr {
         let history = open_history(&addr)?;
+        let reads = Reads::spawn(history.reader().map_err(|e| e.to_string())?);
         let (engine, events) = Engine::start(&addr, Duration::from_secs(args.interval));
-        (Some(Linked { addr, history, engine }), Some(events))
+        (Some(Linked { addr, history, reads, engine }), Some(events))
     } else {
         tracing::info!("no device configured: setup mode");
         (None, None)
@@ -211,6 +213,8 @@ fn open_history(addr: &BtAddr) -> Result<History, String> {
 struct Linked {
     addr: BtAddr,
     history: History,
+    /// Slow reads of `history`, away from the daemon loop.
+    reads: Reads,
     engine: Engine,
 }
 
@@ -416,13 +420,10 @@ impl Daemon {
                 Err(e) => Err(e),
             },
             Cmd::PurgeHidden => self.purge_hidden(reply.as_ref()),
-            Cmd::Search { query, before } => self.lookup(reply.as_ref(), |h| h.search(&query, before.as_ref()).map(|(items, next)| Out::Hits { query, items, next })),
-            Cmd::Older { key, before, limit } => {
-                let n = usize::try_from(limit).unwrap_or(usize::MAX);
-                self.lookup(reply.as_ref(), |h| h.older(&key, &before, n).map(|(items, next)| Out::Older { key, items, next }))
-            }
+            Cmd::Search { query, before } => self.read(reply.as_ref(), Job::Search { query, before }),
+            Cmd::Older { key, before, limit } => self.read(reply.as_ref(), Job::Older { key, before, limit: usize::try_from(limit).unwrap_or(usize::MAX) }),
             Cmd::ClearHistory => self.clear_history(),
-            Cmd::Export { key } => self.export(key.as_deref(), reply.as_ref()),
+            Cmd::Export { key } => self.export(key, reply.as_ref()),
             Cmd::Open { number } => open_conversation(&number, &self.hub),
             cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
             cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
@@ -584,44 +585,21 @@ impl Daemon {
         Ok(true)
     }
 
-    /// History read for the requester only (search, older page): never published nor replayed.
-    /// Synchronous: indexed by `device`, one bounded page per request.
-    fn lookup(&self, reply: Option<&mpsc::Sender<Out>>, read: impl FnOnce(&History) -> rusqlite::Result<Out>) -> Result<(), String> {
-        match read(&need(self.dev.as_ref())?.history) {
-            Ok(out) => {
-                if let Some(reply) = reply {
-                    let _ = reply.try_send(out);
-                }
-                Ok(())
-            }
-            Err(e) => {
-                tracing::warn!("history (lookup): {e}");
-                Err(t!("cannot read the history").to_owned())
-            }
-        }
+    /// Queues a slow read for the read task, which answers `reply`; from a notification (no reply), nothing to do.
+    fn read(&self, reply: Option<&mpsc::Sender<Out>>, job: Job) -> Result<(), String> {
+        let dev = need(self.dev.as_ref())?;
+        let Some(reply) = reply else { return Ok(()) };
+        dev.reads.submit(job, reply.clone()).map_err(|e| e.msg())
     }
 
     /// Writes the history to the download folder (home folder without one): never a path from the IPC.
-    /// Synchronous like [`Daemon::lookup`]: one read transaction, a few MB at most.
-    fn export(&self, key: Option<&str>, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
-        let dev = need(self.dev.as_ref())?;
-        if key.is_some_and(|k| self.state.conv(k).is_none()) {
+    fn export(&self, key: Option<String>, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
+        need(self.dev.as_ref())?;
+        if key.as_deref().is_some_and(|k| self.state.conv(k).is_none()) {
             return Err(t!("invalid conversation").to_owned());
         }
         let dir = dirs::download_dir().filter(|d| d.is_dir()).or_else(dirs::home_dir).ok_or_else(|| t!("HOME not set").to_owned())?;
-        match dev.history.export_to(&dir, key) {
-            Ok(path) => {
-                tracing::info!("history exported");
-                if let Some(reply) = reply {
-                    let _ = reply.try_send(Out::Exported { path: path.display().to_string() });
-                }
-                Ok(())
-            }
-            Err(e) => {
-                tracing::warn!("history (export): {e}");
-                Err(t!("cannot export the history").to_owned())
-            }
-        }
+        self.read(reply, Job::Export { key, dir })
     }
 
     fn purge_hidden(&mut self, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {

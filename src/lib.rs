@@ -17,6 +17,7 @@ pub mod numbering;
 pub mod obex;
 pub mod pbap;
 pub mod phone;
+pub mod reads;
 pub mod serve;
 pub mod settings;
 pub mod setup;

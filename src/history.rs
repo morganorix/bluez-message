@@ -5,8 +5,9 @@
 use std::collections::HashMap;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::addr::BtAddr;
 use crate::engine::{CallKind, ConvFlags, Cursor, HITS_PAGE, Hit, Out};
@@ -68,6 +69,8 @@ const SAME_SMS_SECS: i64 = 2;
 pub const SENT_ECHO_SECS: i64 = 30;
 /// Format of the grouping keys (see [`numbering::key`]), stored with the country in `meta 'key_home'`.
 const KEY_FORMAT: &str = "v1";
+/// Longest wait of a [`Reader`] for a write in progress.
+const READ_BUSY: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct History {
     db: Connection,
@@ -78,6 +81,8 @@ pub struct History {
     home: Option<Id>,
     /// Database file (copies before migrations); `None` in memory.
     path: Option<PathBuf>,
+    /// What [`History::reader`] opens: the file, or the URI of the shared in-memory database.
+    source: String,
 }
 
 impl History {
@@ -103,7 +108,13 @@ impl History {
     /// # Errors
     /// Schema rejected.
     pub fn memory(device: &BtAddr) -> crate::error::Result<Self> {
-        Self::init(Connection::open_in_memory()?, device, None)
+        // Named and shared: [`History::reader`] opens a second connection on it.
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let uri = format!("file:bluez-message-{}-{}?mode=memory&cache=shared", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_URI;
+        let mut h = Self::init(Connection::open_with_flags(&uri, flags)?, device, None)?;
+        h.source = uri;
+        Ok(h)
     }
 
     fn init(mut db: Connection, device: &BtAddr, path: Option<PathBuf>) -> crate::error::Result<Self> {
@@ -126,7 +137,8 @@ impl History {
         let key = since_key(&device);
         db.execute("INSERT OR IGNORE INTO meta (k, v) VALUES (?1, ?2)", params![key, stamp::now()])?;
         let since = db.query_row("SELECT v FROM meta WHERE k = ?1", [&key], |r| r.get(0))?;
-        Ok(Self { db, device, since, home: None, path })
+        let source = path.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        Ok(Self { db, device, since, home: None, path, source })
     }
 
     /// Reads the numbers with country `home` from now on, and recomputes the stored grouping keys of
@@ -510,6 +522,35 @@ impl History {
         Ok(v)
     }
 
+    /// Second, read-only connection on the same database, for the slow reads (search, pages, export)
+    /// done away from the writer. Waits up to [`READ_BUSY`] for a write in progress.
+    ///
+    /// # Errors
+    /// Database cannot be opened.
+    pub fn reader(&self) -> crate::error::Result<Reader> {
+        let mut flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if self.path.is_none() {
+            flags |= OpenFlags::SQLITE_OPEN_URI;
+        }
+        let db = Connection::open_with_flags(&self.source, flags)?;
+        db.busy_timeout(READ_BUSY)?;
+        Ok(Reader { db, device: self.device.clone() })
+    }
+
+    #[cfg(test)]
+    fn set_since(&mut self, s: &str) {
+        self.db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", [&since_key(&self.device), s]).unwrap();
+        self.since = s.to_owned();
+    }
+}
+
+/// Read-only view of the history of the active device (see [`History::reader`]).
+pub struct Reader {
+    db: Connection,
+    device: String,
+}
+
+impl Reader {
     /// SMS of the active device whose text contains `query` (accents and case ignored, see [`fold`]),
     /// newest first, at most [`HITS_PAGE`] strictly before `before`; deleted ones left out.
     /// Returns the page and the cursor of the following one, if any.
@@ -581,7 +622,7 @@ impl History {
         Ok(())
     }
 
-    /// [`History::export`] to a new file of `dir`, `bluez-message-<date>[-<key>].json` (mode 0600),
+    /// [`Reader::export`] to a new file of `dir`, `bluez-message-<date>[-<key>].json` (mode 0600),
     /// written beside it then renamed: never a partial file, never an existing one overwritten.
     ///
     /// # Errors
@@ -601,12 +642,6 @@ impl History {
         tmp.as_file().sync_all()?;
         tmp.persist_noclobber(&path).map_err(|e| e.error)?;
         Ok(path)
-    }
-
-    #[cfg(test)]
-    fn set_since(&mut self, s: &str) {
-        self.db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", [&since_key(&self.device), s]).unwrap();
-        self.since = s.to_owned();
     }
 }
 
@@ -1144,28 +1179,28 @@ mod tests {
         h.add_sms(&sms("+33600000001", "20261015T100200", "a_b"), false).unwrap();
         h.add_sms(&sms("+33600000002", "20261015T100300", "ETE encore"), false).unwrap();
         let texts = |v: &[Hit]| v.iter().map(|x| x.text.clone()).collect::<Vec<_>>();
-        let (v, next) = h.search("Éte", None).unwrap();
+        let (v, next) = h.reader().unwrap().search("Éte", None).unwrap();
         assert_eq!(texts(&v), ["ETE encore", "Bel été à Noël"], "accents and case ignored, newest first");
         assert!(next.is_none());
         assert_eq!(v[1].key, "600000001");
-        assert_eq!(texts(&h.search("%", None).unwrap().0), ["100% sûr"], "% taken literally");
-        assert_eq!(texts(&h.search("_", None).unwrap().0), ["a_b"], "_ taken literally");
-        assert!(h.search("\\", None).unwrap().0.is_empty());
-        assert!(h.search("\u{301}\u{301}", None).unwrap().0.is_empty(), "nothing left once folded: no match-all");
+        assert_eq!(texts(&h.reader().unwrap().search("%", None).unwrap().0), ["100% sûr"], "% taken literally");
+        assert_eq!(texts(&h.reader().unwrap().search("_", None).unwrap().0), ["a_b"], "_ taken literally");
+        assert!(h.reader().unwrap().search("\\", None).unwrap().0.is_empty());
+        assert!(h.reader().unwrap().search("\u{301}\u{301}", None).unwrap().0.is_empty(), "nothing left once folded: no match-all");
         // Deleted messages and another device's history left out.
         let item = crate::engine::Item { timestamp: "20261015T100300".into(), text: "ETE encore".into(), outgoing: false, call: false };
         h.delete("600000002", Some(&item)).unwrap();
         let other = History::open(&db, &"00:11:22:33:44:66".parse().unwrap()).unwrap();
         other.add_sms(&sms("+33600000001", "20261015T110000", "été ailleurs"), false).unwrap();
-        assert_eq!(texts(&h.search("ete", None).unwrap().0), ["Bel été à Noël"]);
+        assert_eq!(texts(&h.reader().unwrap().search("ete", None).unwrap().0), ["Bel été à Noël"]);
         // Pagination: 100 per page, the cursor resumes strictly after the last one, same-second rows kept.
         for i in 0..150 {
             h.add_sms(&sms("+33600000003", &format!("20261016T{:02}{:02}00", i / 60, i % 60), &format!("page {i}")), false).unwrap();
         }
         h.add_sms(&sms("+33600000004", "20261016T000000", "page bis"), false).unwrap();
-        let (p1, next) = h.search("page", None).unwrap();
+        let (p1, next) = h.reader().unwrap().search("page", None).unwrap();
         assert_eq!(p1.len(), HITS_PAGE);
-        let (p2, end) = h.search("page", next.as_ref()).unwrap();
+        let (p2, end) = h.reader().unwrap().search("page", next.as_ref()).unwrap();
         assert_eq!(p2.len(), 51);
         assert!(end.is_none());
         let mut all: Vec<_> = p1.iter().chain(&p2).map(|x| x.id).collect();
@@ -1173,9 +1208,9 @@ mod tests {
         all.dedup();
         assert_eq!(all.len(), 151, "no row lost nor repeated across pages");
         // Older: one conversation only, before the cursor.
-        let (o, next) = h.older("600000003", &Cursor::after("20261016T000500"), 3).unwrap();
+        let (o, next) = h.reader().unwrap().older("600000003", &Cursor::after("20261016T000500"), 3).unwrap();
         assert_eq!(texts(&o), ["page 5", "page 4", "page 3"], "same timestamp as the cursor included");
-        let (o, end) = h.older("600000003", next.as_ref().unwrap(), 3).unwrap();
+        let (o, end) = h.reader().unwrap().older("600000003", next.as_ref().unwrap(), 3).unwrap();
         assert_eq!(texts(&o), ["page 2", "page 1", "page 0"]);
         assert!(end.is_none());
         drop((h, other));
@@ -1213,7 +1248,7 @@ mod tests {
         h.delete("600000001", Some(&item)).unwrap();
 
         let mut all = vec![];
-        h.export(None, &mut all).unwrap();
+        h.reader().unwrap().export(None, &mut all).unwrap();
         let all = String::from_utf8(all).unwrap();
         assert!(all.ends_with("}\n"));
         assert!(!all.contains(DEV) && !all.contains(OTHER), "no device address");
@@ -1226,7 +1261,7 @@ mod tests {
         assert_eq!(texts, [("in", "a \"quoted\"\nline"), ("out", "b"), ("in", "c")], "oldest first, hidden and other device left out");
         assert_eq!(v["calls"][0], serde_json::json!({ "timestamp": "20261015T120000", "number": "+33600000001", "kind": "missed", "secs": 0 }));
 
-        let path = h.export_to(&dir, Some("600000002")).unwrap();
+        let path = h.reader().unwrap().export_to(&dir, Some("600000002")).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("bluez-message-2") && name.ends_with("-600000002.json"), "{name}");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
@@ -1237,7 +1272,7 @@ mod tests {
         assert!(v["calls"].as_array().unwrap().is_empty());
         // Same second: refused (existing file not overwritten), otherwise another name; no temporary file left behind.
         let size = std::fs::metadata(&path).unwrap().len();
-        if let Ok(next) = h.export_to(&dir, Some("600000002")) {
+        if let Ok(next) = h.reader().unwrap().export_to(&dir, Some("600000002")) {
             assert_ne!(next, path);
         }
         assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
