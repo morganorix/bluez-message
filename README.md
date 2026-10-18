@@ -115,8 +115,12 @@ After restarting WirePlumber, reconnect the iPhone (`bluetoothctl disconnect` th
 
 - Left column, "Contacts": **SMS** and **Calls** tabs (half width each). Landlines only appear in Calls,
   under the contact name when they are in the address book. "Name or number" search field (accents ignored, local or `+33…` format;
-  Enter opens the first result).
-- Thread: send, emoji button, call button in the header.
+  Enter opens the first result). From 2 characters it also searches the text of every message
+  ("Messages" section, accents and case ignored): a click opens the conversation on that message.
+- Right-click on a conversation: Mute (no SMS notification, calls still ring), Archive (moved to the
+  collapsible "Archived (N)" section until the next incoming SMS), Export conversation, Delete.
+- Thread: send, emoji button, call button in the header; "Older messages" at the top loads the rest
+  of the history. Web links (http/https) are clickable.
 - Right-click on a bubble: reaction, Resend, Copy, Delete (local deletion only, never on the iPhone).
 - A pending message shows a progress bar; if sending fails, a button resends it.
 - Header: Calls (HFP), Messages (MAP) and Contacts (PBAP) lights, and the iPhone battery level (red
@@ -139,10 +143,13 @@ Swap during call waiting). It closes by itself when the call ends.
 
 Tabs:
 - **General**: language (applied live), phone number country (Automatic: from the language or the
-  locale; used to recognise landlines and to group a number written as `06…` or `+33…`).
+  locale; used to recognise landlines and to group a number written as `06…` or `+33…`), Link previews
+  (off by default: title and image under a link, fetched by the window over https, which reveals your
+  IP address to the linked site; private addresses refused).
 - **Notifications**: new SMS, incoming calls, hide message text.
 - **Devices**: Bluetooth device, Connect automatically, Set up a device.
-- **History**: retention (30 / 90 / 365 days), purge deleted messages, Clear history (double
+- **History**: retention (30 / 90 / 365 days), Export history (JSON file in the Downloads folder,
+  or the home folder, readable by you only; deleted messages left out), purge deleted messages, Clear history (double
   confirmation, contacts are kept).
 - **Replies**: quick replies used when declining a call (5 at most, 160 characters each; the first one
   is the default for **Decline + SMS**).
@@ -155,6 +162,7 @@ bluez-msg send <address> <number> "<text>"
 bluez-msg watch <address> [--interval 5]
 bluez-msg serve <address>                              # engine driven by JSON over stdin/stdout
 bluez-msg hfp <address> [--answer]                     # raw RFCOMM HFP, no audio (hfp_hf disabled)
+bluez-msg export [--key <number>]                     # via the daemon: whole history or one conversation
 bluez-msg locale template | check <file>
 bluez-message --open <number>                          # window on that conversation
 ```
@@ -166,7 +174,7 @@ bluez-message --open <number>                          # window on that conversa
 | `~/.config/bluez-message/device` | iPhone Bluetooth address (0600). |
 | `~/.config/bluez-message/settings.json` | Settings (written by the daemon only). |
 | `~/.config/bluez-message/locales/<lang>.json` | Your own translations. |
-| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak`. |
+| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak` (key format) or `history.db.v<N>.bak` (schema). Export: `bluez-message-<date>[-<number>].json` in the Downloads folder. |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Daemon socket (JSON lines). |
 | `~/.config/control-bar/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
 
@@ -205,7 +213,7 @@ src/
 ├── history.rs           SQLite database (user_version migrations)
 ├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
 ├── app/                 shared state (conversations, call), notifications, reactions
-└── gui/                 theme, widgets, icons (MDI), emojis (Twemoji), egui startup
+└── gui/                 theme, widgets, icons (MDI), emojis (Twemoji), link previews, egui startup
 assets/mdi/              Material Design Icons SVG (white), LICENSE, NOTICE
 locales/                 fr.json (embedded), template.json, README
 packaging/arch/          PKGBUILD, systemd service, .desktop, icon, WirePlumber config

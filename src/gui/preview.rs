@@ -61,9 +61,10 @@ enum Entry {
 
 #[derive(Debug, thiserror::Error)]
 enum Fail {
-    #[error(transparent)]
+    // Fixed texts: ureq errors may carry the URL, kept out of the logs.
+    #[error("request failed")]
     Http(#[from] ureq::Error),
-    #[error(transparent)]
+    #[error("read failed")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Image(#[from] image::ImageError),
@@ -292,7 +293,7 @@ fn parse(head: &str) -> Meta {
         }
     }
     if let Some(t) = tags().find(|t| named(t, "title")) {
-        plain.title = t.inner_text(parser).into_owned();
+        plain.title = text(t, parser);
     }
     let pick = |a: String, b: String| if a.trim().is_empty() { b } else { a };
     Meta {
@@ -300,6 +301,31 @@ fn parse(head: &str) -> Meta {
         description: tidy(&pick(og.description, plain.description), DESCRIPTION_MAX),
         image: og.image.map(|i| unescape(i.trim())),
     }
+}
+
+/// Text inside `tag`, walked with an explicit stack: `tl`'s recursive `inner_text` could overflow
+/// the thread stack on a deeply nested page.
+fn text(tag: &tl::HTMLTag, parser: &tl::Parser) -> String {
+    let mut out = String::new();
+    // Children pushed in reverse order so that they pop in document order.
+    let push = |stack: &mut Vec<tl::NodeHandle>, t: &tl::HTMLTag| {
+        let start = stack.len();
+        stack.extend(t.children().top().iter().copied());
+        stack[start..].reverse();
+    };
+    let mut stack = vec![];
+    push(&mut stack, tag);
+    while let Some(node) = stack.pop().and_then(|h| h.get(parser)) {
+        match node {
+            tl::Node::Raw(r) => out.push_str(&r.as_utf8_str()),
+            tl::Node::Tag(t) => push(&mut stack, t),
+            tl::Node::Comment(_) => {}
+        }
+        if out.len() > 4 * TITLE_MAX {
+            break;
+        }
+    }
+    out
 }
 
 /// Entities decoded, invisible characters removed, spaces collapsed, at most `max` characters.
@@ -438,6 +464,16 @@ mod tests {
         assert!(t.ends_with('…'));
         assert_eq!(tidy("short", TITLE_MAX), "short");
         assert_eq!(unescape("a & b &unknown; &#0; &#xZZ; &amp"), "a & b &unknown; \0 &#xZZ; &amp");
+    }
+
+    #[test]
+    fn nested_title_without_recursion() {
+        assert_eq!(parse("<head><title>a<b>b<!-- c --></b>c</title></head>").title, "abc");
+        // Deeper than a recursive walk survives on a 2 MiB thread stack, within HTML_MAX.
+        let n = 70_000;
+        let deep = format!("<head><title>x{}y{}</title></head>", "<b>".repeat(n), "</b>".repeat(n));
+        assert!(deep.len() < HTML_MAX as usize);
+        assert_eq!(parse(&deep).title, "xy");
     }
 
     #[test]

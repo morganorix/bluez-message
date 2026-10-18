@@ -107,7 +107,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Serve { addr, interval } => {
             bluez_message::serve::serve(&addr, Duration::from_secs(interval.max(1))).await?;
         }
-        Cmd::Export { key } => println!("{}", tokio::task::spawn_blocking(move || export(key)).await.map_err(std::io::Error::other)??),
+        Cmd::Export { key } => match tokio::task::spawn_blocking(move || export(key)).await.map_err(std::io::Error::other)?? {
+            Ok(path) => println!("{path}"),
+            Err(msg) => {
+                eprintln!("{}", t!("error: {0}", msg));
+                return Ok(ExitCode::FAILURE);
+            }
+        },
         Cmd::Locale { action: LocaleCmd::Template } => print!("{}", i18n::TEMPLATE),
         Cmd::Locale { action: LocaleCmd::Check { file } } => {
             let json = std::fs::read_to_string(&file)?;
@@ -131,8 +137,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 /// Asks the running daemon for an export ([`Request::Export`]) and waits for its answer, skipping the snapshot sent
-/// first; returns the path of the written file.
-fn export(key: Option<String>) -> Result<String> {
+/// first; returns the path of the written file, or the daemon's refusal (already translated).
+fn export(key: Option<String>) -> Result<std::result::Result<String, String>> {
     use std::io::{BufRead, Read, Write};
     use bluez_message::engine::{Cmd as Request, Out};
     /// Snapshot lines can carry a whole conversation page: generous bound, still finite.
@@ -150,8 +156,8 @@ fn export(key: Option<String>) -> Result<String> {
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
         }
         match serde_json::from_slice(&line) {
-            Ok(Out::Exported { path }) => return Ok(path),
-            Ok(Out::Error { msg }) => return Err(std::io::Error::other(msg).into()),
+            Ok(Out::Exported { path }) => return Ok(Ok(path)),
+            Ok(Out::Error { msg }) => return Ok(Err(msg)),
             _ => {}
         }
     }

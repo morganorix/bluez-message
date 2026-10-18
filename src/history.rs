@@ -517,7 +517,12 @@ impl History {
     /// # Errors
     /// SQLite error.
     pub fn search(&self, query: &str, before: Option<&Cursor>) -> rusqlite::Result<(Vec<Hit>, Option<Cursor>)> {
-        let pattern = format!("%{}%", like_escape(&fold(crate::phone::clean(query, false).trim())));
+        let folded = fold(crate::phone::clean(query, false).trim());
+        // Only combining marks: an empty pattern would match every message.
+        if folded.is_empty() {
+            return Ok((vec![], None));
+        }
+        let pattern = format!("%{}%", like_escape(&folded));
         let top = Cursor::after("99991231T235959");
         let c = before.unwrap_or(&top);
         let st = self.db.prepare_cached(
@@ -1146,6 +1151,7 @@ mod tests {
         assert_eq!(texts(&h.search("%", None).unwrap().0), ["100% sûr"], "% taken literally");
         assert_eq!(texts(&h.search("_", None).unwrap().0), ["a_b"], "_ taken literally");
         assert!(h.search("\\", None).unwrap().0.is_empty());
+        assert!(h.search("\u{301}\u{301}", None).unwrap().0.is_empty(), "nothing left once folded: no match-all");
         // Deleted messages and another device's history left out.
         let item = crate::engine::Item { timestamp: "20261015T100300".into(), text: "ETE encore".into(), outgoing: false, call: false };
         h.delete("600000002", Some(&item)).unwrap();

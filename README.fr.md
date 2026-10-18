@@ -116,8 +116,13 @@ Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
 
 - Colonne de gauche, « Contacts » : onglets **SMS** et **Appels** (moitié de largeur chacun). Les fixes
   n'apparaissent que dans Appels, sous le nom du contact s'il est dans le carnet. Champ de recherche « Nom ou numéro » (accents ignorés, `06…` ou
-  `+33…` ; Entrée ouvre le premier résultat).
-- Fil de discussion : envoi, bouton emojis, bouton d'appel dans l'en-tête.
+  `+33…` ; Entrée ouvre le premier résultat). Dès 2 caractères, il cherche aussi dans le texte de tous
+  les messages (section « Messages », accents et casse ignorés) : un clic ouvre la conversation sur ce message.
+- Clic droit sur une conversation : Sourdine (pas de notification SMS, les appels sonnent toujours),
+  Archiver (rangée dans la section repliable « Archivées (N) » jusqu'au prochain SMS reçu), Exporter la
+  conversation, Supprimer.
+- Fil de discussion : envoi, bouton emojis, bouton d'appel dans l'en-tête ; « Messages plus anciens »
+  en haut charge la suite de l'historique. Les liens web (http/https) sont cliquables.
 - Clic droit sur une bulle : réaction, Renvoyer, Copier, Supprimer (suppression locale seulement, jamais
   sur l'iPhone).
 - Un envoi en attente affiche une barre de progression ; en échec, un bouton permet de le renvoyer.
@@ -141,10 +146,14 @@ Basculer en double appel). Elle se ferme seule en fin d'appel.
 
 Onglets :
 - **Général** : langue (à chaud), pays des numéros (Automatique : selon la langue ou la locale ; sert à
-  reconnaître les fixes et à regrouper un numéro écrit `06…` ou `+33…`).
+  reconnaître les fixes et à regrouper un numéro écrit `06…` ou `+33…`), Aperçus des liens (désactivés
+  par défaut : titre et image sous un lien, récupérés en https par la fenêtre, ce qui révèle votre adresse
+  IP au site du lien ; adresses privées refusées).
 - **Notifications** : nouveaux SMS, appels entrants, masquage du texte.
 - **Appareils** : appareil Bluetooth, Connexion automatique, Configurer un appareil.
-- **Historique** : durée de conservation (30 / 90 / 365 jours), purge des messages supprimés, Tout
+- **Historique** : durée de conservation (30 / 90 / 365 jours), Exporter l'historique (fichier JSON
+  dans le dossier Téléchargements, ou le dossier personnel, lisible par vous seul ; messages supprimés
+  exclus), purge des messages supprimés, Tout
   effacer (double confirmation, les contacts sont gardés).
 - **Réponses** : réponses rapides utilisées au refus d'un appel (5 au plus, 160 caractères chacune ; la
   première sert par défaut à **Refuser + SMS**).
@@ -157,6 +166,7 @@ bluez-msg send <adresse> <numéro> "<texte>"
 bluez-msg watch <adresse> [--interval 5]
 bluez-msg serve <adresse>                              # moteur piloté en JSON par stdin/stdout
 bluez-msg hfp <adresse> [--answer]                     # HFP RFCOMM brut, sans audio (hfp_hf désactivé)
+bluez-msg export [--key <numéro>]                     # via le démon : tout l'historique ou une conversation
 bluez-msg locale template | check <fichier>
 bluez-message --open <numéro>                          # fenêtre sur cette conversation
 ```
@@ -168,7 +178,7 @@ bluez-message --open <numéro>                          # fenêtre sur cette con
 | `~/.config/bluez-message/device` | Adresse Bluetooth de l'iPhone (0600). |
 | `~/.config/bluez-message/settings.json` | Réglages (écrits par le démon seul). |
 | `~/.config/bluez-message/locales/<lang>.json` | Traductions personnelles. |
-| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak`. |
+| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak` (format des clés) ou `history.db.v<N>.bak` (schéma). Export : `bluez-message-<date>[-<numéro>].json` dans le dossier Téléchargements. |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Socket du démon (JSON lignes). |
 | `~/.config/control-bar/colors.plm` | Optionnel : palette de couleurs (template matugen), rechargée à chaud. |
 
@@ -208,7 +218,7 @@ src/
 ├── history.rs           base SQLite (migrations user_version)
 ├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
 ├── app/                 état partagé (conversations, appel), notifications, réactions
-└── gui/                 thème, widgets, icônes (MDI), emojis (Twemoji), démarrage egui
+└── gui/                 thème, widgets, icônes (MDI), emojis (Twemoji), aperçus de liens, démarrage egui
 assets/mdi/              SVG Material Design Icons (blancs), LICENSE, NOTICE
 locales/                 fr.json (embarqué), template.json, README
 packaging/arch/          PKGBUILD, service systemd, .desktop, icône, config WirePlumber

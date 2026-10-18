@@ -1,6 +1,10 @@
 # cargo-deny: `cargo deny check advisories`.
 [advisories]
 ignore = [
-    # ttf-parser: unmaintained (no vulnerability), pulled by winit (sctk-adwaita, ab_glyph).
-    { id = "RUSTSEC-2026-0192", reason = "unmaintained, no known vulnerability; transitive through winit" },
+    # atomic-polyfill: unmaintained (no vulnerability), build-dependency of phonenumber (postcard, heapless 0.7).
+    { id = "RUSTSEC-2023-0089", reason = "unmaintained, no known vulnerability; build-time only, through phonenumber" },
+    # zvariant, zvariant_derive, zbus_names: folded into zbus 6 (no vulnerability); zbus 5 still pulls them.
+    { id = "RUSTSEC-2026-0370", reason = "unmaintained standalone crate, no known vulnerability; transitive through zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "unmaintained standalone crate, no known vulnerability; transitive through zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "unmaintained standalone crate, no known vulnerability; transitive through zbus 5" },
 ]

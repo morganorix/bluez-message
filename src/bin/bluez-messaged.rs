@@ -307,9 +307,9 @@ impl Daemon {
         }
         // Received SMS just recorded: its conversation leaves the archive; a muted one stays out of the summary.
         let mut unarchive = None;
-        if let Some((key, flags, recap)) = received(&self.state, &o) {
+        if let Some((key, flags, recap, fresh)) = received(&self.state, &o) {
             self.recap += usize::from(recap);
-            if flags.archived {
+            if flags.archived && fresh {
                 unarchive = Some((key, ConvFlags { archived: false, ..flags }));
             }
         }
@@ -714,16 +714,16 @@ fn for_notify(fx: Effect, s: &Settings, home: Option<numbering::Id>) -> Option<E
     }
 }
 
-/// Received SMS: its conversation key, its flags, and whether it counts in the session summary
-/// (listed, not new, unread, not muted).
-fn received(state: &State, o: &Out) -> Option<(String, ConvFlags, bool)> {
+/// Received SMS: its conversation key, its flags, whether it counts in the session summary
+/// (listed, not new, unread, not muted), and whether it lifts the archive (new or unread).
+fn received(state: &State, o: &Out) -> Option<(String, ConvFlags, bool, bool)> {
     let Out::Sms { sms, folder, new } = o else { return None };
     if folder.is_sent() {
         return None;
     }
     let key = state.key(sms_peer(sms, false).0);
     let flags = state.flags(&key);
-    Some((key, flags, !new && !sms.read && !flags.muted))
+    Some((key, flags, !new && !sms.read && !flags.muted, *new || !sms.read))
 }
 
 /// Filters and records: an SMS older than the history start, or already recorded, is not published.
@@ -1181,14 +1181,17 @@ mod tests {
         let mut st = State::default();
         st.apply(out(sms("1", true), Folder::Inbox, true));
         let key = st.convs[0].key.clone();
-        let (k, flags, recap) = received(&st, &out(sms("2", false), Folder::Inbox, false)).unwrap();
-        assert_eq!((k.as_str(), flags, recap), (key.as_str(), ConvFlags::default(), true));
+        let (k, flags, recap, fresh) = received(&st, &out(sms("2", false), Folder::Inbox, false)).unwrap();
+        assert_eq!((k.as_str(), flags, recap, fresh), (key.as_str(), ConvFlags::default(), true, true));
         assert!(!received(&st, &out(sms("3", false), Folder::Inbox, true)).unwrap().2, "new: notified, not summed up");
-        assert!(!received(&st, &out(sms("4", true), Folder::Inbox, false)).unwrap().2, "already read");
+        assert!(received(&st, &out(sms("3", false), Folder::Inbox, true)).unwrap().3, "new: lifts the archive");
+        let late = received(&st, &out(sms("4", true), Folder::Inbox, false)).unwrap();
+        assert!(!late.2, "already read");
+        assert!(!late.3, "already read, listed late: stays archived");
         assert!(received(&st, &out(sms("5", false), Folder::Sent, false)).is_none());
         let both = ConvFlags { muted: true, archived: true };
         st.apply(Out::Conv { key: key.clone(), flags: both });
-        assert_eq!(received(&st, &out(sms("6", false), Folder::Inbox, false)), Some((key, both, false)), "muted: out of the summary");
+        assert_eq!(received(&st, &out(sms("6", false), Folder::Inbox, false)), Some((key, both, false, true)), "muted: out of the summary");
     }
 
     #[test]
