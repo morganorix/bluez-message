@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Read};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use image::{ImageReader, Limits};
@@ -19,9 +19,10 @@ use ureq::{Agent, ResponseExt};
 
 use crate::phone;
 
-/// Pending requests; beyond that, a link is asked again on a later frame.
+/// Pending requests; beyond that, a link is asked again after `RETRY`.
 const QUEUE: usize = 32;
-/// Previews kept (failures included), oldest dropped first.
+const RETRY: Duration = Duration::from_secs(2);
+/// Previews kept (failures included), least recently shown dropped first; pending ones are kept.
 const CACHE: usize = 64;
 /// Whole request, redirects included.
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -58,6 +59,8 @@ struct Fetched {
 
 enum Entry {
     Pending,
+    /// Queue full: asked again from that instant.
+    Deferred(Instant),
     Ready(Option<Card>),
 }
 
@@ -93,14 +96,27 @@ pub struct Previews {
 
 impl Previews {
     /// Preview of `url` if ready; otherwise asks for it (once) and returns `None`, also on failure.
+    /// To be called only for visible bubbles: every call may start a request.
     pub fn get(&mut self, ctx: &egui::Context, url: &str) -> Option<&Card> {
         self.receive(ctx);
-        if !self.cache.contains_key(url) {
-            self.ask(ctx, url);
+        match self.cache.get(url) {
+            None => self.ask(ctx, url),
+            Some(Entry::Deferred(at)) if Instant::now() >= *at => self.ask(ctx, url),
+            Some(Entry::Deferred(at)) => ctx.request_repaint_after(at.saturating_duration_since(Instant::now())),
+            Some(_) => self.touch(url),
         }
         match self.cache.get(url) {
             Some(Entry::Ready(card)) => card.as_ref(),
             _ => None,
+        }
+    }
+
+    /// Marks `url` as the most recently shown.
+    fn touch(&mut self, url: &str) {
+        if let Some(i) = self.order.iter().position(|u| u == url)
+            && let Some(u) = self.order.remove(i)
+        {
+            self.order.push_back(u);
         }
     }
 
@@ -132,8 +148,10 @@ impl Previews {
         };
         match tx.try_send(url.to_owned()) {
             Ok(()) => self.insert(url.to_owned(), Entry::Pending),
-            // Queue full: asked again on a later frame.
-            Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Full(_)) => {
+                self.insert(url.to_owned(), Entry::Deferred(Instant::now() + RETRY));
+                ctx.request_repaint_after(RETRY);
+            }
             Err(TrySendError::Disconnected(_)) => self.insert(url.to_owned(), Entry::Ready(None)),
         }
     }
@@ -143,10 +161,13 @@ impl Previews {
             *e = entry;
             return;
         }
-        if self.order.len() >= CACHE
-            && let Some(old) = self.order.pop_front()
-        {
-            self.cache.remove(&old);
+        if self.order.len() >= CACHE {
+            // At most `QUEUE` + 1 entries are pending: an evictable one always exists.
+            let cache = &self.cache;
+            let i = self.order.iter().position(|u| !matches!(cache.get(u), Some(Entry::Pending))).unwrap_or(0);
+            if let Some(old) = self.order.remove(i) {
+                self.cache.remove(&old);
+            }
         }
         self.order.push_back(url.clone());
         self.cache.insert(url, entry);
@@ -658,6 +679,24 @@ mod tests {
         assert_eq!((p.cache.len(), p.order.len()), (CACHE, CACHE));
         assert!(!p.cache.contains_key("https://0.example/"));
         p.insert(format!("https://{}.example/", CACHE + 9), Entry::Pending);
+        assert_eq!(p.order.len(), CACHE);
+    }
+
+    #[test]
+    fn eviction_keeps_pending_and_recently_shown() {
+        let mut p = Previews::default();
+        p.insert("https://pending.example/".into(), Entry::Pending);
+        p.insert("https://shown.example/".into(), Entry::Ready(None));
+        for i in 0..CACHE - 2 {
+            p.insert(format!("https://{i}.example/"), Entry::Ready(None));
+        }
+        p.touch("https://shown.example/");
+        p.insert("https://new.example/".into(), Entry::Ready(None));
+        p.insert("https://newer.example/".into(), Entry::Ready(None));
+        assert!(p.cache.contains_key("https://pending.example/"));
+        assert!(p.cache.contains_key("https://shown.example/"));
+        assert!(!p.cache.contains_key("https://0.example/"));
+        assert!(!p.cache.contains_key("https://1.example/"));
         assert_eq!(p.order.len(), CACHE);
     }
 }
