@@ -332,7 +332,7 @@ impl View {
             .map(|(i, r)| Item { row: row(Some(Icon::MessageText), r, if i == 0 { t!("default") } else { "" }, editing(Some(i))), ctl: Ctl::None, act: Act::Reply(Some(i)) })
             .collect();
         if replies.len() < QUICK_REPLIES_MAX {
-            let add = w::Row { sub: Some(t!("The default one is sent by “Decline + SMS”")), ..row(Some(Icon::Plus), t!("Add a reply"), "", editing(None)) };
+            let add = w::Row { sub: None, ..row(Some(Icon::Plus), t!("Add a reply"), "", editing(None)) };
             replies.push(Item { row: add, ctl: Ctl::None, act: Act::Reply(None) });
         }
         sections.push((REPLIES, (t!("Quick replies"), replies)));

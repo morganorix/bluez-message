@@ -354,29 +354,15 @@ impl App {
         };
         let who = c.caller("  ·  ");
         let incoming = c.phase == Phase::Incoming;
-        // Mobile caller: declining can answer by SMS.
+        // Mobile caller: "Quick reply" declines and opens the conversation with its chips.
         let sms_to = if incoming { c.sms_number(self.state.home()) } else { None };
-        let replies = self.state.settings.as_ref().map(|p| p.settings.quick_replies.as_slice()).unwrap_or_default();
         let pal = self.pal;
         let rect = w::call_card(ui, &pal, Icon::Phone, pal.accent, &who, what, pal.muted());
-        let (mut answer, mut hangup, mut decline) = (false, false, None);
+        let (mut answer, mut hangup, mut quick) = (false, false, false);
         right_of(ui, rect.shrink2(egui::vec2(10.0, 0.0)), |ui| {
             hangup = w::button(ui, &pal, t!("HANG UP"), w::Tone::Danger).clicked();
             if sms_to.is_some() {
-                let pick = w::button(ui, &pal, t!("DECLINE + SMS"), w::Tone::Neutral);
-                egui::Popup::from_toggle_button_response(&pick).show(|ui| {
-                    for r in replies {
-                        if w::menu_item(ui, Icon::MessageText, &ellipsis(r, CHIP_CHARS)).on_hover_text(r).clicked() {
-                            decline = Some(Some(r.clone()));
-                        }
-                    }
-                    if !replies.is_empty() {
-                        ui.separator();
-                    }
-                    if w::menu_item(ui, Icon::Message, t!("Write a message…")).clicked() {
-                        decline = Some(None);
-                    }
-                });
+                quick = w::button(ui, &pal, t!("QUICK REPLY"), w::Tone::Neutral).clicked();
             }
             if incoming {
                 answer = w::button(ui, &pal, t!("ANSWER"), w::Tone::Accent).clicked();
@@ -388,13 +374,9 @@ impl App {
         if answer {
             self.submit(Cmd::Answer);
         }
-        // Declined then a quick reply sent, or the conversation opened with its chips.
-        if let (Some(reply), Some(to)) = (decline, sms_to) {
+        if quick && let Some(to) = sms_to {
             self.submit(Cmd::Reject);
-            match reply {
-                Some(text) => drop(self.send(&to, &text)),
-                None => self.open_number(to),
-            }
+            self.open_number(to);
         }
     }
 

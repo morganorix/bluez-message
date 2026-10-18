@@ -73,7 +73,7 @@ pub struct Settings {
     pub auto_connect: bool,
     /// Home country for the numbering plan (`fr`…, see [`crate::numbering`]); `None`: from the locale.
     pub country: Option<String>,
-    /// Texts offered when declining a call; the first one is sent by "Decline + SMS".
+    /// Texts offered as chips in a conversation, e.g. opened by "Quick reply" when declining a call.
     pub quick_replies: Vec<String>,
     /// Preview card under a web link (title, image): the GUI contacts the linked site.
     pub link_previews: bool,

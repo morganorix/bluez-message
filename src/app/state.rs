@@ -165,14 +165,6 @@ impl Call {
     }
 }
 
-/// SMS replies of the incoming call bubble: `number` can receive a text (valid, not a landline).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Decline {
-    pub number: String,
-    /// Sent by "Decline + SMS" (first quick reply); `None`: only "Decline and write".
-    pub text: Option<String>,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
     /// `reply`: number the notification's "Reply" action opens ([`Cmd::Open`](crate::engine::Cmd::Open)), `None`
@@ -180,8 +172,9 @@ pub enum Effect {
     Sms { from: String, text: String, reply: Option<String> },
     /// Call in progress (ringing, talking, double call): view to display, emitted on every change.
     Call(Call),
-    /// Incoming [`Effect::Call`] as the daemon passes it to the bubble, with what declining can text back.
-    Ring(Call, Option<Decline>),
+    /// Incoming [`Effect::Call`] as the daemon passes it to the bubble, with the number "Quick reply" declines
+    /// and opens the conversation of: one that can receive a text (valid, not a landline).
+    Ring(Call, Option<String>),
     /// End of call: what the history records.
     CallEnd(Ended),
     /// SMS not sent (MAP down, refused): `to` as displayed, `reply` the number to open to retry.

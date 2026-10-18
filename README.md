@@ -131,11 +131,10 @@ Shortcuts: `↑`/`↓` + `Enter` in the list, `Esc`, `Ctrl+F` (search), `Ctrl+,`
 
 ### Calls
 
-When the phone rings, a notification offers **Answer** / **Decline**, plus, for a known mobile number,
-**Decline + SMS** (declines and sends the first quick reply) and **Decline and write** (declines and opens
-the conversation, with the quick replies as chips above the input: a click fills it, nothing is sent
-automatically). In the window, the call banner offers the same choices; **DECLINE + SMS** opens the list
-of quick replies. Once the call is up, the
+When the phone rings, a notification offers **Answer** / **Decline**, plus, for a mobile number,
+**QUICK REPLY**: it declines and opens the conversation (the window is started if needed), with the quick
+replies as chips above the input: a click fills it, nothing is sent automatically. In the window, the call
+banner offers the same choices. Once the call is up, the
 `bluez-msg-call` window shows the duration and the Mute, Hold, Hang up buttons (plus Answer / Decline /
 Swap during call waiting). It closes by itself when the call ends.
 
@@ -151,8 +150,7 @@ Tabs:
 - **History**: retention (30 / 90 / 365 days), Export history (JSON file in the Downloads folder,
   or the home folder, readable by you only, the only export in the window; deleted messages left out), purge deleted messages, Clear history (double
   confirmation, contacts are kept).
-- **Replies**: quick replies used when declining a call (5 at most, 160 characters each; the first one
-  is the default for **Decline + SMS**).
+- **Replies**: quick replies offered as chips after **QUICK REPLY** (5 at most, 160 characters each).
 
 ### Command line
 

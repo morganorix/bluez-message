@@ -133,11 +133,10 @@ Raccourcis : `↑`/`↓` + `Entrée` dans la liste, `Échap`, `Ctrl+F` (recherch
 
 ### Appels
 
-À la sonnerie, une notification propose **Décrocher** / **Refuser** et, pour un numéro mobile connu,
-**Refuser + SMS** (refuse et envoie la première réponse rapide) et **Refuser et écrire** (refuse et ouvre
-la conversation, avec les réponses rapides en puces au-dessus du champ : un clic le remplit, rien n'est
-envoyé d'office). Dans la fenêtre, la bande d'appel propose les mêmes choix ; **REFUSER + SMS** déroule la
-liste des réponses rapides. Une fois l'appel établi, la fenêtre
+À la sonnerie, une notification propose **Décrocher** / **Refuser** et, pour un numéro mobile,
+**RÉPONSE RAPIDE** : refuse et ouvre la conversation (la fenêtre est lancée au besoin), avec les réponses
+rapides en puces au-dessus du champ : un clic le remplit, rien n'est envoyé d'office. Dans la fenêtre, la
+bande d'appel propose les mêmes choix. Une fois l'appel établi, la fenêtre
 `bluez-msg-call` affiche la durée et les boutons Muet, Attente, Raccrocher (et Répondre / Refuser /
 Basculer en double appel). Elle se ferme seule en fin d'appel.
 
@@ -154,8 +153,8 @@ Onglets :
   dans le dossier Téléchargements, ou le dossier personnel, lisible par vous seul, seul export de la fenêtre ; messages supprimés
   exclus), purge des messages supprimés, Tout
   effacer (double confirmation, les contacts sont gardés).
-- **Réponses** : réponses rapides utilisées au refus d'un appel (5 au plus, 160 caractères chacune ; la
-  première sert par défaut à **Refuser + SMS**).
+- **Réponses** : réponses rapides proposées en puces après **RÉPONSE RAPIDE** (5 au plus, 160 caractères
+  chacune).
 
 ### Ligne de commande
 

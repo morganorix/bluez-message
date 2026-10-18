@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use bluez_message::addr::BtAddr;
 use bluez_message::app::notify;
-use bluez_message::app::state::{Decline, Effect, Phase, State, phone_reads, sms_peer};
+use bluez_message::app::state::{Effect, Phase, State, phone_reads, sms_peer};
 use bluez_message::config;
 use bluez_message::engine::{Cmd, ConvFlags, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
@@ -703,15 +703,15 @@ async fn settings_out(settings: &Settings, addr: Option<&BtAddr>) -> Out {
     Out::Settings { settings: settings.clone(), langs: i18n::available(), devices, device: addr.cloned(), home, auto }
 }
 
-/// What the settings let through to Navi notifications; a ringing call gets its SMS replies ([`Decline`]).
+/// What the settings let through to Navi notifications; a ringing mobile caller gets "Quick reply".
 fn for_notify(fx: Effect, s: &Settings, home: Option<numbering::Id>) -> Option<Effect> {
     match fx {
         Effect::Sms { .. } if !s.notify_sms => None,
         Effect::Sms { from, reply, .. } if s.hide_preview => Some(Effect::Sms { from, text: t!("New message").to_owned(), reply }),
         Effect::Call(_) if !s.notify_calls => None,
         Effect::Call(c) if c.phase == Phase::Incoming => {
-            let decline = c.sms_number(home).map(|number| Decline { number, text: s.quick_replies.first().cloned() });
-            Some(Effect::Ring(c, decline))
+            let reply = c.sms_number(home);
+            Some(Effect::Ring(c, reply))
         }
         fx => Some(fx),
     }
@@ -1203,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn ringing_call_gets_sms_replies() {
+    fn ringing_mobile_gets_quick_reply() {
         let fr = Some(numbering::Id::FR);
         let s = Settings::default();
         let ring = |number: Option<&str>, s: &Settings| {
@@ -1214,14 +1214,10 @@ mod tests {
                 fx => panic!("{fx:?}"),
             }
         };
-        let d = ring(Some("+33 6 12 34 56 78"), &s).expect("mobile");
-        assert_eq!(d.number, "+33612345678");
-        assert_eq!(d.text, s.quick_replies.first().cloned());
+        assert_eq!(ring(Some("+33 6 12 34 56 78"), &s).as_deref(), Some("+33612345678"), "mobile");
         assert_eq!(ring(Some("+33 1 23 45 67 89"), &s), None, "landline");
         assert_eq!(ring(Some("INFO"), &s), None, "not a number");
         assert_eq!(ring(None, &s), None, "hidden");
-        let empty = Settings { quick_replies: Vec::new(), ..Settings::default() };
-        assert_eq!(ring(Some("+33612345678"), &empty).and_then(|d| d.text), None, "only Decline and write");
         let mut active = bluez_message::app::state::Call::default();
         active.phase = Phase::Active;
         assert!(matches!(for_notify(Effect::Call(active), &s, fr), Some(Effect::Call(_))));

@@ -12,7 +12,7 @@ use std::time::Duration;
 use zbus::blocking::Connection;
 use zbus::zvariant::Value;
 
-use super::state::{Call, Decline, Effect, Phase};
+use super::state::{Call, Effect, Phase};
 use crate::engine::Cmd;
 use crate::t;
 
@@ -20,7 +20,7 @@ const APP: &str = "Navi";
 const DEST: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
 
-/// The text of an SMS is controlled by the sender: neutralises the markup allowed by the spec.
+/// The text of an SMS is controlled by the sender: neutralises the body markup of servers that support it.
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -33,13 +33,13 @@ const KEPT: usize = 64;
 /// Ends once every sender is dropped and the pending effects are applied.
 pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 'static) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut n = Notifier { link: None, shared: Arc::default(), on_cmd, ringing: None };
+        let mut n = Notifier { link: None, markup: false, shared: Arc::default(), on_cmd, ringing: None };
         loop {
             match effects.recv_timeout(TICK) {
-                Ok(Effect::Sms { from, text, reply }) => n.sms(&escape(&from), &text, reply),
-                Ok(Effect::Unsent { to, error, reply }) => n.sms(&escape(&t!("SMS not sent to {0}", to)), &error, reply),
+                Ok(Effect::Sms { from, text, reply }) => n.sms(&from, &text, reply),
+                Ok(Effect::Unsent { to, error, reply }) => n.sms(&t!("SMS not sent to {0}", to), &error, reply),
                 Ok(Effect::Call(c)) => n.ring(&c, None),
-                Ok(Effect::Ring(c, d)) => n.ring(&c, d),
+                Ok(Effect::Ring(c, reply)) => n.ring(&c, reply),
                 Ok(Effect::CallEnd(_)) => n.hang_up(),
                 Ok(Effect::Exported(r)) => exported(&r),
                 Ok(Effect::CloseAll) => {
@@ -54,7 +54,7 @@ pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 's
     })
 }
 
-/// A notification to show (`Notify` arguments); `summary` and `body` already escaped.
+/// A notification to show (`Notify` arguments); plain text, the summary never holds markup.
 struct Card<'a> {
     summary: &'a str,
     body: &'a str,
@@ -68,14 +68,16 @@ struct Card<'a> {
 }
 
 impl Card<'_> {
-    /// Shows the card on `conn`; returns its id and the unique name of the server.
-    fn show(&self, conn: &Connection) -> zbus::Result<(u32, Option<String>)> {
+    /// Shows the card on `conn` (`markup`: the server reads it in the body); returns its id and the unique name of
+    /// the server.
+    fn show(&self, conn: &Connection, markup: bool) -> zbus::Result<(u32, Option<String>)> {
+        let body = if markup { escape(self.body) } else { self.body.to_owned() };
         let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
         if self.critical {
             hints.insert("urgency", Value::U8(2));
         }
         let expire = if self.critical { 0i32 } else { -1 };
-        let msg = conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, self.replaces, self.icon, self.summary, self.body, &self.actions, hints, expire))?;
+        let msg = conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &(APP, self.replaces, self.icon, self.summary, body, &self.actions, hints, expire))?;
         let id: u32 = msg.body().deserialize()?;
         Ok((id, msg.header().sender().map(ToString::to_string)))
     }
@@ -110,8 +112,9 @@ struct Shared {
     cards: Mutex<Cards>,
     /// Ringing bubble id; 0 = none. Reset to 0 by the listener on close (button, ×).
     bubble: AtomicU32,
-    /// Read by the listener when a button is pressed: the number (CLIP) can arrive after the first display.
-    decline: Mutex<Option<Decline>>,
+    /// Number "Quick reply" opens, read by the listener when pressed: the number (CLIP) can arrive after the
+    /// first display.
+    reply: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -119,8 +122,8 @@ impl Shared {
     fn signal(&self, id: u32, action: Option<&str>) -> Vec<Cmd> {
         // Bubble closed (button or ×): released before the command, the resulting state creates a new one.
         if id != 0 && self.bubble.compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            let decline = self.decline.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            return action.map(|a| bubble_cmds(a, decline)).unwrap_or_default();
+            let reply = self.reply.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            return action.map(|a| bubble_cmds(a, reply)).unwrap_or_default();
         }
         let number = self.cards.lock().unwrap_or_else(PoisonError::into_inner).closed(id);
         match (action, number) {
@@ -130,27 +133,24 @@ impl Shared {
     }
 }
 
-/// Commands of bubble button `action`; rejected first: the SMS or the window must not wait for the end of the ringing.
-fn bubble_cmds(action: &str, decline: Option<Decline>) -> Vec<Cmd> {
-    let then = match action {
-        "answer" => return vec![Cmd::Answer],
-        "reject" => None,
-        "decline_sms" | "decline_write" => decline.and_then(|Decline { number, text }| match (action, text) {
-            ("decline_sms", Some(text)) => Some(Cmd::Send { to: number, text }),
-            ("decline_write", _) => Some(Cmd::Open { number: Some(number) }),
-            _ => None,
-        }),
-        _ => return vec![],
-    };
-    std::iter::once(Cmd::Reject).chain(then).collect()
+/// Commands of bubble button `action`; rejected first: the window must not wait for the end of the ringing.
+fn bubble_cmds(action: &str, reply: Option<String>) -> Vec<Cmd> {
+    match action {
+        "answer" => vec![Cmd::Answer],
+        "reject" => vec![Cmd::Reject],
+        "quick_reply" => std::iter::once(Cmd::Reject).chain(reply.map(|number| Cmd::Open { number: Some(number) })).collect(),
+        _ => vec![],
+    }
 }
 
-/// SMS cards and the ringing bubble (Answer / Decline, and SMS replies when the caller is a mobile), replaced in
+/// SMS cards and the ringing bubble (Answer / Decline, and Quick reply when the caller is a mobile), replaced in
 /// place (same id) while it rings; answered, outgoing: the `bluez-msg-call` window takes over, the bubble closes.
 /// One session connection: a single thread receives the server's signals (broadcast or sent to the sender only).
 struct Notifier<F> {
     /// Opened at the first card (the session bus may come up after the daemon); `None` again after a failure.
     link: Option<Connection>,
+    /// The server of `link` reads markup in the body.
+    markup: bool,
     shared: Arc<Shared>,
     on_cmd: F,
     /// Caller displayed while ringing; `None`: no bubble.
@@ -165,13 +165,14 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
         }
         let c = Connection::session()?;
         listen(&c, Arc::clone(&self.shared), self.on_cmd.clone())?;
+        self.markup = markup(&c);
         self.link = Some(c.clone());
         Ok(c)
     }
 
     /// Shows `card`; returns its id.
     fn show(&mut self, card: &Card<'_>) -> zbus::Result<u32> {
-        let r = self.conn().and_then(|c| card.show(&c));
+        let r = self.conn().and_then(|c| card.show(&c, self.markup));
         match r {
             Ok((id, server)) => {
                 *self.shared.server.lock().unwrap_or_else(PoisonError::into_inner) = server;
@@ -190,10 +191,10 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
         e
     }
 
-    /// Shows the card (`from` already escaped); with `reply`, a "Reply" action that opens the conversation.
+    /// Shows the card; with `reply`, a "Reply" action that opens the conversation.
     fn sms(&mut self, from: &str, text: &str, reply: Option<String>) {
         let actions = if reply.is_some() { vec!["reply", t!("Reply")] } else { vec![] };
-        let card = Card { summary: from, body: &escape(text), icon: "phone", actions, replaces: 0, critical: false };
+        let card = Card { summary: from, body: text, icon: "phone", actions, replaces: 0, critical: false };
         match self.show(&card) {
             Ok(id) => {
                 let old = self.shared.cards.lock().unwrap_or_else(PoisonError::into_inner).push(id, reply);
@@ -212,13 +213,13 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
         }
     }
 
-    fn ring(&mut self, c: &Call, decline: Option<Decline>) {
+    fn ring(&mut self, c: &Call, reply: Option<String>) {
         if c.phase != Phase::Incoming {
             self.hang_up();
             return;
         }
         let number = c.caller("\n");
-        *self.shared.decline.lock().unwrap_or_else(PoisonError::into_inner) = decline;
+        *self.shared.reply.lock().unwrap_or_else(PoisonError::into_inner) = reply;
         self.display(&number);
         self.ringing = Some(number);
     }
@@ -234,7 +235,7 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
 
     fn hang_up(&mut self) {
         self.ringing = None;
-        *self.shared.decline.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self.shared.reply.lock().unwrap_or_else(PoisonError::into_inner) = None;
         let id = self.shared.bubble.swap(0, Ordering::AcqRel);
         if id != 0 {
             self.close(id);
@@ -243,15 +244,12 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
 
     fn display(&mut self, number: &str) {
         let mut actions = vec!["answer", t!("Answer"), "reject", t!("Decline")];
-        if let Some(d) = &*self.shared.decline.lock().unwrap_or_else(PoisonError::into_inner) {
-            if d.text.is_some() {
-                actions.extend(["decline_sms", t!("Decline + SMS")]);
-            }
-            actions.extend(["decline_write", t!("Decline and write")]);
+        if self.shared.reply.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+            actions.extend(["quick_reply", t!("QUICK REPLY")]);
         }
         // Same id: pleamar updates the card without making it drop again.
         let replaces = self.shared.bubble.load(Ordering::Acquire);
-        let card = Card { summary: t!("Incoming call"), body: &escape(number), icon: "call-start", actions, replaces, critical: true };
+        let card = Card { summary: t!("Incoming call"), body: number, icon: "call-start", actions, replaces, critical: true };
         match self.show(&card) {
             // Closed by the listener meanwhile: left at 0, the button's command is under way.
             Ok(id) => {
@@ -306,10 +304,17 @@ pub fn exported(r: &Result<String, String>) {
         Ok(path) => (t!("History exported"), path, "document-save"),
         Err(msg) => (t!("History not exported"), msg, "dialog-error"),
     };
-    let card = Card { summary, body: &escape(body), icon, actions: vec![], replaces: 0, critical: false };
-    if let Err(e) = Connection::session().and_then(|c| card.show(&c)) {
+    let card = Card { summary, body, icon, actions: vec![], replaces: 0, critical: false };
+    if let Err(e) = Connection::session().and_then(|c| card.show(&c, markup(&c))) {
         tracing::warn!("export notification: {e}");
     }
+}
+
+/// The server announces `body-markup`; without an answer, plain text: entities would show literally.
+fn markup(c: &Connection) -> bool {
+    c.call_method(Some(DEST), PATH, Some(DEST), "GetCapabilities", &())
+        .and_then(|m| m.body().deserialize::<Vec<String>>())
+        .is_ok_and(|caps| caps.iter().any(|c| c == "body-markup"))
 }
 
 fn close_on(c: &Connection, id: u32) -> zbus::Result<()> {
@@ -358,20 +363,13 @@ mod tests {
 
     #[test]
     fn bubble_buttons_reject_first() {
-        let d = Decline { number: "+33600000001".into(), text: Some("Later".into()) };
-        assert_eq!(bubble_cmds("answer", Some(d.clone())), vec![Cmd::Answer]);
-        assert_eq!(bubble_cmds("reject", None), vec![Cmd::Reject]);
-        assert_eq!(
-            bubble_cmds("decline_sms", Some(d.clone())),
-            vec![Cmd::Reject, Cmd::Send { to: "+33600000001".into(), text: "Later".into() }]
-        );
-        assert_eq!(
-            bubble_cmds("decline_write", Some(d)),
-            vec![Cmd::Reject, Cmd::Open { number: Some("+33600000001".into()) }]
-        );
+        let n = || Some("+33600000001".to_owned());
+        assert_eq!(bubble_cmds("answer", n()), vec![Cmd::Answer]);
+        assert_eq!(bubble_cmds("reject", n()), vec![Cmd::Reject]);
+        assert_eq!(bubble_cmds("quick_reply", n()), vec![Cmd::Reject, Cmd::Open { number: n() }]);
         // Number unknown when pressed: the call is still declined.
-        assert_eq!(bubble_cmds("decline_sms", None), vec![Cmd::Reject]);
-        assert_eq!(bubble_cmds("unknown", None), vec![]);
+        assert_eq!(bubble_cmds("quick_reply", None), vec![Cmd::Reject]);
+        assert_eq!(bubble_cmds("unknown", n()), vec![]);
     }
 
     #[test]
