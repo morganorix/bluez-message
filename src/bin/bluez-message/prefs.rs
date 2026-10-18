@@ -39,8 +39,8 @@ pub enum Nav {
 
 #[derive(Default)]
 pub struct View {
-    /// Tab shown (index in `tabs()`).
-    tab: usize,
+    /// Tab shown.
+    tab: Page,
     /// Row chosen with the keyboard; `None`: mouse.
     cursor: Option<usize>,
     armed: Option<(Armed, Instant)>,
@@ -48,14 +48,46 @@ pub struct View {
     menu: Option<(Menu, usize)>,
     /// The list scrolls to its keyboard row (just opened or moved).
     follow: bool,
-    /// Quick reply being edited (Replies tab): its index (`None`: new one), the typed text and the original one.
+    /// Quick reply being edited (Replies tab): its index (`None`: new one), the typed text and the original one;
+    /// kept while another tab is shown.
     edit: Option<(Option<usize>, String, String)>,
     /// The editor field takes the focus at its first frame.
     focus_edit: bool,
 }
 
-/// Index of the Replies tab in `tabs()`.
-const REPLIES: usize = 4;
+/// Tabs, in display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Page {
+    #[default]
+    General,
+    Notifications,
+    Devices,
+    History,
+    Replies,
+}
+
+impl Page {
+    const ALL: [Self; 5] = [Self::General, Self::Notifications, Self::Devices, Self::History, Self::Replies];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => t!("General"),
+            Self::Notifications => t!("Notifications"),
+            Self::Devices => t!("Devices"),
+            Self::History => t!("History"),
+            Self::Replies => t!("Replies"),
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&p| p == self).unwrap_or(0)
+    }
+
+    /// Tab at `i`, clamped to the last one.
+    fn at(i: usize) -> Self {
+        Self::ALL[i.min(Self::ALL.len() - 1)]
+    }
+}
 
 /// Editor button pressed.
 enum Edit {
@@ -94,11 +126,6 @@ enum Ctl {
 /// Section: title and rows.
 type Section<'a> = (&'a str, Vec<Item<'a>>);
 
-/// Tab labels, in display order.
-fn tabs() -> [&'static str; 5] {
-    [t!("General"), t!("Notifications"), t!("Devices"), t!("History"), t!("Replies")]
-}
-
 #[derive(Clone)]
 enum Act {
     Menu(Menu),
@@ -117,6 +144,11 @@ enum Act {
     Setup,
     /// Edits this quick reply (`None`: adds one).
     Reply(Option<usize>),
+}
+
+/// Label of the choice `i`; empty if the list was not built.
+fn chosen<'a>(c: &Choices<'a>, i: usize) -> &'a str {
+    c.get(i).map_or("", |(_, l)| l)
 }
 
 /// Key pressed at this frame, auto-repeat excluded: holding Enter confirms nothing.
@@ -150,35 +182,45 @@ impl View {
             w::hint(ui, pal, t!("Settings unavailable: daemon not connected"));
             return (vec![], if close || esc { Nav::Close } else { Nav::Stay });
         };
-        let labels = tabs();
+        let labels = Page::ALL.map(Page::label);
+        let tab = self.tab.index();
         // Click: mouse mode; arrows: keyboard cursor on the first row of the tab.
-        let switch = match w::tabs(ui, pal, &labels, self.tab) {
+        let switch = match w::tabs(ui, pal, &labels, tab) {
             Some(i) => Some((i, None)),
-            None if left => Some((self.tab.saturating_sub(1), Some(0))),
-            None if right => Some(((self.tab + 1).min(labels.len() - 1), Some(0))),
+            None if left => Some((tab.saturating_sub(1), Some(0))),
+            None if right => Some((tab + 1, Some(0))),
             None => None,
         };
         if let Some((i, cursor)) = switch {
-            (self.tab, self.cursor, self.armed, self.menu, self.edit) = (i, cursor, None, None, None);
+            (self.tab, self.cursor, self.armed, self.menu) = (Page::at(i), cursor, None, None);
         }
         ui.add_space(w::GAP);
         let s = &p.settings;
-        let mut cmds = if self.tab == REPLIES { self.editor(ui, pal, s) } else { vec![] };
+        let mut cmds = if self.tab == Page::Replies { self.editor(ui, pal, s) } else { vec![] };
 
+        // Drop-down lists of the General tab only: about 250 countries not gathered for nothing.
+        let general = self.tab == Page::General;
         // Language choice: system, then each available language under its name.
-        let langs: Choices =
-            std::iter::once((None, t!("System language"))).chain(p.langs.iter().map(|c| (Some(c.as_str()), i18n::native_name(c)))).collect();
+        let langs: Choices = if general {
+            std::iter::once((None, t!("System language"))).chain(p.langs.iter().map(|c| (Some(c.as_str()), i18n::native_name(c)))).collect()
+        } else {
+            vec![]
+        };
         let lang = langs.iter().position(|(c, _)| *c == s.lang.as_deref()).unwrap_or(0);
         // Country choice: automatic (the one of the chosen language, else of the system locale, as the daemon
         // resolves it), then each country.
-        let auto = p.auto.map_or_else(|| t!("Automatic").to_owned(), |id| t!("Automatic ({0})", numbering::label(id)));
-        let countries: Choices = std::iter::once((None, auto.as_str())).chain(numbering::countries().iter().map(|(id, l)| (Some(id.as_ref()), l.as_str()))).collect();
+        let auto = if general { p.auto.map_or_else(|| t!("Automatic").to_owned(), |id| t!("Automatic ({0})", numbering::label(id))) } else { String::new() };
+        let countries: Choices = if general {
+            std::iter::once((None, auto.as_str())).chain(numbering::countries().iter().map(|(id, l)| (Some(id.as_ref()), l.as_str()))).collect()
+        } else {
+            vec![]
+        };
         let country = countries.iter().position(|(c, _)| c.zip(s.country.as_deref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))).unwrap_or(0);
         let lists = |m: Menu| match m {
             Menu::Lang => (&langs, lang),
             Menu::Country => (&countries, country),
         };
-        let sections = self.sections(p, langs[lang].1, countries[country].1, links);
+        let sections = self.sections(p, chosen(&langs, lang), chosen(&countries, country), links);
 
         let mut fire: Option<Act> = None;
         let mut pick: Option<(Menu, usize)> = None;
@@ -256,87 +298,99 @@ impl View {
     /// language; `country`: country national numbers are read with (landlines stay out of SMS).
     fn sections<'a>(&self, p: &'a Prefs, lang: &'a str, country: &'a str, links: (bool, bool, bool)) -> Vec<Section<'a>> {
         let s = &p.settings;
-        // Each section with its tab.
-        let mut sections: Vec<(usize, Section)> = vec![];
-        // Chosen language on the right, before the chevron.
-        let open = |m: Menu| self.menu.is_some_and(|(o, _)| o == m);
-        let lang_row = w::Row { hint: lang, ..row(Some(Icon::Translate), t!("Language"), "", open(Menu::Lang)) };
-        let country_row = w::Row { sub: Some(t!("Landlines stay out of SMS")), hint: country, ..row(Some(Icon::Earth), t!("Country of phone numbers"), "", open(Menu::Country)) };
-        let language = vec![
-            Item { row: lang_row, ctl: Ctl::None, act: Act::Menu(Menu::Lang) },
-            Item { row: country_row, ctl: Ctl::None, act: Act::Menu(Menu::Country) },
-        ];
-        sections.push((0, (t!("Language"), language)));
-        // Click on the row or Enter: next size; click on a segment: that size.
-        let size_row = Item { row: row(Some(Icon::Font), t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
-        let previews = Item { row: w::Row { sub: Some(t!("Contacts the site of the link")), ..row(Some(Icon::Link), t!("Link previews"), "", false) }, ctl: Ctl::Switch(s.link_previews), act: Act::LinkPreviews };
-        sections.push((0, (t!("Display"), vec![size_row])));
-        sections.push((0, (t!("Links"), vec![previews])));
-        let notify = vec![
-            Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
-            Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
-            Item { row: row(Some(Icon::EyeOff), t!("Hide message text"), "", false), ctl: Ctl::Switch(s.hide_preview), act: Act::Preview },
-        ];
-        sections.push((1, (t!("Notifications"), notify)));
-        let mut devs = vec![];
-        for d in &p.devices {
-            let current = p.device.as_ref() == Some(&d.addr);
-            let hint = match (current, &self.armed) {
-                (false, Some((Armed::Device(a), _))) if *a == d.addr => t!("Confirm: daemon restarts"),
-                (true, _) => match profiles(links) {
-                    "" if d.connected => t!("connected, no profile"),
-                    "" => t!("disconnected"),
-                    up => up,
-                },
-                (false, _) if d.connected => t!("connected"),
-                _ => "",
-            };
-            devs.push(Item { row: row(Some(Icon::PhoneBluetooth), &d.name, hint, current), ctl: Ctl::None, act: Act::Device(d.addr.clone()) });
+        let mut out: Vec<Section> = vec![];
+        // Only the rows of the open tab.
+        match self.tab {
+            Page::General => {
+            // Chosen language on the right, before the chevron.
+            let open = |m: Menu| self.menu.is_some_and(|(o, _)| o == m);
+            let lang_row = w::Row { hint: lang, ..row(Some(Icon::Translate), t!("Language"), "", open(Menu::Lang)) };
+            let country_row = w::Row { sub: Some(t!("Landlines stay out of SMS")), hint: country, ..row(Some(Icon::Earth), t!("Country of phone numbers"), "", open(Menu::Country)) };
+            let language = vec![
+                Item { row: lang_row, ctl: Ctl::None, act: Act::Menu(Menu::Lang) },
+                Item { row: country_row, ctl: Ctl::None, act: Act::Menu(Menu::Country) },
+            ];
+            out.push((t!("Language"), language));
+            // Click on the row or Enter: next size; click on a segment: that size.
+            let size_row = Item { row: row(Some(Icon::Font), t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
+            let previews = Item { row: w::Row { sub: Some(t!("Contacts the site of the link")), ..row(Some(Icon::Link), t!("Link previews"), "", false) }, ctl: Ctl::Switch(s.link_previews), act: Act::LinkPreviews };
+            out.push((t!("Display"), vec![size_row]));
+            out.push((t!("Links"), vec![previews]));
+            }
+            Page::Notifications => {
+            let notify = vec![
+                Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
+                Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
+                Item { row: row(Some(Icon::EyeOff), t!("Hide message text"), "", false), ctl: Ctl::Switch(s.hide_preview), act: Act::Preview },
+            ];
+            out.push((t!("Notifications"), notify));
+            }
+            Page::Devices => {
+            let mut devs = vec![];
+            for d in &p.devices {
+                let current = p.device.as_ref() == Some(&d.addr);
+                let hint = match (current, &self.armed) {
+                    (false, Some((Armed::Device(a), _))) if *a == d.addr => t!("Confirm: daemon restarts"),
+                    (true, _) => match profiles(links) {
+                        "" if d.connected => t!("connected, no profile"),
+                        "" => t!("disconnected"),
+                        up => up,
+                    },
+                    (false, _) if d.connected => t!("connected"),
+                    _ => "",
+                };
+                devs.push(Item { row: row(Some(Icon::PhoneBluetooth), &d.name, hint, current), ctl: Ctl::None, act: Act::Device(d.addr.clone()) });
+            }
+            if let Some(dev) = &p.device
+                && !p.devices.iter().any(|d| d.addr == *dev)
+            {
+                devs.insert(0, Item { row: row(Some(Icon::PhoneBluetooth), dev.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(dev.clone()) });
+            }
+            devs.push(Item { row: row(Some(Icon::Refresh), t!("Reconnect"), "", false), ctl: Ctl::None, act: Act::Reconnect });
+            devs.push(Item { row: row(Some(Icon::BluetoothConnect), t!("Connect automatically"), "", false), ctl: Ctl::Switch(s.auto_connect), act: Act::AutoConnect });
+            devs.push(Item { row: row(Some(Icon::Bluetooth), t!("Set up a device"), "", false), ctl: Ctl::None, act: Act::Setup });
+            out.push((t!("Bluetooth device"), devs));
+            }
+            Page::History => {
+            let mut hist = vec![Item { row: row(Some(Icon::History), t!("Keep everything"), "", s.retention_days.is_none()), ctl: Ctl::None, act: Act::Retention(None) }];
+            for d in RETENTIONS {
+                let label = match d {
+                    30 => t!("Keep 30 days"),
+                    90 => t!("Keep 90 days"),
+                    _ => t!("Keep 1 year"),
+                };
+                hist.push(Item { row: row(Some(Icon::History), label, "", s.retention_days == Some(d)), ctl: Ctl::None, act: Act::Retention(Some(d)) });
+            }
+            hist.push(Item {
+                row: w::Row { sub: Some(t!("JSON file in the Downloads folder")), ..row(Some(Icon::Download), t!("Export history"), "", false) },
+                ctl: Ctl::None,
+                act: Act::Export,
+            });
+            hist.push(Item {
+                row: w::Row { sub: Some(t!("Erase their text from this PC")), ..row(Some(Icon::Broom), t!("Purge deleted messages"), "", false) },
+                ctl: Ctl::None,
+                act: Act::Purge,
+            });
+            let clear_hint = if matches!(self.armed, Some((Armed::Clear, _))) { t!("Press again to confirm") } else { t!("Messages and calls on this PC") };
+            hist.push(Item { row: w::Row { sub: Some(clear_hint), ..row(Some(Icon::Delete), t!("Clear history"), "", false) }, ctl: Ctl::None, act: Act::Clear });
+            out.push((t!("History"), hist));
+            }
+            Page::Replies => {
+            let editing = |i: Option<usize>| self.edit.as_ref().is_some_and(|(a, ..)| *a == i);
+            let mut replies: Vec<Item> = s
+                .quick_replies
+                .iter()
+                .enumerate()
+                .map(|(i, r)| Item { row: row(Some(Icon::MessageText), r, if i == 0 { t!("default") } else { "" }, editing(Some(i))), ctl: Ctl::None, act: Act::Reply(Some(i)) })
+                .collect();
+            if replies.len() < QUICK_REPLIES_MAX {
+                let add = w::Row { sub: None, ..row(Some(Icon::Plus), t!("Add a reply"), "", editing(None)) };
+                replies.push(Item { row: add, ctl: Ctl::None, act: Act::Reply(None) });
+            }
+            out.push((t!("Quick replies"), replies));
+            }
         }
-        if let Some(dev) = &p.device
-            && !p.devices.iter().any(|d| d.addr == *dev)
-        {
-            devs.insert(0, Item { row: row(Some(Icon::PhoneBluetooth), dev.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(dev.clone()) });
-        }
-        devs.push(Item { row: row(Some(Icon::Refresh), t!("Reconnect"), "", false), ctl: Ctl::None, act: Act::Reconnect });
-        devs.push(Item { row: row(Some(Icon::BluetoothConnect), t!("Connect automatically"), "", false), ctl: Ctl::Switch(s.auto_connect), act: Act::AutoConnect });
-        devs.push(Item { row: row(Some(Icon::Bluetooth), t!("Set up a device"), "", false), ctl: Ctl::None, act: Act::Setup });
-        sections.push((2, (t!("Bluetooth device"), devs)));
-        let mut hist = vec![Item { row: row(Some(Icon::History), t!("Keep everything"), "", s.retention_days.is_none()), ctl: Ctl::None, act: Act::Retention(None) }];
-        for d in RETENTIONS {
-            let label = match d {
-                30 => t!("Keep 30 days"),
-                90 => t!("Keep 90 days"),
-                _ => t!("Keep 1 year"),
-            };
-            hist.push(Item { row: row(Some(Icon::History), label, "", s.retention_days == Some(d)), ctl: Ctl::None, act: Act::Retention(Some(d)) });
-        }
-        hist.push(Item {
-            row: w::Row { sub: Some(t!("JSON file in the Downloads folder")), ..row(Some(Icon::Download), t!("Export history"), "", false) },
-            ctl: Ctl::None,
-            act: Act::Export,
-        });
-        hist.push(Item {
-            row: w::Row { sub: Some(t!("Erase their text from this PC")), ..row(Some(Icon::Broom), t!("Purge deleted messages"), "", false) },
-            ctl: Ctl::None,
-            act: Act::Purge,
-        });
-        let clear_hint = if matches!(self.armed, Some((Armed::Clear, _))) { t!("Press again to confirm") } else { t!("Messages and calls on this PC") };
-        hist.push(Item { row: w::Row { sub: Some(clear_hint), ..row(Some(Icon::Delete), t!("Clear history"), "", false) }, ctl: Ctl::None, act: Act::Clear });
-        sections.push((3, (t!("History"), hist)));
-        let editing = |i: Option<usize>| self.edit.as_ref().is_some_and(|(a, ..)| *a == i);
-        let mut replies: Vec<Item> = s
-            .quick_replies
-            .iter()
-            .enumerate()
-            .map(|(i, r)| Item { row: row(Some(Icon::MessageText), r, if i == 0 { t!("default") } else { "" }, editing(Some(i))), ctl: Ctl::None, act: Act::Reply(Some(i)) })
-            .collect();
-        if replies.len() < QUICK_REPLIES_MAX {
-            let add = w::Row { sub: None, ..row(Some(Icon::Plus), t!("Add a reply"), "", editing(None)) };
-            replies.push(Item { row: add, ctl: Ctl::None, act: Act::Reply(None) });
-        }
-        sections.push((REPLIES, (t!("Quick replies"), replies)));
-        sections.into_iter().filter(|(t, _)| *t == self.tab).map(|(_, s)| s).collect()
+        out
     }
 
     /// Sections and rows; a click fills `fire`. Returns the row of the open list if it is visible

@@ -151,9 +151,9 @@ pub fn row_with(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>
     paint_row(ui, pal, r, emojis, None)
 }
 
-/// [`row`] whose sub-line shows `mark` (byte range of the sub-line, a search match) in bold.
-pub fn hit_row(ui: &mut Ui, pal: &Palette, r: &Row, mark: Option<Range<usize>>) -> Response {
-    paint_row(ui, pal, r, None, mark)
+/// [`row_with`] whose sub-line shows `mark` (byte range of the sub-line, a search match) in bold.
+pub fn hit_row(ui: &mut Ui, pal: &Palette, r: &Row, mark: Option<Range<usize>>, emojis: &mut Emojis) -> Response {
+    paint_row(ui, pal, r, Some(emojis), mark)
 }
 
 fn paint_row(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>, mark: Option<Range<usize>>) -> Response {
@@ -180,14 +180,18 @@ fn paint_row(ui: &mut Ui, pal: &Palette, r: &Row, emojis: Option<&mut Emojis>, m
             let badge_w = if r.badge > 0 { badge_at(ui, pal, &r.badge.to_string(), Pos2::new(x + w - size::EDGE, y2)) + 8.0 } else { 0.0 };
             let sc = pal.dim(if r.strong { 0.6 } else { 0.4 });
             let (p, max_w) = (Pos2::new(x + TEXT_X, y2), w - TEXT_X - size::EDGE - badge_w);
-            if let Some(m) = mark.filter(|m| sub.get(m.clone()).is_some()) {
+            let mark = mark.filter(|m| sub.get(m.clone()).is_some());
+            let bold = bold_font(font::SMALL);
+            // Without emojis (or without `Emojis`), plain text layout.
+            if emojis.is_some_and(|e| e.paint_marked(ui, sub, p, (&regular(font::SMALL), sc), max_w, mark.clone().map(|m| (m, &bold, pal.fg)).as_ref())) {
+            } else if let Some(m) = mark {
                 let mut job = LayoutJob::default();
                 job.append(&sub[..m.start], 0.0, TextFormat::simple(regular(font::SMALL), sc));
                 job.append(&sub[m.clone()], 0.0, TextFormat::simple(bold_font(font::SMALL), pal.fg));
                 job.append(&sub[m.end..], 0.0, TextFormat::simple(regular(font::SMALL), sc));
                 job.wrap = TextWrapping::truncate_at_width(max_w.max(0.0));
                 put(ui, ui.painter().layout_job(job), p, false, sc);
-            } else if !emojis.is_some_and(|e| e.paint_line(ui, sub, p, &regular(font::SMALL), sc, max_w)) {
+            } else {
                 put(ui, line(ui, sub, regular(font::SMALL), sc, max_w), p, false, sc);
             }
         }

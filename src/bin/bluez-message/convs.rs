@@ -227,25 +227,27 @@ impl ConvList {
             w::hint(ui, pal, if q.is_empty() { empty } else { t!("No results") });
             return search.into_iter().collect();
         }
-        // Rows in display order: keyboard cursor target.
-        let items: Vec<Target> = convs
-            .iter()
-            .map(|c| Target::Conv(c.key.clone()))
-            .chain(contacts.iter().map(|(name, number)| Target::Contact { name: (*name).clone(), number: (*number).clone() }))
-            .chain(free.map(|n| Target::Contact { name: String::new(), number: n.to_owned() }))
-            .collect();
+        // Rows in display order (conversations, contacts, free number): keyboard cursor target, built only when picked.
+        let rows = convs.len() + contacts.len() + usize::from(free.is_some());
+        let row_target = |i: usize| match i.checked_sub(convs.len()) {
+            None => Target::Conv(convs[i].key.clone()),
+            Some(j) => contacts.get(j).map_or_else(
+                || Target::Contact { name: String::new(), number: free.unwrap_or_default().to_owned() },
+                |(name, number)| Target::Contact { name: name.clone(), number: number.clone() },
+            ),
+        };
         // The search keeps focus during navigation: typing can continue.
-        let moved = self.navigate(items.len(), nav && down, nav && up);
+        let moved = self.navigate(rows, nav && down, nav && up);
         // Cursor visible during a search or keyboard navigation.
         let cursor = (nav && (r.has_focus() || r.lost_focus() || self.kbd || !q.is_empty())).then_some(self.cursor);
-        let mut pick = (nav && enter && !items.is_empty() && self.enter_opens(r.lost_focus(), r.has_focus())).then(|| items[self.cursor].clone());
+        let mut pick = (nav && enter && rows > 0 && self.enter_opens(r.lost_focus(), r.has_focus())).then(|| row_target(self.cursor));
         let (mut jump, mut more) = (None, false);
         let mut act: Option<ListAction> = None;
         let mut idx = 0usize;
-        let mut line = |ui: &mut egui::Ui, row: &w::Row| {
+        let mut line = |ui: &mut egui::Ui, emojis: &mut Emojis, row: &w::Row| {
             let here = cursor == Some(idx);
             // Previews: colour emojis, recognisable.
-            let resp = w::row_with(ui, pal, &w::Row { selected: row.selected || here, ..*row }, Some(&mut *emojis));
+            let resp = w::row_with(ui, pal, &w::Row { selected: row.selected || here, ..*row }, Some(emojis));
             if here && moved {
                 resp.scroll_to_me(None);
             }
@@ -281,7 +283,7 @@ impl ConvList {
                     selected: matches!(target, Target::Conv(k) if *k == c.key),
                     strong: unread > 0,
                 };
-                let resp = line(ui, &row);
+                let resp = line(ui, emojis, &row);
                 if resp.clicked() {
                     pick = Some(Target::Conv(c.key.clone()));
                 }
@@ -317,18 +319,18 @@ impl ConvList {
             }
             for (name, number) in contacts.iter() {
                 let row = w::Row { icon: Some(Icon::Account), label: name, sub: Some(number), hint: "", badge: 0, selected: false, strong: false };
-                if line(ui, &row).clicked() {
+                if line(ui, emojis, &row).clicked() {
                     pick = Some(Target::Contact { name: name.to_owned(), number: number.to_owned() });
                 }
             }
             if let Some(n) = free {
                 let row = w::Row { icon: Some(Icon::Plus), label: n, sub: Some(t!("New number")), hint: "", badge: 0, selected: false, strong: false };
-                if line(ui, &row).clicked() {
+                if line(ui, emojis, &row).clicked() {
                     pick = Some(Target::Contact { name: String::new(), number: n.to_owned() });
                 }
             }
             if let Some(h) = hits {
-                (jump, more) = found_messages(ui, pal, state, h, &q);
+                (jump, more) = found_messages(ui, pal, emojis, state, h, &q);
             }
         });
         let found = jump.map(ListAction::Jump).into_iter().chain(more.then_some(ListAction::More));
@@ -338,7 +340,7 @@ impl ConvList {
 
 /// "Messages" section: history search results (contact, match in bold, date), then "More results" or
 /// the page on its way. Returns the result clicked and whether the next page is asked.
-fn found_messages(ui: &mut egui::Ui, pal: &Palette, state: &State, h: &Hits, q: &str) -> (Option<Hit>, bool) {
+fn found_messages(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, state: &State, h: &Hits, q: &str) -> (Option<Hit>, bool) {
     ui.add_space(w::GAP * 2.0);
     ui.label(w::text(t!("Messages"), font::SMALL, pal.muted()));
     ui.add_space(w::GAP);
@@ -349,7 +351,7 @@ fn found_messages(ui: &mut egui::Ui, pal: &Palette, state: &State, h: &Hits, q: 
         let stamp = short_stamp(&hit.timestamp);
         let label = name.as_deref().unwrap_or_else(|| shown_number(Some(&hit.number)));
         let row = w::Row { icon: Some(Icon::MessageText), label, sub: Some(&sub), hint: &stamp, badge: 0, selected: false, strong: false };
-        if w::hit_row(ui, pal, &row, mark).clicked() {
+        if w::hit_row(ui, pal, &row, mark, emojis).clicked() {
             jump = Some(hit.clone());
         }
     }
@@ -409,7 +411,7 @@ mod tests {
     fn found_messages_section_asks_more() {
         use bluez_message::engine::Cursor;
         use egui_kittest::kittest::Queryable;
-        let hit = Hit { id: 1, key: "600000001".into(), number: "+33600000001".into(), timestamp: "20261015T103000".into(), text: "Un bel été".into(), outgoing: false };
+        let hit = Hit { id: 1, key: "600000001".into(), number: "+33600000001".into(), timestamp: "20261015T103000".into(), text: "☀️ Un bel été 🌊".into(), outgoing: false };
         let h = Hits { query: "ete".into(), items: vec![hit], next: Some(Cursor { ts: "20261015T103000".into(), id: 1 }), busy: false };
         let state = State::default();
         let (mut more, mut jump) = (false, None);
@@ -421,7 +423,7 @@ mod tests {
                 ui.ctx().request_repaint();
                 return;
             }
-            let (j, m) = found_messages(ui, &Palette::default(), &state, &h, "ete");
+            let (j, m) = found_messages(ui, &Palette::default(), &mut Emojis::default(), &state, &h, "ete");
             more |= m;
             if j.is_some() {
                 jump = j;
@@ -480,7 +482,7 @@ mod tests {
         let h = Hits { query: "ete".into(), busy: true, ..Hits::default() };
         let state = State::default();
         let harness = egui_kittest::Harness::new_ui(|ui| {
-            found_messages(ui, &Palette::default(), &state, &h, "ete");
+            found_messages(ui, &Palette::default(), &mut Emojis::default(), &state, &h, "ete");
         });
         harness.get_by_label(t!("Searching…"));
         assert!(harness.query_by_label(t!("More results")).is_none());

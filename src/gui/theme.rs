@@ -103,7 +103,14 @@ impl Palette {
 
     #[must_use]
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path).map(|s| Self::parse(&s)).unwrap_or_default()
+        use std::io::Read;
+        /// A palette is a few hundred bytes: anything larger is not one.
+        const MAX: u64 = 64 * 1024;
+        let mut s = String::new();
+        match std::fs::File::open(path).and_then(|f| f.take(MAX + 1).read_to_string(&mut s)) {
+            Ok(n) if n as u64 <= MAX => Self::parse(&s),
+            _ => Self::default(),
+        }
     }
 
     /// `fg` laid over `bg` at `t` (opaque).
@@ -209,7 +216,8 @@ pub struct Watch {
     next: Instant,
 }
 
-const WATCH_EVERY: Duration = Duration::from_secs(1);
+/// Wakes the window that often even when idle: a new scheme can wait a few seconds.
+const WATCH_EVERY: Duration = Duration::from_secs(5);
 
 impl Default for Watch {
     fn default() -> Self {

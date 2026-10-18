@@ -95,6 +95,8 @@ pub struct App {
     text_size: Option<TextSize>,
     /// Window to bring to the foreground at the next frame ([`Out::Open`]).
     raise: bool,
+    /// Export asked and not answered yet: a second one is ignored (one notification thread at a time).
+    exporting: bool,
     /// `--open` number, shown once the device is known ([`Self::follow_device`] resets the view before).
     pending_open: Option<String>,
     /// Target opened by the daemon (notification, declined call): quick replies offered above the input.
@@ -104,7 +106,7 @@ pub struct App {
 impl App {
     /// `open`: number whose conversation is shown at start (`--open`, already validated).
     pub fn new(pal: Palette, tx: UnboundedSender<Cmd>, events: Receiver<Link>, open: Option<String>) -> Self {
-        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), previews: Previews::default(), text_size: None, raise: false, pending_open: open, quick: false }
+        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), previews: Previews::default(), text_size: None, raise: false, exporting: false, pending_open: open, quick: false }
     }
 
     /// Local validation (immediate feedback), then sent to the daemon which revalidates.
@@ -140,6 +142,7 @@ impl App {
                 st.expire_pending(true);
                 st.error = Some(msg);
                 self.state = st;
+                self.exporting = false;
             }
             // Notifications are the daemon's business: effects ignored (export aside, below).
             Link::Event(o) if matches!(*o, Out::Open { .. }) => {
@@ -154,6 +157,7 @@ impl App {
                 // Except the export result, asked by this window: notified from here, off the UI thread.
                 for fx in self.state.apply(*o) {
                     if let Effect::Exported(r) = fx {
+                        self.exporting = false;
                         std::thread::spawn(move || notify::exported(&r));
                     }
                 }
@@ -612,6 +616,9 @@ impl eframe::App for App {
                 let links = (self.state.map_up, self.state.hfp_up && self.state.slc, self.state.pbap == Some(true));
                 let (cmds, nav) = v.show(ui, &pal, self.state.settings.as_ref(), links);
                 for c in cmds {
+                    if matches!(c, Cmd::Export { .. }) && std::mem::replace(&mut self.exporting, true) {
+                        continue;
+                    }
                     self.submit(c);
                 }
                 match nav {

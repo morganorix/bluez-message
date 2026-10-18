@@ -3,6 +3,7 @@
 //! An emoji Twemoji lacks is displayed as text.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::load::{Bytes, SizeHint, SizedTexture, TexturePoll};
@@ -247,14 +248,22 @@ impl Emojis {
     /// (recognisable even in greyed text), cut at `max_w`; `false` without emoji, the caller
     /// then places it as text.
     pub fn paint_line(&mut self, ui: &egui::Ui, text: &str, p: Pos2, font: &FontId, c: Color32, max_w: f32) -> bool {
+        self.paint_marked(ui, text, p, (font, c), max_w, None)
+    }
+
+    /// [`Self::paint_line`] with the bytes `mark` of `text` in another style (search hit in bold).
+    pub fn paint_marked(&mut self, ui: &egui::Ui, text: &str, p: Pos2, (font, c): (&FontId, Color32), max_w: f32, mark: Option<&(Range<usize>, &FontId, Color32)>) -> bool {
         // A single line never shows more than this: the rest of a long message is not split.
         let text = text.get(..text.floor_char_boundary(PAINT_MAX)).unwrap_or(text);
         if !any(text) {
             return false;
         }
         let h = font.size * EMOJI_SCALE;
-        let (mut x, end) = (p.x, p.x + max_w);
+        let (mut x, end, mut off) = (p.x, p.x + max_w, 0);
         for piece in split(text) {
+            let (Piece::Text(s) | Piece::Emoji(s)) = piece;
+            let start = off;
+            off += s.len();
             let imgs = match piece {
                 Piece::Emoji(e) => self.images(ui.ctx(), e),
                 Piece::Text(_) => None,
@@ -270,8 +279,18 @@ impl Emojis {
                     x += w;
                 }
             } else {
-                let (Piece::Text(s) | Piece::Emoji(s)) = piece;
-                let mut job = LayoutJob::single_section(s.to_owned(), TextFormat::simple(font.clone(), c));
+                let mut job = LayoutJob::default();
+                // Piece cut around the mark (bounds relative to the piece, kept on char boundaries by `split`).
+                let (a, b) = mark.map_or((s.len(), s.len()), |(m, ..)| {
+                    let a = m.start.clamp(start, off) - start;
+                    (a, m.end.clamp(start, off) - start)
+                });
+                let marked = mark.map_or_else(|| TextFormat::simple(font.clone(), c), |(_, f, mc)| TextFormat::simple((*f).clone(), *mc));
+                for (part, fmt) in [(&s[..a], TextFormat::simple(font.clone(), c)), (&s[a..b], marked), (&s[b..], TextFormat::simple(font.clone(), c))] {
+                    if !part.is_empty() {
+                        job.append(part, 0.0, fmt);
+                    }
+                }
                 job.wrap = TextWrapping::truncate_at_width((end - x).max(0.0));
                 let g = ui.painter().layout_job(job);
                 let (w, elided) = (g.size().x, g.elided);
