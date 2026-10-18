@@ -3,6 +3,7 @@
 
 pub mod emoji;
 pub mod icons;
+pub mod link;
 pub mod theme;
 pub mod widgets;
 

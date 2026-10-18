@@ -11,6 +11,7 @@ use twemoji_assets::svg::SvgTwemojiAsset;
 use unicode_properties::{EmojiStatus, UnicodeEmoji};
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::link::{self, Span};
 use super::theme::font;
 use super::widgets as w;
 
@@ -203,9 +204,9 @@ impl Emojis {
         self.images(ctx, run).map(|imgs| imgs.iter().map(|t| width(t, h)).sum())
     }
 
-    /// `text` at `size` and `ink`, colour emojis; wraps like a label.
+    /// `text` at `size` and `ink`, colour emojis and clickable web links; wraps like a label.
     pub fn label(&mut self, ui: &mut egui::Ui, text: &str, size: f32, ink: Color32) -> egui::Response {
-        if !any(text) {
+        if !any(text) && !link::any(text) {
             return ui.label(w::text(text, size, ink));
         }
         ui.vertical(|ui| {
@@ -222,6 +223,14 @@ impl Emojis {
                         if let Some(imgs) = imgs {
                             for t in &imgs {
                                 ui.add(image(t, size * EMOJI_SCALE, ink));
+                            }
+                        } else if let Piece::Text(s) = p {
+                            for span in link::spans(s) {
+                                match span {
+                                    // Hyperlink colour of the theme (accent).
+                                    Span::Link(url) => ui.hyperlink_to(egui::RichText::new(url).size(size), url),
+                                    Span::Text(s) => ui.label(w::text(s, size, ink)),
+                                };
                             }
                         } else {
                             let (Piece::Text(s) | Piece::Emoji(s)) = p;
@@ -364,6 +373,28 @@ fn image(t: &SizedTexture, h: f32, ink: Color32) -> egui::Image<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_are_hyperlinks() {
+        use egui::{OutputCommand, accesskit::Role};
+        use egui_kittest::kittest::Queryable;
+        // egui exposes a selectable link as `Role::Label`: check the behaviour (click opens the URL).
+        let mut emojis = Emojis::default();
+        for text in ["see https://example.com/a now", "👋 https://example.com/a"] {
+            let mut harness = egui_kittest::Harness::new_ui(|ui| {
+                emojis.label(ui, text, 14.0, Color32::WHITE);
+            });
+            harness.get_by_label("https://example.com/a").click();
+            harness.step();
+            let opened = harness.output().platform_output.commands.iter().any(|c| matches!(c, OutputCommand::OpenUrl(u) if u.url == "https://example.com/a"));
+            assert!(opened, "{text}");
+        }
+        let harness = egui_kittest::Harness::new_ui(|ui| {
+            emojis.label(ui, "mail a@example.com", 14.0, Color32::WHITE);
+        });
+        assert!(harness.query_by_label("a@example.com").is_none());
+        assert!(harness.query_by_role(Role::Link).is_none());
+    }
 
     #[test]
     fn emoji_only_messages() {

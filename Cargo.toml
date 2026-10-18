@@ -44,6 +44,8 @@ eframe = { version = "0.36.2", default-features = false, features = ["default_fo
 egui_extras = { version = "0.36.2", default-features = false, features = ["svg"], optional = true }
 futures-util = "0.3.34"
 libc = "0.2.190"
+# URL detection in SMS (clickable links): no dependency besides memchr.
+linkify = { version = "0.11.0", optional = true }
 notify-rust = { version = "4.18.2", optional = true }
 phonenumber = "=0.3.10"
 rusqlite = "0.32.1"
@@ -62,9 +64,13 @@ unicode-segmentation = { version = "1.13.3", optional = true }
 winit = { version = "0.30.13", optional = true }
 zbus = "5"
 
+[dev-dependencies]
+# Headless egui tests (accessibility tree): widgets and menus checked without a display.
+egui_kittest = "0.36.2"
+
 [features]
 notify = ["dep:notify-rust"]
-gui = ["notify", "dep:eframe", "dep:egui_extras", "dep:twemoji-assets", "dep:unicode-properties", "dep:unicode-segmentation", "dep:winit"]
+gui = ["notify", "dep:eframe", "dep:egui_extras", "dep:linkify", "dep:twemoji-assets", "dep:unicode-properties", "dep:unicode-segmentation", "dep:winit"]
 
 [[bin]]
 name = "bluez-msg"
