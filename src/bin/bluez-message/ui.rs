@@ -186,6 +186,7 @@ impl App {
         if self.send(&to, &text) {
             self.composer.draft.clear();
             self.state.error = None;
+            self.quick = false;
         }
     }
 
@@ -452,10 +453,10 @@ impl App {
         {
             ui.horizontal_wrapped(|ui| {
                 for r in &p.settings.quick_replies {
-                    // Fills the input only: the text is read again before Enter. The chips go once used.
+                    // Fills the input only: the text is read again before Enter. The chips stay until it is sent.
                     if w::button(ui, &self.pal, &ellipsis(r, CHIP_CHARS), w::Tone::Accent).on_hover_text(r).clicked() {
                         self.composer.draft.clone_from(r);
-                        (self.composer.focus, self.quick) = (true, false);
+                        self.composer.focus = true;
                     }
                 }
                 if w::icon_button(ui, &self.pal, Icon::Close).on_hover_text(t!("Dismiss")).clicked() {
