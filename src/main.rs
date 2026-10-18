@@ -57,21 +57,46 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Whole duration of a one-shot MAP command (connection included).
+const ONESHOT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Bounds a one-shot command; on expiry the dropped session is released by obexd.
+async fn oneshot<T>(f: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(ONESHOT_TIMEOUT, f)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "MAP"))?
+}
+
+/// Closes the session; the command error wins, a failed close is only logged.
+async fn finish<T>(c: MapClient, r: Result<T>) -> Result<T> {
+    if let Err(e) = c.close().await {
+        tracing::warn!("MAP close: {e}");
+    }
+    r
+}
+
 /// `Ok(FAILURE)`: failure already reported (incomplete translation file).
 async fn run(cli: Cli) -> Result<ExitCode> {
     match cli.cmd {
         Cmd::List { addr, folder } => {
             let folder: Folder = folder.parse()?;
-            let c = MapClient::connect(&addr).await?;
-            let r = c.list(folder).await;
-            c.close().await?;
-            r?.iter().for_each(emit);
+            let list = oneshot(async {
+                let c = MapClient::connect(&addr).await?;
+                let r = c.list(folder).await;
+                finish(c, r).await
+            }).await?;
+            for m in &list {
+                if emit(m).is_err() {
+                    break;
+                }
+            }
         }
         Cmd::Send { addr, to, text } => {
-            let c = MapClient::connect(&addr).await?;
-            let r = c.send(&to, &text).await;
-            c.close().await?;
-            r?;
+            oneshot(async {
+                let c = MapClient::connect(&addr).await?;
+                let r = c.send(&to, &text).await;
+                finish(c, r).await
+            }).await?;
         }
         Cmd::Watch { addr, interval } => {
             let c = MapClient::connect(&addr).await?;
@@ -80,14 +105,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 tokio::pin!(s);
                 loop {
                     tokio::select! {
-                        m = s.next() => match m { Some(m) => emit(&m?), None => break },
+                        m = s.next() => match m { Some(m) => if emit(&m?).is_err() { break }, None => break },
                         _ = tokio::signal::ctrl_c() => break,
                     }
                 }
                 Ok(())
             }.await;
-            c.close().await?;
-            r?;
+            finish(c, r).await?;
         }
         Cmd::Hfp { addr, answer } => {
             let (tx, rx) = tokio::sync::mpsc::channel(4);
@@ -97,7 +121,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     hfp::HfEvent::IncomingCall if answer => { let _ = tx.try_send(hfp::HfCmd::Answer); }
                     _ => {}
                 }
-                emit(ev);
+                let _ = emit(ev);
             });
             tokio::select! {
                 r = run => r?,

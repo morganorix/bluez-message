@@ -27,7 +27,7 @@ const RETRY: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CALLS: usize = 8;
 const MAX_NUMBER: usize = 64;
-/// Signals queued before the oldest are dropped.
+/// Signals queued before the oldest are dropped (silently: a resync covers calls in progress).
 const QUEUED: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 type Props = HashMap<String, OwnedVariant>;
@@ -150,6 +150,11 @@ impl Lines {
 }
 
 impl Tracker {
+    /// A call is tracked or displayed: periodic resync, since a queue overflow loses signals unseen.
+    fn busy(&self) -> bool {
+        !self.calls.is_empty() || self.shown.is_some()
+    }
+
     fn owns_call(&self, path: &str) -> bool {
         self.ag.as_ref().is_some_and(|ag| path.strip_prefix(ag.as_str()).is_some_and(|r| r.starts_with('/')))
     }
@@ -427,7 +432,8 @@ pub async fn run(
                     on_warn(t!("call command: {0}", e));
                 },
             },
-            _ = retry.tick(), if !present => need_sync = true,
+            // Resync is a diff: it emits only what changed since the last known state.
+            _ = retry.tick(), if !present || t.busy() => need_sync = true,
         }
     };
     if r.is_err() {

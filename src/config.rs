@@ -6,12 +6,13 @@ use crate::addr::BtAddr;
 use crate::error::Error;
 use crate::t;
 
-/// XDG `var` directory if absolute, otherwise `~/{fallback}`.
+/// XDG `var` directory if absolute, otherwise `~/{fallback}`; a relative or empty `HOME` is
+/// refused (the data would land in the working directory).
 fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     std::env::var_os(var)
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from).filter(|h| h.is_absolute()).map(|h| h.join(fallback)))
 }
 
 /// `$XDG_CONFIG_HOME` or `~/.config`.

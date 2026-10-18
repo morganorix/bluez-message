@@ -13,10 +13,15 @@ use crate::ipc::MAX_LINE;
 use crate::t;
 
 /// Writes a value as JSON on one stdout line (format of CLI and daemon outputs).
-pub fn emit<T: serde::Serialize>(v: &T) {
-    if let Ok(s) = serde_json::to_string(v) {
-        println!("{s}");
-    }
+///
+/// # Errors
+/// Stdout closed (`EPIPE`: reader gone) or unwritable; the caller stops printing.
+pub fn emit<T: serde::Serialize>(v: &T) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let s = serde_json::to_string(v)?;
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{s}")?;
+    out.flush()
 }
 
 /// `serve` mode loop: JSON commands on stdin, outputs on stdout, until `quit` or end of stdin.
@@ -27,7 +32,10 @@ pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
     let (engine, mut events) = Engine::start(addr, interval);
     let printer = tokio::spawn(async move {
         while let Some(o) = events.recv().await {
-            emit(&o);
+            if let Err(e) = emit(&o) {
+                tracing::debug!("stdout: {e}");
+                break;
+            }
         }
     });
 
@@ -39,7 +47,7 @@ pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
             break;
         }
         if buf.last() != Some(&b'\n') && buf.len() > MAX_LINE {
-            emit(&Out::Error { msg: t!("line longer than {0} bytes rejected", MAX_LINE) });
+            let _ = emit(&Out::Error { msg: t!("line longer than {0} bytes rejected", MAX_LINE) });
             break;
         }
         let line = String::from_utf8_lossy(&buf);
@@ -52,7 +60,7 @@ pub async fn serve(addr: &BtAddr, interval: Duration) -> Result<()> {
             Err(e) => Err(e),
         };
         if let Err(msg) = r {
-            emit(&Out::Error { msg });
+            let _ = emit(&Out::Error { msg });
         }
     }
     engine.shutdown().await;

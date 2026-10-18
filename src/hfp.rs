@@ -172,9 +172,13 @@ struct Agent {
 #[allow(clippy::unused_async)]
 #[interface(name = "org.bluez.Profile1")]
 impl Agent {
-    async fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::OwnedFd, _props: HashMap<String, OwnedVariant>) {
+    #[allow(clippy::needless_pass_by_value, reason = "D-Bus method signature, arguments owned by zbus")]
+    fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::OwnedFd, _props: HashMap<String, OwnedVariant>) {
         if device.as_str().ends_with(&self.device_suffix) {
-            let _ = self.tx.send(fd.into()).await;
+            // Never awaits: a blocked handler would stall every BlueZ call on this connection.
+            if let Err(e) = self.tx.try_send(fd.into()) {
+                tracing::warn!("HFP connection dropped: {e}");
+            }
         } // otherwise: fd closed on drop, foreign device ignored
     }
 
@@ -279,7 +283,7 @@ impl HfCmd {
 /// # Errors
 /// Profile registration or system bus impossible.
 pub async fn run(addr: &BtAddr, mut cmds: mpsc::Receiver<HfCmd>, mut on_event: impl FnMut(&HfEvent)) -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(1);
+    let (tx, mut rx) = mpsc::channel(4);
     let conn = Connection::system().await?;
     let path = ObjectPath::try_from(PROFILE_PATH)?;
     conn.object_server()

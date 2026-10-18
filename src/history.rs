@@ -281,11 +281,13 @@ impl History {
     fn near(&self, number: &str, ts: &str, text: &str, outgoing: bool, secs: i64, extra: &'static str) -> rusqlite::Result<bool> {
         let Some(t) = stamp::secs(ts) else { return Ok(false) };
         let mut st = self.db.prepare_cached(&format!("SELECT ts FROM messages WHERE device = ?1 AND key = ?2 AND text = ?3 AND outgoing = ?4{extra}"))?;
-        let found = st
-            .query_map(params![self.device, numbering::key(number, self.home), text, outgoing], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok().and_then(|s| stamp::secs(&s)))
-            .any(|u| (u - t).abs() <= secs);
-        Ok(found)
+        // A row error is propagated, not read as "no duplicate" (it would record the SMS twice).
+        for ts in st.query_map(params![self.device, numbering::key(number, self.home), text, outgoing], |r| r.get::<_, String>(0))? {
+            if stamp::secs(&ts?).is_some_and(|u| (u - t).abs() <= secs) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Send made from the app (PC timestamp), awaiting its return through the `sent` folder.

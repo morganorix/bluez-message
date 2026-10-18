@@ -290,10 +290,16 @@ impl Actor {
 
 /// `Pair` (already paired: success), `Trusted`, then `Out::Paired` and best-effort profile connection.
 async fn pair(conn: Connection, addr: BtAddr, pairing: Shared, out: mpsc::UnboundedSender<Out>) {
+    // Target released whatever ends the task: error, panic, or abort at shutdown.
+    let release = Release(pairing);
     let r = async {
         let dev = bluez::device(&conn, &addr).await?;
         match bounded(PAIR, dev.pair()).await {
-            Err(e) if !bluez::is_error(&e, "org.bluez.Error.AlreadyExists") => return Err(e),
+            Err(e) if !bluez::is_error(&e, "org.bluez.Error.AlreadyExists") => {
+                // Timeout or failure: BlueZ may still hold the attempt (harmless error otherwise).
+                let _ = bounded(CALL, dev.cancel_pairing()).await;
+                return Err(e);
+            }
             _ => {}
         }
         // Trusted: the phone reconnects its profiles without authorization.
@@ -301,7 +307,7 @@ async fn pair(conn: Connection, addr: BtAddr, pairing: Shared, out: mpsc::Unboun
         Ok(dev)
     }
     .await;
-    *lock(&pairing) = Pairing::default();
+    drop(release);
     match r {
         Ok(dev) => {
             let _ = out.send(Out::Paired { addr, ok: true, error: None });
@@ -313,6 +319,15 @@ async fn pair(conn: Connection, addr: BtAddr, pairing: Shared, out: mpsc::Unboun
             tracing::info!("pairing failed: {e}");
             let _ = out.send(Out::Paired { addr, ok: false, error: Some(e.to_string()) });
         }
+    }
+}
+
+/// Resets the pairing in progress when dropped.
+struct Release(Shared);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        *lock(&self.0) = Pairing::default();
     }
 }
 

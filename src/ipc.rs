@@ -38,31 +38,34 @@ const MAX_CLIENTS: usize = 16;
 /// A client that stops reading is disconnected after this delay.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const BROADCAST: usize = 4096;
+/// Conversations whose read mark is replayed; beyond it the oldest mark is dropped.
+const MAX_READS: usize = 4096;
 
-/// What a connecting client must replay.
+/// What a connecting client must replay. Entries are shared (`Arc`): the replay taken under
+/// the hub lock copies pointers, not the phonebook.
 #[derive(Debug, Default)]
 pub struct Snapshot {
     status: BTreeMap<Profile, bool>,
     slc: bool,
-    sms: VecDeque<Out>,
+    sms: VecDeque<Arc<Out>>,
     keys: HashSet<(Folder, String)>,
-    sent: VecDeque<Out>,
+    sent: VecDeque<Arc<Out>>,
     /// Events of the current call; cleared when the call ends.
-    call: Vec<Out>,
-    log: VecDeque<Out>,
-    contacts: Option<Out>,
-    battery: Option<Out>,
-    settings: Option<Out>,
-    adapter: Option<Out>,
-    found: Option<Out>,
+    call: Vec<Arc<Out>>,
+    log: VecDeque<Arc<Out>>,
+    contacts: Option<Arc<Out>>,
+    battery: Option<Arc<Out>>,
+    settings: Option<Arc<Out>>,
+    adapter: Option<Arc<Out>>,
+    found: Option<Arc<Out>>,
     /// Passkey awaiting an answer; cleared by the end of the pairing.
-    confirm: Option<Out>,
+    confirm: Option<Arc<Out>>,
     /// Read up to, per conversation.
     reads: BTreeMap<String, String>,
 }
 
-fn push_capped(q: &mut VecDeque<Out>, o: Out, cap: usize) -> Option<Out> {
-    q.push_back(o);
+fn push_capped(q: &mut VecDeque<Arc<Out>>, o: Out, cap: usize) -> Option<Arc<Out>> {
+    q.push_back(Arc::new(o));
     if q.len() > cap { q.pop_front() } else { None }
 }
 
@@ -83,10 +86,12 @@ impl Snapshot {
                     // Already known: the most recent version is kept (read status, etc.).
                     let same = |x: &Out| matches!(x, Out::Sms { sms: s, folder: f, .. } if f == folder && s.handle == sms.handle);
                     if let Some(slot) = self.sms.iter_mut().find(|x| same(x)) {
-                        *slot = o;
+                        *slot = Arc::new(o);
                     }
-                } else if let Some(Out::Sms { sms, folder, .. }) = push_capped(&mut self.sms, o, MAX_SMS) {
-                    self.keys.remove(&(folder, sms.handle));
+                } else if let Some(old) = push_capped(&mut self.sms, o, MAX_SMS)
+                    && let Out::Sms { sms, folder, .. } = &*old
+                {
+                    self.keys.remove(&(*folder, sms.handle.clone()));
                 }
             }
             // Failures included: the "not sent" bubble is still there when the app reopens.
@@ -97,12 +102,12 @@ impl Snapshot {
             Out::CallLog { .. } => {
                 push_capped(&mut self.log, o.clone(), MAX_LOG);
             }
-            Out::Contacts { .. } => self.contacts = Some(o.clone()),
-            Out::Battery { .. } => self.battery = Some(o.clone()),
-            Out::Settings { .. } => self.settings = Some(o.clone()),
-            Out::Adapter { .. } => self.adapter = Some(o.clone()),
-            Out::Found { .. } => self.found = Some(o.clone()),
-            Out::Confirm { .. } => self.confirm = Some(o.clone()),
+            Out::Contacts { .. } => self.contacts = Some(Arc::new(o.clone())),
+            Out::Battery { .. } => self.battery = Some(Arc::new(o.clone())),
+            Out::Settings { .. } => self.settings = Some(Arc::new(o.clone())),
+            Out::Adapter { .. } => self.adapter = Some(Arc::new(o.clone())),
+            Out::Found { .. } => self.found = Some(Arc::new(o.clone())),
+            Out::Confirm { .. } => self.confirm = Some(Arc::new(o.clone())),
             Out::Paired { .. } => self.confirm = None,
             Out::Cleared => {
                 self.sms.clear();
@@ -112,30 +117,36 @@ impl Snapshot {
                 self.reads.clear();
             }
             Out::Read { key, until } => {
+                if self.reads.len() >= MAX_READS
+                    && !self.reads.contains_key(key)
+                    && let Some(oldest) = self.reads.iter().min_by(|a, b| a.1.cmp(b.1)).map(|(k, _)| k.clone())
+                {
+                    self.reads.remove(&oldest);
+                }
                 let r = self.reads.entry(key.clone()).or_default();
                 if until > r {
                     r.clone_from(until);
                 }
             }
             Out::Muted { .. } if !call_idle => {
-                self.call.retain(|c| !matches!(c, Out::Muted { .. }));
-                self.call.push(o.clone());
+                self.call.retain(|c| !matches!(**c, Out::Muted { .. }));
+                self.call.push(Arc::new(o.clone()));
             }
             Out::Call(HfEvent::SlcReady) => self.slc = true,
             Out::Call(_) if call_idle => self.call.clear(),
-            Out::Call(_) if self.call.len() < MAX_CALL => self.call.push(o.clone()),
+            Out::Call(_) if self.call.len() < MAX_CALL => self.call.push(Arc::new(o.clone())),
             _ => {}
         }
     }
 
     /// Removes what was deleted from the history (item or whole conversation).
     fn forget(&mut self, key: &str, item: Option<&Item>) {
-        let home = match &self.settings {
+        let home = match self.settings.as_deref() {
             Some(Out::Settings { home, .. }) => home.as_deref().and_then(numbering::parse_code),
             _ => None,
         };
         let number_key = |n: &str| numbering::key(n, home);
-        let hit = |o: &Out| match o {
+        let hit = |o: &Arc<Out>| match &**o {
             Out::Sms { sms, folder, .. } => {
                 let sent = folder.is_sent();
                 number_key(sms_peer(sms, sent).0) == key
@@ -158,7 +169,7 @@ impl Snapshot {
         let keys = &mut self.keys;
         self.sms.retain(|o| {
             let gone = hit(o);
-            if gone && let Out::Sms { sms, folder, .. } = o {
+            if gone && let Out::Sms { sms, folder, .. } = &**o {
                 keys.remove(&(*folder, sms.handle.clone()));
             }
             !gone
@@ -167,20 +178,21 @@ impl Snapshot {
         self.log.retain(|o| !hit(o));
     }
 
+    /// Bounded by the caps above; cheap to take under the hub lock (shared entries).
     #[must_use]
-    pub fn replay(&self) -> Vec<Out> {
+    pub fn replay(&self) -> Vec<Arc<Out>> {
         // Settings first: they tell the client which device (or setup mode) the rest belongs to.
-        let mut v: Vec<Out> = [&self.settings, &self.adapter, &self.found, &self.confirm].into_iter().flatten().cloned().collect();
-        v.extend(self.status.iter().map(|(link, up)| Out::Status { link: *link, up: *up }));
+        let mut v: Vec<Arc<Out>> = [&self.settings, &self.adapter, &self.found, &self.confirm].into_iter().flatten().cloned().collect();
+        v.extend(self.status.iter().map(|(link, up)| Arc::new(Out::Status { link: *link, up: *up })));
         if self.slc {
-            v.push(Out::Call(HfEvent::SlcReady));
+            v.push(Arc::new(Out::Call(HfEvent::SlcReady)));
         }
         v.extend(self.battery.iter().cloned());
         v.extend(self.contacts.iter().cloned());
         v.extend(self.sms.iter().cloned());
         v.extend(self.log.iter().cloned());
         v.extend(self.sent.iter().cloned());
-        v.extend(self.reads.iter().map(|(key, until)| Out::Read { key: key.clone(), until: until.clone() }));
+        v.extend(self.reads.iter().map(|(key, until)| Arc::new(Out::Read { key: key.clone(), until: until.clone() })));
         v.extend(self.call.iter().cloned());
         v
     }
@@ -551,6 +563,10 @@ mod tests {
         Out::Call(HfEvent::Indicator { name: name.into(), value })
     }
 
+    fn replayed(s: &Snapshot) -> Vec<Out> {
+        s.replay().iter().map(|o| (**o).clone()).collect()
+    }
+
     #[test]
     fn snapshot_replays_state_without_new_flags() {
         let mut s = Snapshot::default();
@@ -560,17 +576,17 @@ mod tests {
         s.record(&sms("1", true), true); // duplicate: replaces without duplicating
         s.record(&Out::Call(HfEvent::IncomingCall), false);
         s.record(&Out::Error { msg: "x".into() }, false);
-        let r = s.replay();
+        let r = replayed(&s);
         assert_eq!(
             r,
             [Out::Status { link: Profile::Hfp, up: true }, Out::Call(HfEvent::SlcReady), sms("1", false), Out::Call(HfEvent::IncomingCall)]
         );
         // End of call: nothing of the call is replayed any more.
         s.record(&ind("callsetup", 0), true);
-        assert_eq!(s.replay().len(), 3);
+        assert_eq!(replayed(&s).len(), 3);
         // HFP link lost: SLC forgotten.
         s.record(&Out::Status { link: Profile::Hfp, up: false }, true);
-        assert!(!s.replay().contains(&Out::Call(HfEvent::SlcReady)));
+        assert!(!replayed(&s).contains(&Out::Call(HfEvent::SlcReady)));
     }
 
     #[test]
@@ -584,13 +600,13 @@ mod tests {
         let fail = Out::Sent { to: "0612345678".into(), text: "c".into(), ok: false, error: None, timestamp: "20261015T110000".into() };
         s.record(&fail, true);
         s.record(&Out::CallLog { number: "0612345678".into(), timestamp: "20261015T120000".into(), kind: CallKind::Out, secs: 3, read: false }, true);
-        assert_eq!(s.replay().len(), 4, "send failure replayed");
+        assert_eq!(replayed(&s).len(), 4, "send failure replayed");
         let item = Item { timestamp: "20261015T100000".into(), text: "a".into(), outgoing: false, call: false };
         s.record(&Out::Deleted { key: "612345678".into(), item: Some(item) }, true);
-        assert_eq!(s.replay().len(), 3);
+        assert_eq!(replayed(&s).len(), 3);
         assert!(!s.keys.contains(&(Folder::Inbox, "1".into())));
         s.record(&Out::Deleted { key: "612345678".into(), item: None }, true);
-        assert!(s.replay().is_empty());
+        assert!(replayed(&s).is_empty());
     }
 
     #[test]
@@ -607,7 +623,7 @@ mod tests {
         s.record(&settings, true);
         s.record(&Out::CallLog { number: "03 89 00 00 00".into(), timestamp: "20261015T120000".into(), kind: CallKind::Out, secs: 3, read: false }, true);
         s.record(&Out::Deleted { key: "+33389000000".into(), item: None }, true);
-        assert_eq!(s.replay(), [settings], "conversation keyed in E.164 forgotten");
+        assert_eq!(replayed(&s), [settings], "conversation keyed in E.164 forgotten");
     }
 
     #[test]
@@ -621,10 +637,26 @@ mod tests {
         s.record(&adapter, true);
         s.record(&confirm, true);
         s.record(&settings, true);
-        assert_eq!(s.replay(), [settings.clone(), adapter.clone(), confirm, Out::Status { link: Profile::Map, up: false }]);
+        assert_eq!(replayed(&s), [settings.clone(), adapter.clone(), confirm, Out::Status { link: Profile::Map, up: false }]);
         // Pairing over: the confirmation is no longer replayed.
         s.record(&Out::Paired { addr, ok: true, error: None }, true);
-        assert_eq!(s.replay(), [settings, adapter, Out::Status { link: Profile::Map, up: false }]);
+        assert_eq!(replayed(&s), [settings, adapter, Out::Status { link: Profile::Map, up: false }]);
+    }
+
+    #[test]
+    fn snapshot_caps_read_marks_dropping_oldest() {
+        let mut s = Snapshot::default();
+        let read = |k: usize, until: &str| Out::Read { key: format!("+3361234{k:04}"), until: until.into() };
+        s.record(&read(0, "20260101T000000"), true);
+        for k in 1..MAX_READS {
+            s.record(&read(k, "20260601T000000"), true);
+        }
+        s.record(&read(MAX_READS, "20260701T000000"), true);
+        assert_eq!(s.reads.len(), MAX_READS);
+        assert!(!s.reads.contains_key("+33612340000"), "oldest mark dropped");
+        // Updating a known conversation never evicts.
+        s.record(&read(1, "20260801T000000"), true);
+        assert_eq!(s.reads.len(), MAX_READS);
     }
 
     #[test]
@@ -632,16 +664,16 @@ mod tests {
         let mut s = Snapshot::default();
         s.record(&Out::Battery { percent: Some(80) }, true);
         s.record(&Out::Battery { percent: Some(79) }, true);
-        assert_eq!(s.replay(), [Out::Battery { percent: Some(79) }]);
+        assert_eq!(replayed(&s), [Out::Battery { percent: Some(79) }]);
         s.record(&Out::Battery { percent: None }, true);
-        assert_eq!(s.replay(), [Out::Battery { percent: None }]);
+        assert_eq!(replayed(&s), [Out::Battery { percent: None }]);
     }
 
     #[test]
     fn snapshot_skips_open() {
         let mut s = Snapshot::default();
         s.record(&Out::Open { number: Some("+331".into()) }, true);
-        assert!(s.replay().is_empty());
+        assert!(replayed(&s).is_empty());
     }
 
     fn open(number: Option<&str>) -> Out {
