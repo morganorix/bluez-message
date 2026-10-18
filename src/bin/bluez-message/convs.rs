@@ -127,7 +127,7 @@ impl ConvList {
     /// Search field (34 high): Escape clears it, any input brings the cursor back to the top.
     fn search_field(&mut self, ui: &mut egui::Ui, pal: &Palette) -> egui::Response {
         ui.spacing_mut().interact_size.y = size::FIELD_H;
-        let field = w::field(&mut self.query, t!("Search: conversation or contact  (Ctrl+F)")).margin(Margin { left: 32, ..Margin::symmetric(10, 10) });
+        let field = w::field(&mut self.query, t!("Search: SMS or contact  (Ctrl+F)")).margin(Margin { left: 32, ..Margin::symmetric(10, 10) });
         let r = ui.add(field.desired_width(f32::INFINITY));
         w::paint_icon(ui, Icon::Magnify, r.rect.left_center() + vec2(16.0, 0.0), font::ICON, pal.muted());
         if std::mem::take(&mut self.focus) {
