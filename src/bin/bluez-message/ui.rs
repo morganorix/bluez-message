@@ -266,6 +266,10 @@ impl App {
             match a {
                 ListAction::Delete(key) => self.delete_conv(key),
                 ListAction::DeleteCalls(key) => self.delete_calls(&key),
+                // Shown once the daemon has recorded it (`Out::Conv`).
+                ListAction::Flags(key, flags) => {
+                    self.submit(Cmd::ConvFlags { key, flags });
+                }
                 ListAction::Open(t) => self.open(t),
                 ListAction::Search(q) => self.state.search_all(&q),
                 ListAction::More => self.state.more_hits(),

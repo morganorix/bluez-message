@@ -116,6 +116,7 @@ pub fn section_action(ui: &mut Ui, pal: &Palette, label: &str, icon: Icon) -> Re
     let r = ui.interact(zone, ui.id().with(label), Sense::click());
     let a = if r.hovered() { 1.0 } else { 0.6 };
     paint_icon(ui, icon, zone.center(), font::ICON, pal.dim(a));
+    r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
     r.on_hover_cursor(CursorIcon::PointingHand)
 }
 

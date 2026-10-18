@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::addr::BtAddr;
-use crate::engine::{CallKind, Cursor, HITS_PAGE, Hit, Out};
+use crate::engine::{CallKind, ConvFlags, Cursor, HITS_PAGE, Hit, Out};
 use crate::error::Error;
 use crate::map::{Folder, Sms};
 use crate::numbering::{self, Id};
@@ -299,6 +299,7 @@ impl History {
                 let n = tx.execute("UPDATE messages SET hidden = 1 WHERE device = ?1 AND key = ?2", [d, key])?
                     + tx.execute("DELETE FROM calls WHERE device = ?1 AND key = ?2", [d, key])?;
                 tx.execute("DELETE FROM reads WHERE device = ?1 AND key = ?2", [d, key])?;
+                tx.execute("DELETE FROM convs WHERE device = ?1 AND key = ?2", [d, key])?;
                 tx.commit()?;
                 n
             }
@@ -410,6 +411,24 @@ impl History {
         Ok(())
     }
 
+    /// Flags of conversation `key`; both off: the row is removed (the table only holds exceptions).
+    ///
+    /// # Errors
+    /// SQLite error.
+    pub fn set_conv(&self, key: &str, flags: ConvFlags) -> rusqlite::Result<()> {
+        if flags == ConvFlags::default() {
+            self.db.prepare_cached("DELETE FROM convs WHERE device = ?1 AND key = ?2")?.execute([&self.device, key])?;
+        } else {
+            self.db
+                .prepare_cached(
+                    "INSERT INTO convs (device, key, muted, archived) VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT (device, key) DO UPDATE SET muted = excluded.muted, archived = excluded.archived",
+                )?
+                .execute(params![self.device, key, flags.muted, flags.archived])?;
+        }
+        Ok(())
+    }
+
     /// Replaces the active device's contacts; returns the (number, name) pairs published to the clients.
     ///
     /// # Errors
@@ -482,6 +501,10 @@ impl History {
         }
         let mut st = tx.prepare("SELECT key, until FROM reads WHERE device = ?1")?;
         for r in st.query_map([d], |r| Ok(Out::Read { key: r.get(0)?, until: r.get(1)? }))? {
+            v.push(r?);
+        }
+        let mut st = tx.prepare("SELECT key, muted, archived FROM convs WHERE device = ?1")?;
+        for r in st.query_map([d], |r| Ok(Out::Conv { key: r.get(0)?, flags: ConvFlags { muted: r.get(1)?, archived: r.get(2)? } }))? {
             v.push(r?);
         }
         Ok(v)
@@ -697,6 +720,23 @@ mod tests {
 
     fn sms(addr: &str, ts: &str, text: &str) -> Sms {
         Sms { handle: "h".into(), address: addr.into(), timestamp: ts.into(), text: text.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn conv_flags_kept_per_device_and_replayed() {
+        let h = History::memory(&dev()).unwrap();
+        let conv = |h: &History| h.load(10).unwrap().into_iter().filter(|o| matches!(o, Out::Conv { .. })).collect::<Vec<_>>();
+        let muted = ConvFlags { muted: true, archived: false };
+        h.set_conv("600000001", ConvFlags { muted: true, archived: true }).unwrap();
+        h.set_conv("600000001", muted).unwrap();
+        h.db.execute("INSERT INTO convs (device, key, muted) VALUES (?1, '600000002', 1)", [OTHER]).unwrap();
+        assert_eq!(conv(&h), [Out::Conv { key: "600000001".into(), flags: muted }], "upsert, other device left out");
+        h.set_conv("600000001", ConvFlags::default()).unwrap();
+        assert!(conv(&h).is_empty());
+        assert_eq!(count(&h.db, "convs"), 1, "row removed when both flags are off");
+        h.set_conv("600000001", muted).unwrap();
+        h.delete("600000001", None).unwrap();
+        assert!(conv(&h).is_empty(), "deleted with the conversation");
     }
 
     #[test]

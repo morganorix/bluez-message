@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::addr::BtAddr;
-use crate::engine::{CallKind, Cmd, Cursor, Device, Hit, Item, MAX_QUERY, Nearby, Out, Profile};
+use crate::engine::{CallKind, Cmd, ConvFlags, Cursor, Device, Hit, Item, MAX_QUERY, Nearby, Out, Profile};
 use crate::history::SENT_ECHO_SECS;
 use crate::hfp::{HfEvent, Indicator};
 use crate::map::Sms;
@@ -340,6 +340,8 @@ pub struct State {
     book: Vec<(String, String, String)>,
     /// Read up to (MAP timestamp), per conversation; recorded by the daemon.
     reads: HashMap<String, String>,
+    /// Muted / archived conversations (absent: neither); recorded by the daemon.
+    flags: HashMap<String, ConvFlags>,
     /// Changes with every change made through the methods (not through direct access to `convs`).
     rev: Rev,
     pub hits: Hits,
@@ -452,6 +454,14 @@ impl State {
             }
             Out::Deleted { key, item } => {
                 self.delete(&key, item.as_ref());
+                vec![]
+            }
+            Out::Conv { key, flags } => {
+                if flags == ConvFlags::default() {
+                    self.flags.remove(&key);
+                } else {
+                    self.flags.insert(key, flags);
+                }
                 vec![]
             }
             Out::Status { link: Profile::Pbap, up } => {
@@ -692,6 +702,16 @@ impl State {
             }
         }
         self.convs.retain(|c| c.key != key);
+        // As the daemon: its flags go with the whole conversation, not with its last item.
+        if item.is_none() {
+            self.flags.remove(key);
+        }
+    }
+
+    /// Muted / archived state of conversation `key`.
+    #[must_use]
+    pub fn flags(&self, key: &str) -> ConvFlags {
+        self.flags.get(key).copied().unwrap_or_default()
     }
 
     #[must_use]
@@ -743,7 +763,7 @@ impl State {
             }
         }
         self.push(&number, &name, msg, !sent && !sms.read);
-        if new && !sent {
+        if new && !sent && !self.flags(&self.key(&number)).muted {
             let reply = Some(crate::phone::strip_separators(&number)).filter(|n| crate::bmsg::validate_number(n).is_ok());
             let from = self.name_of(&number).or((!sms.sender.is_empty()).then_some(sms.sender)).unwrap_or(number);
             return vec![Effect::Sms { from, text: sms.text, reply }];
@@ -1308,6 +1328,25 @@ mod tests {
         let mut s = Sms { handle: "9".into(), address: "+33612345678".into(), timestamp: "20261015T120000".into(), text: "b".into(), ..Default::default() };
         s.sender = String::new();
         assert_eq!(st.apply(Out::Sms { sms: s, folder: Folder::Inbox, new: true }), [Effect::Sms { from: "Bob".into(), text: "b".into(), reply: Some("+33612345678".into()) }]);
+    }
+
+    #[test]
+    fn muted_conversation_stays_silent() {
+        let mut st = State::default();
+        st.apply(sms("1", "+33600000001", "20261015T100000", "a", false));
+        let key = st.convs[0].key.clone();
+        let muted = ConvFlags { muted: true, archived: false };
+        st.apply(Out::Conv { key: key.clone(), flags: muted });
+        assert_eq!(st.flags(&key), muted);
+        let s = Sms { handle: "2".into(), address: "+33600000001".into(), timestamp: "20261015T110000".into(), text: "b".into(), ..Default::default() };
+        assert!(st.apply(Out::Sms { sms: s, folder: Folder::Inbox, new: true }).is_empty(), "no notification");
+        assert_eq!(st.convs[0].unread, 2, "still counted unread");
+        // Whole conversation deleted: its flags go too.
+        st.delete(&key, None);
+        assert_eq!(st.flags(&key), ConvFlags::default());
+        st.apply(Out::Conv { key: key.clone(), flags: muted });
+        st.apply(Out::Conv { key: key.clone(), flags: ConvFlags::default() });
+        assert_eq!(st.flags(&key), ConvFlags::default());
     }
 
     #[test]

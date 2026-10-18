@@ -99,6 +99,8 @@ pub enum Cmd {
     /// SMS of conversation `key` older than `before`, at most `limit` ([`MAX_OLDER`]): handled by the daemon,
     /// answered to the requester only ([`Out::Older`]).
     Older { key: String, before: Cursor, limit: u32 },
+    /// Mute (no notification) or archive conversation `key`: handled by the daemon, published as [`Out::Conv`].
+    ConvFlags { key: String, #[serde(flatten)] flags: ConvFlags },
     Quit,
 }
 
@@ -129,6 +131,17 @@ impl Cursor {
     fn is_valid(&self) -> bool {
         crate::stamp::is_valid(&self.ts) && self.id >= 0
     }
+}
+
+/// Per-conversation flags; both off: nothing is recorded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConvFlags {
+    /// No notification for its SMS (calls still ring).
+    #[serde(default)]
+    pub muted: bool,
+    /// Listed apart, until the next incoming SMS.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// SMS of the history found by [`Cmd::Search`] or loaded by [`Cmd::Older`].
@@ -283,6 +296,8 @@ pub enum Out {
     Hits { query: String, items: Vec<Hit>, next: Option<Cursor> },
     /// SMS of conversation `key` asked by [`Cmd::Older`], newest first, to the requester only; `next`: the following page, if any.
     Older { key: String, items: Vec<Hit>, next: Option<Cursor> },
+    /// Flags of conversation `key` (replayed in the snapshot; an incoming SMS takes it out of the archive).
+    Conv { key: String, #[serde(flatten)] flags: ConvFlags },
     /// Inbox listing with the phone's read flags, for the daemon only: never serialised nor published.
     #[serde(skip)]
     Flags { items: Vec<Sms> },
@@ -416,6 +431,7 @@ pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
         Cmd::Settings { settings } => settings.validate()?,
         Cmd::Search { query, before } => validate_search(query, before.as_ref())?,
         Cmd::Older { key, before, limit } => validate_older(key, before, *limit)?,
+        Cmd::ConvFlags { key, .. } if !is_key(key) => return Err(t!("invalid conversation").into()),
         _ => {}
     }
     Ok(cmd)
@@ -512,7 +528,8 @@ impl Engine {
             | Cmd::Confirm { .. }
             | Cmd::Connect { .. }
             | Cmd::Search { .. }
-            | Cmd::Older { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
+            | Cmd::Older { .. }
+            | Cmd::ConvFlags { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
             Cmd::Quit => Ok(()),
         }
     }
@@ -762,6 +779,17 @@ mod tests {
         assert!(parse_cmd(&older("", "20261015T120000", 10)).is_err());
         assert!(parse_cmd(&older("k", "2026'; --", 10)).is_err());
         assert_eq!(Cursor::after("20261015T120000").id, i64::MAX);
+    }
+
+    #[test]
+    fn conv_flags_round_trip() {
+        let c = parse_cmd(r#"{"cmd":"conv_flags","key":"600000001","muted":true}"#);
+        assert_eq!(c, Ok(Cmd::ConvFlags { key: "600000001".into(), flags: ConvFlags { muted: true, archived: false } }));
+        assert!(parse_cmd(r#"{"cmd":"conv_flags","key":"","archived":true}"#).is_err());
+        assert!(parse_cmd(&format!(r#"{{"cmd":"conv_flags","key":"{}"}}"#, "1".repeat(65))).is_err());
+        let o = Out::Conv { key: "600000001".into(), flags: ConvFlags { muted: false, archived: true } };
+        let back: Out = serde_json::from_str(&serde_json::to_string(&o).unwrap()).unwrap();
+        assert!(matches!(back, Out::Conv { flags: ConvFlags { archived: true, muted: false }, .. }));
     }
 
     #[test]

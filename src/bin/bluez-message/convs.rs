@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bluez_message::app::state::{Conv, Hits, Rev, State, matches, shown_number};
-use bluez_message::engine::{Hit, dial_number};
+use bluez_message::engine::{ConvFlags, Hit, dial_number};
 use bluez_message::numbering::{self, Id};
 use bluez_message::phone::excerpt;
 use bluez_message::gui::emoji::Emojis;
@@ -39,6 +39,8 @@ pub enum ListAction {
     More,
     /// Opens the conversation of a history search result on it.
     Jump(Hit),
+    /// New muted / archived state of a conversation.
+    Flags(String, ConvFlags),
 }
 
 /// Pause after the last key before searching the whole history.
@@ -87,11 +89,13 @@ pub struct ConvList {
     pub tab: Tab,
     /// Last change of the search, not yet sent to the history search.
     typed: Option<Instant>,
+    /// "Archived" section unfolded.
+    archived: bool,
 }
 
 impl Default for ConvList {
     fn default() -> Self {
-        Self { query: String::new(), cursor: 0, kbd: false, focus: true, found: None, tab: Tab::Sms, typed: None }
+        Self { query: String::new(), cursor: 0, kbd: false, focus: true, found: None, tab: Tab::Sms, typed: None, archived: false }
     }
 }
 
@@ -165,6 +169,14 @@ impl ConvList {
         }
     }
 
+    /// Header of the "Archived" section, unfolds or folds it.
+    fn archived_header(&mut self, ui: &mut egui::Ui, pal: &Palette, n: usize) {
+        let icon = if self.archived { Icon::ChevronUp } else { Icon::ChevronDown };
+        if w::section_action(ui, pal, &t!("Archived ({0})", n), icon).clicked() {
+            self.archived = !self.archived;
+        }
+    }
+
     /// `keys`: arrows and Enter are for the list (no message input, menu or Settings).
     pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, state: &State, target: &Target, keys: bool) -> Vec<ListAction> {
         if w::section_action(ui, pal, t!("Contacts"), Icon::Plus).on_hover_text(t!("Write or call: search for a contact")).clicked() {
@@ -189,12 +201,19 @@ impl ConvList {
         // History search results (SMS only), for the query shown.
         let hits = Some(&state.hits).filter(|h| !calls && h.query == q && (h.busy || !h.items.is_empty()));
         let home = state.home();
-        let mut convs: Vec<_> = state
+        let (mut convs, archived): (Vec<_>, Vec<_>) = state
             .convs
             .iter()
             .filter(|c| self.tab.lists(c, home))
             .filter(|c| matches(&q, &c.name, &c.number))
-            .collect();
+            // SMS tab: archived conversations set apart, except in a search.
+            .partition(|c| calls || !q.is_empty() || !state.flags(&c.key).archived);
+        // Folded: neither shown nor reachable with the keyboard.
+        let folded = archived.len();
+        if self.archived {
+            convs.extend(archived);
+        }
+        let first_archived = convs.len() - if self.archived { folded } else { 0 };
         if calls {
             // Most recent call first (the conversations are sorted by their last item).
             convs.sort_by(|a, b| b.last_call().map(|m| &m.timestamp).cmp(&a.last_call().map(|m| &m.timestamp)));
@@ -203,7 +222,7 @@ impl ConvList {
         // dialled (and, for SMS, is not a landline).
         let contacts = self.contacts(state, &q, self.tab, home);
         let free = (!q.is_empty() && dial_number(&q).is_ok() && self.tab.offers(&q, None, home) && convs.is_empty() && contacts.is_empty()).then_some(q.as_str());
-        if convs.is_empty() && contacts.is_empty() && free.is_none() && hits.is_none() {
+        if convs.is_empty() && folded == 0 && contacts.is_empty() && free.is_none() && hits.is_none() {
             let empty = if calls { t!("No calls") } else { t!("No conversations") };
             w::hint(ui, pal, if q.is_empty() { empty } else { t!("No results") });
             return search.into_iter().collect();
@@ -221,7 +240,7 @@ impl ConvList {
         let cursor = (nav && (r.has_focus() || r.lost_focus() || self.kbd || !q.is_empty())).then_some(self.cursor);
         let mut pick = (nav && enter && !items.is_empty() && self.enter_opens(r.lost_focus(), r.has_focus())).then(|| items[self.cursor].clone());
         let (mut jump, mut more) = (None, false);
-        let mut del: Option<ListAction> = None;
+        let mut act: Option<ListAction> = None;
         let mut idx = 0usize;
         let mut line = |ui: &mut egui::Ui, row: &w::Row| {
             let here = cursor == Some(idx);
@@ -235,7 +254,11 @@ impl ConvList {
         };
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = w::ROW_GAP;
-            for c in convs {
+            for (i, c) in convs.into_iter().enumerate() {
+                if i == first_archived {
+                    self.archived_header(ui, pal, folded);
+                }
+                let flags = state.flags(&c.key);
                 let title = if c.name.is_empty() { shown_number(Some(&c.number)) } else { &c.name };
                 let last = if calls { c.last_call() } else { c.msgs.last() };
                 let preview = last.map(preview).unwrap_or_default();
@@ -244,6 +267,8 @@ impl ConvList {
                 let row = w::Row {
                     icon: Some(if calls {
                         Icon::Phone
+                    } else if flags.muted {
+                        Icon::BellOff
                     } else if unread > 0 {
                         Icon::Message
                     } else {
@@ -263,13 +288,27 @@ impl ConvList {
                 // In the Calls tab, only the calls go: the SMS of the conversation stay.
                 let label = if calls { t!("Delete call history…") } else { t!("Delete conversation…") };
                 resp.context_menu(|ui| {
+                    // Calls always ring: muting and archiving are for the SMS.
+                    if !calls {
+                        let (icon, label) = if flags.muted { (Icon::Bell, t!("Unmute")) } else { (Icon::BellOff, t!("Mute")) };
+                        if w::menu_item(ui, icon, label).clicked() {
+                            act = Some(ListAction::Flags(c.key.clone(), ConvFlags { muted: !flags.muted, ..flags }));
+                        }
+                        let (icon, label) = if flags.archived { (Icon::Unarchive, t!("Unarchive")) } else { (Icon::Archive, t!("Archive")) };
+                        if w::menu_item(ui, icon, label).clicked() {
+                            act = Some(ListAction::Flags(c.key.clone(), ConvFlags { archived: !flags.archived, ..flags }));
+                        }
+                    }
                     ui.menu_image_text_button(w::small_icon(Icon::Delete, ui.visuals().text_color()), label, |ui| {
                         if ui.button(t!("Confirm deletion")).clicked() {
                             let key = c.key.clone();
-                            del = Some(if calls { ListAction::DeleteCalls(key) } else { ListAction::Delete(key) });
+                            act = Some(if calls { ListAction::DeleteCalls(key) } else { ListAction::Delete(key) });
                         }
                     });
                 });
+            }
+            if folded > 0 && !self.archived {
+                self.archived_header(ui, pal, folded);
             }
             if !contacts.is_empty() || free.is_some() {
                 ui.add_space(w::GAP * 2.0);
@@ -293,7 +332,7 @@ impl ConvList {
             }
         });
         let found = jump.map(ListAction::Jump).into_iter().chain(more.then_some(ListAction::More));
-        search.into_iter().chain(del).chain(pick.map(ListAction::Open)).chain(found).collect()
+        search.into_iter().chain(act).chain(pick.map(ListAction::Open)).chain(found).collect()
     }
 }
 
@@ -359,7 +398,7 @@ mod tests {
 
     #[test]
     fn opening_resets_cursor_and_query() {
-        let mut l = ConvList { query: "ma".into(), cursor: 2, kbd: true, focus: false, found: None, tab: Tab::Calls, typed: None };
+        let mut l = ConvList { query: "ma".into(), cursor: 2, kbd: true, focus: false, found: None, tab: Tab::Calls, typed: None, archived: false };
         l.opened(&Target::Conv("k".into()));
         assert_eq!((l.query.as_str(), l.cursor, l.kbd), ("ma", 0, false));
         l.opened(&Target::Contact { name: "Ma".into(), number: "+331".into() });
@@ -396,6 +435,43 @@ mod tests {
         drop(harness);
         assert!(more);
         assert_eq!(jump.map(|j| j.id), Some(1));
+    }
+
+    #[test]
+    fn archived_section_and_flags_menu() {
+        use bluez_message::engine::Out;
+        use bluez_message::map::{Folder, Sms};
+        use egui_kittest::kittest::Queryable;
+        let mut state = State::default();
+        for (handle, address) in [("1", "+33600000001"), ("2", "+33600000002")] {
+            let sms = Sms { handle: handle.into(), address: address.into(), timestamp: format!("20261015T10000{handle}"), text: "a".into(), read: true, ..Sms::default() };
+            state.apply(Out::Sms { sms, folder: Folder::Inbox, new: false });
+        }
+        let (open, kept) = (state.key("+33600000001"), state.key("+33600000002"));
+        state.apply(Out::Conv { key: kept.clone(), flags: ConvFlags { muted: false, archived: true } });
+        let title = |k: &str| shown_number(Some(&state.conv(k).unwrap().number)).to_owned();
+        let (open_title, kept_title) = (title(&open), title(&kept));
+        let (mut list, mut emojis, mut acts) = (ConvList::default(), Emojis::default(), vec![]);
+        let mut fonts = false;
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            if !std::mem::replace(&mut fonts, true) {
+                ui.ctx().set_fonts(bluez_message::gui::theme::fonts());
+                ui.ctx().request_repaint();
+                return;
+            }
+            acts.extend(list.show(ui, &Palette::default(), &mut emojis, &state, &Target::None, true));
+        });
+        harness.get_by_label(&open_title);
+        assert!(harness.query_by_label(&kept_title).is_none(), "archived: folded");
+        harness.get_by_label(&t!("Archived ({0})", 1)).click();
+        harness.run();
+        harness.get_by_label(&kept_title).click_secondary();
+        harness.run();
+        harness.get_by_label(t!("Unarchive"));
+        harness.get_by_label(t!("Mute")).click();
+        harness.run();
+        drop(harness);
+        assert!(acts.contains(&ListAction::Flags(kept, ConvFlags { muted: true, archived: true })), "{acts:?}");
     }
 
     #[test]

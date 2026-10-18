@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use bluez_message::addr::BtAddr;
 use bluez_message::app::notify;
-use bluez_message::app::state::{Decline, Effect, Phase, State, phone_reads};
+use bluez_message::app::state::{Decline, Effect, Phase, State, phone_reads, sms_peer};
 use bluez_message::config;
-use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out, Profile};
+use bluez_message::engine::{Cmd, ConvFlags, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
 use bluez_message::map::Sms;
 use bluez_message::settings::Settings;
@@ -305,11 +305,13 @@ impl Daemon {
         if !admit(&dev.history, &o) {
             return;
         }
-        if let Out::Sms { sms, folder, new: false } = &o
-            && !folder.is_sent()
-            && !sms.read
-        {
-            self.recap += 1;
+        // Received SMS just recorded: its conversation leaves the archive; a muted one stays out of the summary.
+        let mut unarchive = None;
+        if let Some((key, flags, recap)) = received(&self.state, &o) {
+            self.recap += usize::from(recap);
+            if flags.archived {
+                unarchive = Some((key, ConvFlags { archived: false, ..flags }));
+            }
         }
         let mut logs = vec![];
         for fx in self.state.apply(o.clone()) {
@@ -341,6 +343,9 @@ impl Daemon {
             self.hub.publish(log, true);
         }
         self.sync_links();
+        if let Some((key, flags)) = unarchive {
+            let _ = self.set_conv(key, flags);
+        }
     }
 
     /// iPhone read marks (never backwards), then the summary of what the session's first listing brought.
@@ -398,6 +403,7 @@ impl Daemon {
             Cmd::MarkRead { key, until } => self.mark_read(key, until),
             cmd @ Cmd::Dial { .. } => self.dial(cmd),
             Cmd::Delete { key, item } => self.delete(key, item),
+            Cmd::ConvFlags { key, flags } => self.set_conv(key, flags),
             Cmd::Settings { settings } => self.set_settings(settings).await,
             Cmd::Reconnect => self.reconnect(reply.clone()),
             Cmd::SetDevice { addr } => match self.set_device(&addr).await {
@@ -456,6 +462,20 @@ impl Daemon {
             return Err(t!("cannot call: phone not linked or a call is already in progress").to_owned());
         }
         need(self.dev.as_ref())?.engine.submit(cmd).inspect(|()| self.dialing = Some(Instant::now()))
+    }
+
+    /// Only a known conversation can be flagged: `convs` stays bounded.
+    fn set_conv(&mut self, key: String, flags: ConvFlags) -> Result<(), String> {
+        let dev = need(self.dev.as_ref())?;
+        if flags != ConvFlags::default() && self.state.conv(&key).is_none() {
+            return Err(t!("invalid conversation").to_owned());
+        }
+        if let Err(e) = dev.history.set_conv(&key, flags) {
+            tracing::warn!("history (conversation): {e}");
+            return Err(t!("cannot save the conversation state (history)").to_owned());
+        }
+        self.apply_publish(Out::Conv { key, flags });
+        Ok(())
     }
 
     /// Local history only: nothing is erased on the iPhone.
@@ -668,6 +688,18 @@ fn for_notify(fx: Effect, s: &Settings, home: Option<numbering::Id>) -> Option<E
         }
         fx => Some(fx),
     }
+}
+
+/// Received SMS: its conversation key, its flags, and whether it counts in the session summary
+/// (listed, not new, unread, not muted).
+fn received(state: &State, o: &Out) -> Option<(String, ConvFlags, bool)> {
+    let Out::Sms { sms, folder, new } = o else { return None };
+    if folder.is_sent() {
+        return None;
+    }
+    let key = state.key(sms_peer(sms, false).0);
+    let flags = state.flags(&key);
+    Some((key, flags, !new && !sms.read && !flags.muted))
 }
 
 /// Filters and records: an SMS older than the history start, or already recorded, is not published.
@@ -1115,6 +1147,24 @@ mod tests {
         assert_eq!(w.next_check(), WATCH_EVERY);
         w.healthy();
         assert!(!w.early_due());
+    }
+
+    #[test]
+    fn received_sms_follows_conversation_flags() {
+        use bluez_message::map::Folder;
+        let sms = |handle: &str, read: bool| Sms { handle: handle.into(), address: "+33600000001".into(), timestamp: "20261015T100000".into(), text: "a".into(), read, ..Default::default() };
+        let out = |sms, folder, new| Out::Sms { sms, folder, new };
+        let mut st = State::default();
+        st.apply(out(sms("1", true), Folder::Inbox, true));
+        let key = st.convs[0].key.clone();
+        let (k, flags, recap) = received(&st, &out(sms("2", false), Folder::Inbox, false)).unwrap();
+        assert_eq!((k.as_str(), flags, recap), (key.as_str(), ConvFlags::default(), true));
+        assert!(!received(&st, &out(sms("3", false), Folder::Inbox, true)).unwrap().2, "new: notified, not summed up");
+        assert!(!received(&st, &out(sms("4", true), Folder::Inbox, false)).unwrap().2, "already read");
+        assert!(received(&st, &out(sms("5", false), Folder::Sent, false)).is_none());
+        let both = ConvFlags { muted: true, archived: true };
+        st.apply(Out::Conv { key: key.clone(), flags: both });
+        assert_eq!(received(&st, &out(sms("6", false), Folder::Inbox, false)), Some((key, both, false)), "muted: out of the summary");
     }
 
     #[test]
