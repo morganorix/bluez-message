@@ -40,6 +40,11 @@ pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 's
                         tracing::warn!("SMS notification: {e}");
                     }
                 }
+                Ok(Effect::Unsent { to, error, reply }) => {
+                    if let Err(e) = sms.show(&t!("SMS not sent to {0}", to), &error, reply) {
+                        tracing::warn!("SMS notification: {e}");
+                    }
+                }
                 Ok(Effect::Call(c)) => bubble.show(&c, None),
                 Ok(Effect::Ring(c, d)) => bubble.show(&c, d),
                 Ok(Effect::CallEnd(_)) => bubble.close(),

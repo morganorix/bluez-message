@@ -141,6 +141,7 @@
   "SETUP": "CONFIGURATION",
   "SMS": "SMS",
   "SMS not sent: {0}": "SMS non envoyé : {0}",
+  "SMS not sent to {0}": "SMS non envoyé à {0}",
   "STOP": "ARRÊTER",
   "SWAP": "BASCULER",
   "Save": "Enregistrer",

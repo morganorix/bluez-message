@@ -184,6 +184,8 @@ pub enum Effect {
     Ring(Call, Option<Decline>),
     /// End of call: what the history records.
     CallEnd(Ended),
+    /// SMS not sent (MAP down, refused): `to` as displayed, `reply` the number to open to retry.
+    Unsent { to: String, error: String, reply: Option<String> },
     /// Closes the SMS notifications still displayed (device change).
     CloseAll,
 }
@@ -454,8 +456,13 @@ impl State {
                     self.link_error = false;
                 }
                 let timestamp = if timestamp.is_empty() { stamp::now() } else { timestamp };
+                let unsent = Effect::Unsent {
+                    to: self.name_of(&to).unwrap_or_else(|| to.clone()),
+                    error: error.unwrap_or_else(|| t!("unknown error").to_owned()),
+                    reply: Some(crate::phone::strip_separators(&to)).filter(|n| crate::bmsg::validate_number(n).is_ok()),
+                };
                 self.push(&to, "", Msg { text, timestamp, outgoing: true, local: true, delivery: Delivery::Failed, ..Msg::default() }, false);
-                vec![]
+                vec![unsent]
             }
             Out::Deleted { key, item } => {
                 self.delete(&key, item.as_ref());
@@ -1219,6 +1226,16 @@ mod tests {
         st.pending("+331", "ok");
         assert!(!st.expire_pending(true));
         assert_eq!(st.convs[0].msgs.iter().filter(|m| m.delivery == Delivery::Failed).count(), 3);
+    }
+
+    #[test]
+    fn failed_send_notifies_even_untracked() {
+        let mut st = State::default();
+        st.apply(Out::Contacts { names: vec![("612345678".into(), "Bob".into())] });
+        let fx = st.apply(Out::Sent { to: "+33612345678".into(), text: "x".into(), ok: false, error: Some("MAP".into()), timestamp: String::new() });
+        assert_eq!(fx, [Effect::Unsent { to: "Bob".into(), error: "MAP".into(), reply: Some("+33612345678".into()) }]);
+        let fx = st.apply(Out::Sent { to: "+33600000001".into(), text: "x".into(), ok: false, error: None, timestamp: String::new() });
+        assert!(matches!(&fx[..], [Effect::Unsent { to, reply: Some(_), .. }] if to == "+33600000001"));
     }
 
     #[test]
