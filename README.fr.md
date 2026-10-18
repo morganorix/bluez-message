@@ -9,12 +9,20 @@ Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egu
 > sous la direction de l'auteur, qui en a fixé les orientations de structure, d'optimisation et de
 > sécurité, et l'a testé sur son propre matériel (iPhone 11, Arch Linux, Hyprland).
 
-- **SMS** : lecture et envoi par le profil Bluetooth MAP (via `bluez-obex`).
+- **Assistant de configuration** : allume l'adaptateur Bluetooth, trouve et appaire l'iPhone (code confirmé
+  des deux côtés), puis vérifie les réglages de l'iPhone ; plusieurs appareils, chacun avec son historique.
+- **SMS** : lecture et envoi par le profil Bluetooth MAP (via `bluez-obex`), emojis en couleur,
+  réactions, liens cliquables avec aperçus optionnels (titre et image), renvoi en cas d'échec.
+- **Conversations** : onglets SMS et Appels, recherche dans les noms et dans le texte de tous les messages,
+  sourdine, archivage, suppression locale, export en fichier JSON.
 - **Contacts** : synchronisés par PBAP toutes les 6 h (noms dans les conversations, recherche).
-- **Appels** : sonnerie, décrocher, refuser, raccrocher, muet, attente, double appel, appel sortant.
-  L'audio (mSBC) passe par PipeWire/WirePlumber en rôle HFP mains libres.
-- **Notifications** de bureau (SMS, appel entrant avec boutons Décrocher / Refuser), même fenêtre fermée.
-- **Historique local** SQLite, suppression locale, réactions, interface traduisible (anglais, français).
+- **Appels** : sonnerie, décrocher, refuser, raccrocher, muet, attente, double appel, appel sortant, réponses
+  rapides par SMS après un refus. L'audio (mSBC) passe par PipeWire/WirePlumber en rôle HFP mains libres.
+- **Notifications** de bureau (SMS avec Répondre, appel entrant avec Décrocher / Refuser / Réponse rapide),
+  même fenêtre fermée ; batterie de l'iPhone et voyants de liaison dans l'en-tête.
+- **Confidentialité et robustesse** : historique SQLite local (sauvegardé avant chaque migration), journaux
+  sans numéros, noms, textes ni adresses, attentes bornées sur chaque échange Bluetooth, service systemd
+  cloisonné, interface traduisible (anglais, français), aucune police système requise.
 
 ![Conversation](docs/bmessage-conversation.png)
 ![Paramètres](docs/bmessage-settings.png)
@@ -48,14 +56,14 @@ Paquet précompilé (x86_64), depuis les [releases](https://github.com/morganori
 signé par la clé `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Une seule fois, approuver la clé :
 
 ```sh
-curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.5/morganorix.asc | sudo pacman-key --add -
+curl -sL https://github.com/morganorix/bluez-message/releases/download/v1.0.0/morganorix.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
 ```
 
 Puis installer :
 
 ```sh
-sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.5/bluez-message-0.1.5-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v1.0.0/bluez-message-1.0.0-1-x86_64.pkg.tar.zst
 ```
 
 Ou compilé depuis une copie du dépôt :
@@ -211,7 +219,7 @@ src/
 ├── main.rs              CLI bluez-msg
 ├── bin/
 │   ├── bluez-messaged.rs        démon : moteur, notifications, historique, socket, surveillance du lien
-│   ├── bluez-message/           fenêtre principale (ui, convs, thread, composer, prefs)
+│   ├── bluez-message/           fenêtre principale (ui, convs, thread, composer, prefs, assistant)
 │   └── bluez-msg-call/          fenêtre d'appel
 ├── engine.rs            moteur commun : polling MAP, envoi, appels (commandes Cmd / sorties Out)
 ├── map.rs, obex.rs      client MAP sur bluez-obex (D-Bus)
@@ -221,7 +229,9 @@ src/
 ├── hfp.rs               unité mains libres RFCOMM brute (commandes AT, CLI seulement)
 ├── bluez.rs             état et reconnexion de l'appareil (org.bluez)
 ├── ipc.rs               protocole JSON lignes démon ↔ clients
-├── history.rs           base SQLite (migrations user_version)
+├── history.rs, reads.rs base SQLite (migrations user_version), lectures lentes (recherche, pages, export)
+├── setup.rs             agent d'appairage et contrôle de l'adaptateur (assistant)
+├── serve.rs, log.rs     moteur JSON lignes sur stdin/stdout, journaux à adresses masquées
 ├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
 ├── app/                 état partagé (conversations, appel), notifications, réactions
 └── gui/                 thème, widgets, icônes (MDI), emojis (Twemoji), aperçus de liens, démarrage egui

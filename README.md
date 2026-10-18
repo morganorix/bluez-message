@@ -9,12 +9,20 @@ to install on the phone. Written in Rust, egui interface.
 > under the direction of the author, who set its structural, optimisation and security guidelines and
 > tested it on his own hardware (iPhone 11, Arch Linux, Hyprland).
 
-- **Texts**: read and send through the Bluetooth MAP profile (via `bluez-obex`).
+- **Setup assistant**: turns the Bluetooth adapter on, finds and pairs the iPhone (code confirmed on
+  both sides), then checks the iPhone settings; several devices, each with its own history.
+- **Texts**: read and send through the Bluetooth MAP profile (via `bluez-obex`), colour emojis,
+  reactions, clickable links with optional previews (title and image), resend on failure.
+- **Conversations**: SMS and Calls tabs, search in names and in the text of every message,
+  mute, archive, local deletion, export to a JSON file.
 - **Contacts**: synced over PBAP every 6 h (names in conversations, search).
-- **Calls**: ringing, answer, decline, hang up, mute, hold, call waiting, outgoing calls.
-  Audio (mSBC) goes through PipeWire/WirePlumber in the HFP hands-free role.
-- **Desktop notifications** (texts, incoming call with Answer / Decline buttons), even with the window closed.
-- **Local history** in SQLite, local deletion, reactions, translatable interface (English, French).
+- **Calls**: ringing, answer, decline, hang up, mute, hold, call waiting, outgoing calls, quick replies
+  by text after declining. Audio (mSBC) goes through PipeWire/WirePlumber in the HFP hands-free role.
+- **Desktop notifications** (texts with Reply, incoming call with Answer / Decline / Quick reply),
+  even with the window closed; iPhone battery level and link lights in the header.
+- **Privacy and robustness**: local SQLite history (backed up before each migration), logs without
+  numbers, names, texts or addresses, bounded waits on every Bluetooth exchange, sandboxed systemd service,
+  translatable interface (English, French), no system font needed.
 
 ![Conversation](docs/bmessage-conversation.png)
 ![Settings](docs/bmessage-settings.png)
@@ -48,14 +56,14 @@ Prebuilt package (x86_64) from the [releases](https://github.com/morganorix/blue
 signed with key `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Once, trust the key:
 
 ```sh
-curl -sL https://github.com/morganorix/bluez-message/releases/download/v0.1.5/morganorix.asc | sudo pacman-key --add -
+curl -sL https://github.com/morganorix/bluez-message/releases/download/v1.0.0/morganorix.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
 ```
 
 Then install:
 
 ```sh
-sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v0.1.5/bluez-message-0.1.5-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/morganorix/bluez-message/releases/download/v1.0.0/bluez-message-1.0.0-1-x86_64.pkg.tar.zst
 ```
 
 Or build it from a clone of the repository:
@@ -206,7 +214,7 @@ src/
 ├── main.rs              bluez-msg CLI
 ├── bin/
 │   ├── bluez-messaged.rs        daemon: engine, notifications, history, socket, link watch
-│   ├── bluez-message/           main window (ui, convs, thread, composer, prefs)
+│   ├── bluez-message/           main window (ui, convs, thread, composer, prefs, setup assistant)
 │   └── bluez-msg-call/          call window
 ├── engine.rs            shared engine: MAP polling, sending, calls (Cmd commands / Out events)
 ├── map.rs, obex.rs      MAP client over bluez-obex (D-Bus)
@@ -216,7 +224,9 @@ src/
 ├── hfp.rs               raw RFCOMM hands-free unit (AT commands, CLI only)
 ├── bluez.rs             device state and reconnection (org.bluez)
 ├── ipc.rs               JSON-lines protocol daemon ↔ clients
-├── history.rs           SQLite database (user_version migrations)
+├── history.rs, reads.rs SQLite database (user_version migrations), slow reads (search, pages, export)
+├── setup.rs             pairing agent and adapter control (setup assistant)
+├── serve.rs, log.rs     JSON-lines engine on stdin/stdout, logs with masked addresses
 ├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
 ├── app/                 shared state (conversations, call), notifications, reactions
 └── gui/                 theme, widgets, icons (MDI), emojis (Twemoji), link previews, egui startup
