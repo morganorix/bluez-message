@@ -41,6 +41,8 @@ pub enum ListAction {
     Jump(Hit),
     /// New muted / archived state of a conversation.
     Flags(String, ConvFlags),
+    /// JSON export of a conversation (written by the daemon).
+    Export(String),
 }
 
 /// Pause after the last key before searching the whole history.
@@ -298,6 +300,9 @@ impl ConvList {
                         if w::menu_item(ui, icon, label).clicked() {
                             act = Some(ListAction::Flags(c.key.clone(), ConvFlags { archived: !flags.archived, ..flags }));
                         }
+                        if w::menu_item(ui, Icon::Download, t!("Export conversation")).clicked() {
+                            act = Some(ListAction::Export(c.key.clone()));
+                        }
                     }
                     ui.menu_image_text_button(w::small_icon(Icon::Delete, ui.visuals().text_color()), label, |ui| {
                         if ui.button(t!("Confirm deletion")).clicked() {
@@ -470,8 +475,13 @@ mod tests {
         harness.get_by_label(t!("Unarchive"));
         harness.get_by_label(t!("Mute")).click();
         harness.run();
+        harness.get_by_label(&kept_title).click_secondary();
+        harness.run();
+        harness.get_by_label(t!("Export conversation")).click();
+        harness.run();
         drop(harness);
-        assert!(acts.contains(&ListAction::Flags(kept, ConvFlags { muted: true, archived: true })), "{acts:?}");
+        assert!(acts.contains(&ListAction::Flags(kept.clone(), ConvFlags { muted: true, archived: true })), "{acts:?}");
+        assert!(acts.contains(&ListAction::Export(kept)), "{acts:?}");
     }
 
     #[test]

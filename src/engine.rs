@@ -101,6 +101,12 @@ pub enum Cmd {
     Older { key: String, before: Cursor, limit: u32 },
     /// Mute (no notification) or archive conversation `key`: handled by the daemon, published as [`Out::Conv`].
     ConvFlags { key: String, #[serde(flatten)] flags: ConvFlags },
+    /// Writes the history (conversation `key`, or all of it) to a JSON file of the download folder:
+    /// handled by the daemon, answered to the requester only ([`Out::Exported`]).
+    Export {
+        #[serde(default)]
+        key: Option<String>,
+    },
     Quit,
 }
 
@@ -298,6 +304,8 @@ pub enum Out {
     Older { key: String, items: Vec<Hit>, next: Option<Cursor> },
     /// Flags of conversation `key` (replayed in the snapshot; an incoming SMS takes it out of the archive).
     Conv { key: String, #[serde(flatten)] flags: ConvFlags },
+    /// File written by [`Cmd::Export`], to the requester only.
+    Exported { path: String },
     /// Inbox listing with the phone's read flags, for the daemon only: never serialised nor published.
     #[serde(skip)]
     Flags { items: Vec<Sms> },
@@ -431,7 +439,7 @@ pub fn parse_cmd(line: &str) -> std::result::Result<Cmd, String> {
         Cmd::Settings { settings } => settings.validate()?,
         Cmd::Search { query, before } => validate_search(query, before.as_ref())?,
         Cmd::Older { key, before, limit } => validate_older(key, before, *limit)?,
-        Cmd::ConvFlags { key, .. } if !is_key(key) => return Err(t!("invalid conversation").into()),
+        Cmd::ConvFlags { key, .. } | Cmd::Export { key: Some(key) } if !is_key(key) => return Err(t!("invalid conversation").into()),
         _ => {}
     }
     Ok(cmd)
@@ -529,7 +537,8 @@ impl Engine {
             | Cmd::Connect { .. }
             | Cmd::Search { .. }
             | Cmd::Older { .. }
-            | Cmd::ConvFlags { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
+            | Cmd::ConvFlags { .. }
+            | Cmd::Export { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
             Cmd::Quit => Ok(()),
         }
     }
@@ -757,6 +766,20 @@ mod tests {
             assert!(parse_cmd(&format!(r#"{{"cmd":"pair","addr":"{a}"}}"#)).is_err(), "{a}");
         }
         assert!(parse_cmd(r#"{"cmd":"powered"}"#).is_err());
+    }
+
+    #[test]
+    fn export_validated() {
+        assert_eq!(parse_cmd(r#"{"cmd":"export"}"#), Ok(Cmd::Export { key: None }));
+        assert_eq!(parse_cmd(r#"{"cmd":"export","key":"612345678"}"#), Ok(Cmd::Export { key: Some("612345678".into()) }));
+        let long = "1".repeat(65);
+        for k in ["", "a\nb", long.as_str()] {
+            assert!(parse_cmd(&format!(r#"{{"cmd":"export","key":"{k}"}}"#)).is_err(), "{k:?}");
+        }
+        // The folder is chosen by the daemon: an extra field is not a path.
+        assert!(parse_cmd(r#"{"cmd":"export","path":"/etc/x"}"#).is_ok_and(|c| c == Cmd::Export { key: None }));
+        let out = serde_json::to_string(&Out::Exported { path: "/tmp/x.json".into() }).unwrap();
+        assert_eq!(serde_json::from_str::<Out>(&out).unwrap(), Out::Exported { path: "/tmp/x.json".into() });
     }
 
     #[test]

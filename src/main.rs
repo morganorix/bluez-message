@@ -28,6 +28,8 @@ enum Cmd {
     Hfp { addr: BtAddr, #[arg(long)] answer: bool },
     /// MAP + HFP daemon driven by JSON lines (stdin/stdout), for the bar
     Serve { addr: BtAddr, #[arg(long, default_value_t = 5)] interval: u64 },
+    /// Export the history (or one conversation) to a JSON file of the Downloads folder, via the daemon
+    Export { #[arg(long)] key: Option<String> },
     /// Translation files (see locales/README.md)
     Locale {
         #[command(subcommand)]
@@ -105,6 +107,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Serve { addr, interval } => {
             bluez_message::serve::serve(&addr, Duration::from_secs(interval.max(1))).await?;
         }
+        Cmd::Export { key } => println!("{}", tokio::task::spawn_blocking(move || export(key)).await.map_err(std::io::Error::other)??),
         Cmd::Locale { action: LocaleCmd::Template } => print!("{}", i18n::TEMPLATE),
         Cmd::Locale { action: LocaleCmd::Check { file } } => {
             let json = std::fs::read_to_string(&file)?;
@@ -125,4 +128,31 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Asks the running daemon for an export ([`Request::Export`]) and waits for its answer, skipping the snapshot sent
+/// first; returns the path of the written file.
+fn export(key: Option<String>) -> Result<String> {
+    use std::io::{BufRead, Read, Write};
+    use bluez_message::engine::{Cmd as Request, Out};
+    /// Snapshot lines can carry a whole conversation page: generous bound, still finite.
+    const MAX: u64 = 16 * 1024 * 1024;
+    let mut s = std::os::unix::net::UnixStream::connect(bluez_message::config::socket_path().map_err(std::io::Error::other)?)?;
+    s.set_write_timeout(Some(Duration::from_secs(5)))?;
+    s.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let mut line = serde_json::to_vec(&Request::Export { key }).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    s.write_all(&line)?;
+    let mut r = std::io::BufReader::new(s);
+    loop {
+        line.clear();
+        if (&mut r).take(MAX).read_until(b'\n', &mut line)? == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        match serde_json::from_slice(&line) {
+            Ok(Out::Exported { path }) => return Ok(path),
+            Ok(Out::Error { msg }) => return Err(std::io::Error::other(msg).into()),
+            _ => {}
+        }
+    }
 }

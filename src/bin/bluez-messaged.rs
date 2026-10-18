@@ -422,6 +422,7 @@ impl Daemon {
                 self.lookup(reply.as_ref(), |h| h.older(&key, &before, n).map(|(items, next)| Out::Older { key, items, next }))
             }
             Cmd::ClearHistory => self.clear_history(),
+            Cmd::Export { key } => self.export(key.as_deref(), reply.as_ref()),
             Cmd::Open { number } => open_conversation(&number, &self.hub),
             cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
             cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
@@ -596,6 +597,29 @@ impl Daemon {
             Err(e) => {
                 tracing::warn!("history (lookup): {e}");
                 Err(t!("cannot read the history").to_owned())
+            }
+        }
+    }
+
+    /// Writes the history to the download folder (home folder without one): never a path from the IPC.
+    /// Synchronous like [`Daemon::lookup`]: one read transaction, a few MB at most.
+    fn export(&self, key: Option<&str>, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
+        let dev = need(self.dev.as_ref())?;
+        if key.is_some_and(|k| self.state.conv(k).is_none()) {
+            return Err(t!("invalid conversation").to_owned());
+        }
+        let dir = dirs::download_dir().filter(|d| d.is_dir()).or_else(dirs::home_dir).ok_or_else(|| t!("HOME not set").to_owned())?;
+        match dev.history.export_to(&dir, key) {
+            Ok(path) => {
+                tracing::info!("history exported");
+                if let Some(reply) = reply {
+                    let _ = reply.try_send(Out::Exported { path: path.display().to_string() });
+                }
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!("history (export): {e}");
+                Err(t!("cannot export the history").to_owned())
             }
         }
     }

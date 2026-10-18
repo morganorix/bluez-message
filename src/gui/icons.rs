@@ -54,6 +54,7 @@ icons! {
     Contacts => "contacts",
     Copy => "content-copy",
     Delete => "delete",
+    Download => "download",
     Earth => "earth",
     EyeOff => "eye-off",
     Font => "format-font",

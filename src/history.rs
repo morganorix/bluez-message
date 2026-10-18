@@ -540,11 +540,91 @@ impl History {
         page(st, params![self.device, key, before.ts, before.id, page_limit(limit)], limit)
     }
 
+    /// Writes the history of the active device as one JSON object (format 1): its contacts, SMS
+    /// (deleted ones left out) and calls, oldest first, restricted to conversation `key` if given.
+    /// Read in one transaction (consistent snapshot), streamed row by row; no device address.
+    ///
+    /// # Errors
+    /// SQLite or write error.
+    pub fn export(&self, key: Option<&str>, w: &mut impl std::io::Write) -> crate::error::Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        let p = params![self.device, key];
+        let head = serde_json::json!({ "format": 1, "exported": stamp::now(), "conversation": key });
+        let head = serde_json::to_string(&head).map_err(std::io::Error::from)?;
+        // `{...}` without its closing brace, the three arrays follow.
+        write!(w, "{},\"contacts\":", &head[..head.len() - 1])?;
+        json_rows(w, &tx, "SELECT number, name FROM contacts WHERE device = ?1 AND (?2 IS NULL OR key = ?2) ORDER BY name, number", p, |r| {
+            Ok(serde_json::json!({ "number": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)? }))
+        })?;
+        w.write_all(b",\"messages\":")?;
+        json_rows(
+            w,
+            &tx,
+            "SELECT ts, number, outgoing, text FROM messages WHERE device = ?1 AND (?2 IS NULL OR key = ?2) AND hidden = 0 ORDER BY ts, id",
+            p,
+            |r| {
+                let direction = if r.get::<_, bool>(2)? { "out" } else { "in" };
+                Ok(serde_json::json!({ "timestamp": r.get::<_, String>(0)?, "number": r.get::<_, String>(1)?, "direction": direction, "text": r.get::<_, String>(3)? }))
+            },
+        )?;
+        w.write_all(b",\"calls\":")?;
+        json_rows(w, &tx, "SELECT ts, number, kind, secs FROM calls WHERE device = ?1 AND (?2 IS NULL OR key = ?2) ORDER BY ts, id", p, |r| {
+            Ok(serde_json::json!({ "timestamp": r.get::<_, String>(0)?, "number": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?, "secs": r.get::<_, i64>(3)? }))
+        })?;
+        w.write_all(b"}\n")?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// [`History::export`] to a new file of `dir`, `bluez-message-<date>[-<key>].json` (mode 0600),
+    /// written beside it then renamed: never a partial file, never an existing one overwritten.
+    ///
+    /// # Errors
+    /// SQLite or file error, or the file already exists.
+    pub fn export_to(&self, dir: &Path, key: Option<&str>) -> crate::error::Result<PathBuf> {
+        let mut name = format!("bluez-message-{}", stamp::now().replace('T', "-"));
+        if let Some(k) = key {
+            name.push('-');
+            name.extend(k.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '+').take(32));
+        }
+        let path = dir.join(name + ".json");
+        // `tempfile` creates it 0600; its errors name the path, kept out of the logs.
+        let tmp = tempfile::Builder::new().prefix(".bluez-message-").suffix(".part").tempfile_in(dir).map_err(|e| std::io::Error::from(e.kind()))?;
+        let mut w = std::io::BufWriter::new(tmp);
+        self.export(key, &mut w)?;
+        let tmp = w.into_inner().map_err(std::io::IntoInnerError::into_error)?;
+        tmp.as_file().sync_all()?;
+        tmp.persist_noclobber(&path).map_err(|e| e.error)?;
+        Ok(path)
+    }
+
     #[cfg(test)]
     fn set_since(&mut self, s: &str) {
         self.db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", [&since_key(&self.device), s]).unwrap();
         self.since = s.to_owned();
     }
+}
+
+/// JSON array of the rows of `sql`, one `item` each, written as they are read.
+fn json_rows(
+    w: &mut impl std::io::Write,
+    tx: &Transaction<'_>,
+    sql: &str,
+    p: impl rusqlite::Params,
+    item: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value>,
+) -> crate::error::Result<()> {
+    let mut st = tx.prepare(sql)?;
+    let mut rows = st.query(p)?;
+    w.write_all(b"[")?;
+    let mut first = true;
+    while let Some(r) = rows.next()? {
+        if !std::mem::take(&mut first) {
+            w.write_all(b",")?;
+        }
+        serde_json::to_writer(&mut *w, &item(r)?).map_err(std::io::Error::from)?;
+    }
+    w.write_all(b"]")?;
+    Ok(())
 }
 
 /// `LIMIT` of a page of `n`: one more row tells whether a following page exists.
@@ -1103,6 +1183,59 @@ mod tests {
         let db = dir.join("history.db");
         Connection::open(&db).unwrap().pragma_update(None, "user_version", 6).unwrap();
         assert!(matches!(History::open(&db, &dev()), Err(Error::DbVersion(6))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exports_json_of_active_device() {
+        let dir = tmp("export");
+        let db = dir.join("history.db");
+        {
+            let mut o = History::open(&db, &OTHER.parse().unwrap()).unwrap();
+            o.set_since("20261001T000000");
+            o.add_sms(&sms("+33600000003", "20261015T090000", "other device"), false).unwrap();
+        }
+        let mut h = History::open(&db, &dev()).unwrap();
+        h.set_since("20261001T000000");
+        h.add_sms(&sms("+33600000001", "20261015T100000", "a \"quoted\"\nline"), false).unwrap();
+        h.add_sms(&sms("+33600000001", "20261015T100500", "hidden"), false).unwrap();
+        h.add_local_sent("+33600000001", "20261015T101000", "b").unwrap();
+        h.add_sms(&sms("+33600000002", "20261015T110000", "c"), false).unwrap();
+        h.add_call("+33600000001", "20261015T120000", CallKind::Missed, 0).unwrap();
+        h.replace_contacts(&[("+33600000001".into(), "Bob".into()), ("+33600000002".into(), "Alice".into())]).unwrap();
+        let item = crate::engine::Item { timestamp: "20261015T100500".into(), text: "hidden".into(), outgoing: false, call: false };
+        h.delete("600000001", Some(&item)).unwrap();
+
+        let mut all = vec![];
+        h.export(None, &mut all).unwrap();
+        let all = String::from_utf8(all).unwrap();
+        assert!(all.ends_with("}\n"));
+        assert!(!all.contains(DEV) && !all.contains(OTHER), "no device address");
+        let v: serde_json::Value = serde_json::from_str(&all).unwrap();
+        assert_eq!(v["format"], 1);
+        assert!(v["conversation"].is_null());
+        let names: Vec<_> = v["contacts"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Alice", "Bob"]);
+        let texts: Vec<_> = v["messages"].as_array().unwrap().iter().map(|m| (m["direction"].as_str().unwrap(), m["text"].as_str().unwrap())).collect();
+        assert_eq!(texts, [("in", "a \"quoted\"\nline"), ("out", "b"), ("in", "c")], "oldest first, hidden and other device left out");
+        assert_eq!(v["calls"][0], serde_json::json!({ "timestamp": "20261015T120000", "number": "+33600000001", "kind": "missed", "secs": 0 }));
+
+        let path = h.export_to(&dir, Some("600000002")).unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("bluez-message-2") && name.ends_with("-600000002.json"), "{name}");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["conversation"], "600000002");
+        assert_eq!(v["contacts"].as_array().unwrap().len(), 1);
+        assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+        assert!(v["calls"].as_array().unwrap().is_empty());
+        // Same second: refused (existing file not overwritten), otherwise another name; no temporary file left behind.
+        let size = std::fs::metadata(&path).unwrap().len();
+        if let Ok(next) = h.export_to(&dir, Some("600000002")) {
+            assert_ne!(next, path);
+        }
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
+        assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

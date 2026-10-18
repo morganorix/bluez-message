@@ -270,6 +270,9 @@ impl App {
                 ListAction::Flags(key, flags) => {
                     self.submit(Cmd::ConvFlags { key, flags });
                 }
+                ListAction::Export(key) => {
+                    self.submit(Cmd::Export { key: Some(key) });
+                }
                 ListAction::Open(t) => self.open(t),
                 ListAction::Search(q) => self.state.search_all(&q),
                 ListAction::More => self.state.more_hits(),

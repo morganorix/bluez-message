@@ -546,6 +546,10 @@ impl State {
                 self.on_older(&key, items, next);
                 vec![]
             }
+            Out::Exported { path } => {
+                self.info = Some(t!("History exported to {0}", path));
+                vec![]
+            }
             // Never leaves the daemon.
             Out::Flags { .. } | Out::Open { .. } => vec![],
         }

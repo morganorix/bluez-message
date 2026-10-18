@@ -111,6 +111,7 @@ enum Act {
     Reconnect,
     AutoConnect,
     Retention(Option<u32>),
+    Export,
     Purge,
     Clear,
     Setup,
@@ -310,6 +311,11 @@ impl View {
             hist.push(Item { row: row(Some(Icon::History), label, "", s.retention_days == Some(d)), ctl: Ctl::None, act: Act::Retention(Some(d)) });
         }
         hist.push(Item {
+            row: w::Row { sub: Some(t!("JSON file in the Downloads folder")), ..row(Some(Icon::Download), t!("Export history"), "", false) },
+            ctl: Ctl::None,
+            act: Act::Export,
+        });
+        hist.push(Item {
             row: w::Row { sub: Some(t!("Erase their text from this PC")), ..row(Some(Icon::Broom), t!("Purge deleted messages"), "", false) },
             ctl: Ctl::None,
             act: Act::Purge,
@@ -413,6 +419,7 @@ impl View {
             Act::Retention(d) => with(&|n| n.retention_days = d),
             Act::Reconnect => vec![Cmd::Reconnect],
             Act::AutoConnect => with(&|n| n.auto_connect = !n.auto_connect),
+            Act::Export => vec![Cmd::Export { key: None }],
             Act::Purge => vec![Cmd::PurgeHidden],
             Act::Device(a) if device == Some(&a) => vec![],
             Act::Device(a) => self.confirm(Armed::Device(a.clone()), Cmd::SetDevice { addr: a }),
