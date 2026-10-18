@@ -270,7 +270,8 @@ impl View {
         // Click on the row or Enter: next size; click on a segment: that size.
         let size_row = Item { row: row(Some(Icon::Font), t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
         let previews = Item { row: w::Row { sub: Some(t!("Contacts the site of the link")), ..row(Some(Icon::Link), t!("Link previews"), "", false) }, ctl: Ctl::Switch(s.link_previews), act: Act::LinkPreviews };
-        sections.push((0, (t!("Display"), vec![size_row, previews])));
+        sections.push((0, (t!("Display"), vec![size_row])));
+        sections.push((0, (t!("Links"), vec![previews])));
         let notify = vec![
             Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
             Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
