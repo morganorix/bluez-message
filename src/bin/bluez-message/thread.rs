@@ -168,25 +168,28 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, previews: Optio
             (false, _) => pal.dim(0.04),
         };
         let ink = if m.delivery == Delivery::Pending { pal.fg.gamma_multiply(0.6) } else { pal.fg };
-        let frame = Frame::new().fill(fill).corner_radius(CORNER).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
-            ui.set_max_width(max_w);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                let t = emojis.label(ui, &m.text, font::BODY, ink);
-                if let Some(p) = previews
-                    && let Some(url) = link::links(&m.text).first().copied()
-                    && let Some(c) = p.get(ui.ctx(), url)
-                {
-                    card(ui, pal, url, c);
-                }
-                match m.delivery {
-                    Delivery::Pending => progress(ui, pal, t.rect.width().max(90.0)),
-                    Delivery::Failed => drop(ui.label(w::text(t!("Not sent"), font::TINY, pal.danger))),
-                    Delivery::Done => drop(ui.label(w::text(short_stamp(&m.timestamp), font::TINY, pal.muted()))),
-                }
+        // Click sense registered below the content: links and the preview card keep their clicks.
+        let shown = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+            Frame::new().fill(fill).corner_radius(CORNER).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.set_max_width(max_w);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    let t = emojis.label(ui, &m.text, font::BODY, ink);
+                    if let Some(p) = previews
+                        && let Some(url) = link::links(&m.text).first().copied()
+                        && let Some(c) = p.get(ui.ctx(), url)
+                    {
+                        card(ui, pal, url, c);
+                    }
+                    match m.delivery {
+                        Delivery::Pending => progress(ui, pal, t.rect.width().max(90.0)),
+                        Delivery::Failed => drop(ui.label(w::text(t!("Not sent"), font::TINY, pal.danger))),
+                        Delivery::Done => drop(ui.label(w::text(short_stamp(&m.timestamp), font::TINY, pal.muted()))),
+                    }
+                });
             });
         });
-        actions(ui, pal, emojis, m, &frame.response, badges, acts);
+        actions(ui, pal, emojis, m, &shown.response, badges, acts);
     });
 }
 
@@ -408,6 +411,21 @@ pub fn short_stamp(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_in_a_bubble_opens() {
+        use egui::OutputCommand;
+        use egui_kittest::kittest::Queryable;
+        let m = Msg { text: "see https://example.com/a now".into(), timestamp: "20261015T100000".into(), delivery: Delivery::Done, ..Msg::default() };
+        let mut emojis = Emojis::default();
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            bubble(ui, &Palette::default(), &mut emojis, None, &m, &[], 300.0, &mut Vec::new());
+        });
+        harness.get_by_label("https://example.com/a").click();
+        harness.step();
+        let opened = harness.output().platform_output.commands.iter().any(|c| matches!(c, OutputCommand::OpenUrl(u) if u.url == "https://example.com/a"));
+        assert!(opened);
+    }
 
     #[test]
     fn preview_card_opens_its_link() {
