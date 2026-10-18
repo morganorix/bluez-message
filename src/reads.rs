@@ -105,7 +105,7 @@ fn run(reader: &Reader, job: Job) -> Out {
             }
             Err(e) => {
                 tracing::warn!("history (export): {e}");
-                Out::Error { msg: t!("cannot export the history").to_owned() }
+                Out::ExportFailed { msg: t!("cannot export the history").to_owned() }
             }
         },
     }
@@ -168,6 +168,6 @@ mod tests {
         let reads = Reads::spawn(h.reader().unwrap());
         let (tx, mut rx) = mpsc::channel(1);
         reads.submit(Job::Export { key: None, dir: "/nonexistent/bluez-message".into() }, tx).unwrap();
-        assert!(matches!(rx.recv().await, Some(Out::Error { .. })));
+        assert!(matches!(rx.recv().await, Some(Out::ExportFailed { .. })));
     }
 }

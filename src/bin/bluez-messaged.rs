@@ -423,7 +423,12 @@ impl Daemon {
             Cmd::Search { query, before } => self.read(reply.as_ref(), Job::Search { query, before }),
             Cmd::Older { key, before, limit } => self.read(reply.as_ref(), Job::Older { key, before, limit: usize::try_from(limit).unwrap_or(usize::MAX) }),
             Cmd::ClearHistory => self.clear_history(),
-            Cmd::Export { key } => self.export(key, reply.as_ref()),
+            Cmd::Export { key } => {
+                if let (Err(msg), Some(reply)) = (self.export(key, reply.as_ref()), reply.as_ref()) {
+                    let _ = reply.try_send(Out::ExportFailed { msg });
+                }
+                Ok(())
+            }
             Cmd::Open { number } => open_conversation(&number, &self.hub),
             cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
             cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
@@ -593,6 +598,7 @@ impl Daemon {
     }
 
     /// Writes the history to the download folder (home folder without one): never a path from the IPC.
+    /// A refusal is answered as [`Out::ExportFailed`] by the caller.
     fn export(&self, key: Option<String>, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
         need(self.dev.as_ref())?;
         if key.as_deref().is_some_and(|k| self.state.conv(k).is_none()) {

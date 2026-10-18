@@ -306,6 +306,9 @@ pub enum Out {
     Conv { key: String, #[serde(flatten)] flags: ConvFlags },
     /// File written by [`Cmd::Export`], to the requester only.
     Exported { path: String },
+    /// [`Cmd::Export`] refused or failed (translated reason), to the requester only: unlike a broadcast
+    /// [`Out::Error`], it always answers that request.
+    ExportFailed { msg: String },
     /// Inbox listing with the phone's read flags, for the daemon only: never serialised nor published.
     #[serde(skip)]
     Flags { items: Vec<Sms> },
@@ -780,6 +783,8 @@ mod tests {
         assert!(parse_cmd(r#"{"cmd":"export","path":"/etc/x"}"#).is_ok_and(|c| c == Cmd::Export { key: None }));
         let out = serde_json::to_string(&Out::Exported { path: "/tmp/x.json".into() }).unwrap();
         assert_eq!(serde_json::from_str::<Out>(&out).unwrap(), Out::Exported { path: "/tmp/x.json".into() });
+        let out = serde_json::to_string(&Out::ExportFailed { msg: "x".into() }).unwrap();
+        assert_eq!(serde_json::from_str::<Out>(&out).unwrap(), Out::ExportFailed { msg: "x".into() });
     }
 
     #[test]

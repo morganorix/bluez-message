@@ -555,6 +555,10 @@ impl State {
                 self.info = Some(t!("History exported to {0}", path));
                 vec![]
             }
+            Out::ExportFailed { msg } => {
+                self.error = Some(msg);
+                vec![]
+            }
             // Never leaves the daemon.
             Out::Flags { .. } | Out::Open { .. } => vec![],
         }

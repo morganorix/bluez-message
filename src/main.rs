@@ -140,7 +140,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 /// first; returns the path of the written file, or the daemon's refusal (already translated).
 fn export(key: Option<String>) -> Result<std::result::Result<String, String>> {
     use std::io::{BufRead, Read, Write};
-    use bluez_message::engine::{Cmd as Request, Out};
+    use bluez_message::engine::Cmd as Request;
     /// Snapshot lines can carry a whole conversation page: generous bound, still finite.
     const MAX: u64 = 16 * 1024 * 1024;
     let mut s = std::os::unix::net::UnixStream::connect(bluez_message::config::socket_path().map_err(std::io::Error::other)?)?;
@@ -155,10 +155,31 @@ fn export(key: Option<String>) -> Result<std::result::Result<String, String>> {
         if (&mut r).take(MAX).read_until(b'\n', &mut line)? == 0 {
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
         }
-        match serde_json::from_slice(&line) {
-            Ok(Out::Exported { path }) => return Ok(Ok(path)),
-            Ok(Out::Error { msg }) => return Ok(Err(msg)),
-            _ => {}
+        if let Some(done) = serde_json::from_slice(&line).ok().and_then(export_reply) {
+            return Ok(done);
         }
+    }
+}
+
+/// Answer to [`bluez_message::engine::Cmd::Export`] among the daemon's lines; anything else (snapshot, broadcast errors) is skipped.
+fn export_reply(out: bluez_message::engine::Out) -> Option<std::result::Result<String, String>> {
+    use bluez_message::engine::Out;
+    match out {
+        Out::Exported { path } => Some(Ok(path)),
+        Out::ExportFailed { msg } => Some(Err(msg)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export_reply;
+    use bluez_message::engine::Out;
+
+    #[test]
+    fn export_waits_for_its_own_answer() {
+        assert_eq!(export_reply(Out::Error { msg: "calls unavailable".into() }), None, "broadcast error skipped");
+        assert_eq!(export_reply(Out::ExportFailed { msg: "x".into() }), Some(Err("x".into())));
+        assert_eq!(export_reply(Out::Exported { path: "/tmp/x.json".into() }), Some(Ok("/tmp/x.json".into())));
     }
 }
