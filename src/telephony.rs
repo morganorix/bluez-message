@@ -117,6 +117,10 @@ fn end_events() -> Vec<HfEvent> {
 struct Call {
     state: CallState,
     number: String,
+    /// First seen already in conversation, without ringing or dialing: an app call (`CallKit`: Discord, Element…)
+    /// that the iPhone routes over HFP. Neither shown nor recorded; also hides a cellular call already up when the
+    /// link comes back.
+    app: bool,
 }
 
 /// Tracked state: selected AG, its calls, and the call last reported (only its changes emit).
@@ -153,11 +157,12 @@ impl Tracker {
         let cur = self
             .calls
             .values()
+            .filter(|c| !c.app)
             .filter_map(|c| c.state.rank().map(|r| (r, c)))
             .min_by(|(ra, a), (rb, b)| ra.cmp(rb).then_with(|| a.number.cmp(&b.number)))
             .map(|(_, c)| c.clone());
         // Secondary: a call put on hold behind the displayed call, a second ringing call.
-        let other = |state: CallState| self.calls.values().filter(|c| c.state == state).map(|c| c.number.clone()).min();
+        let other = |state: CallState| self.calls.values().filter(|c| !c.app && c.state == state).map(|c| c.number.clone()).min();
         let lines = match &cur {
             Some(c) if c.state == CallState::Held => Lines { hold: true, held: None, waiting: other(CallState::Waiting) },
             Some(_) => Lines { hold: false, held: other(CallState::Held), waiting: other(CallState::Waiting) },
@@ -215,14 +220,15 @@ impl Tracker {
         if !self.calls.contains_key(path) && (matches!(state, None | Some("disconnected")) || self.calls.len() >= MAX_CALLS) {
             return vec![];
         }
-        let call = self.calls.entry(path.clone()).or_insert_with(|| Call { state: CallState::Other(String::new()), number: String::new() });
+        let app = matches!(state, Some("active" | "held"));
+        let call = self.calls.entry(path.clone()).or_insert_with(|| Call { state: CallState::Other(String::new()), number: String::new(), app });
         if let Some(n) = prop_str(p, "LineIdentification") {
             call.number = clean(n, false).chars().take(MAX_NUMBER).collect();
         }
         if let Some(s) = state {
             call.state = CallState::parse(s);
         }
-        tracing::debug!(path = path.as_str(), state = ?call.state, number = mask(&call.number), "call");
+        tracing::debug!(path = path.as_str(), state = ?call.state, number = mask(&call.number), app = call.app, "call");
         if call.state == CallState::Disconnected {
             self.calls.remove(path);
         }
@@ -299,7 +305,7 @@ impl Tracker {
 
     /// First call found in the priority order `states` (not the table order).
     fn find(&self, states: &[CallState]) -> Option<OwnedObjectPath> {
-        states.iter().find_map(|s| self.calls.iter().filter(|(_, c)| c.state == *s).map(|(p, _)| p).min_by_key(|p| p.as_str()).cloned())
+        states.iter().find_map(|s| self.calls.iter().filter(|(_, c)| !c.app && c.state == *s).map(|(p, _)| p).min_by_key(|p| p.as_str()).cloned())
     }
 
     async fn exec(&self, conn: &Connection, cmd: HfCmd) -> Result<()> {
@@ -491,6 +497,7 @@ mod tests {
         let mut t = Tracker::default();
         t.set_ag(path("/org/pipewire/Telephony/ag1"));
         let (a, b) = (path("/org/pipewire/Telephony/ag1/call1"), path("/org/pipewire/Telephony/ag1/call2"));
+        t.upsert_call(&a, &props(&[("State", "dialing")]));
         t.upsert_call(&a, &props(&[("State", "active")]));
         // Second incoming call: the active call stays displayed, nothing is emitted.
         assert!(t.upsert_call(&b, &props(&[("LineIdentification", "+332"), ("State", "incoming")])).is_empty());
@@ -510,10 +517,29 @@ mod tests {
     fn losing_ag_ends_call() {
         let mut t = Tracker::default();
         t.set_ag(path("/org/pipewire/Telephony/ag1"));
-        t.upsert_call(&path("/org/pipewire/Telephony/ag1/call1"), &props(&[("State", "active")]));
+        let c = path("/org/pipewire/Telephony/ag1/call1");
+        t.upsert_call(&c, &props(&[("State", "incoming")]));
+        t.upsert_call(&c, &props(&[("State", "active")]));
         let mut want = end_events();
         want.push(HfEvent::Disconnected);
         assert_eq!(t.lose_ag(), want);
+    }
+
+    #[test]
+    fn app_call_ignored() {
+        let mut t = Tracker::default();
+        t.set_ag(path("/org/pipewire/Telephony/ag1"));
+        let (a, b) = (path("/org/pipewire/Telephony/ag1/call1"), path("/org/pipewire/Telephony/ag1/call2"));
+        // Discord through CallKit: active at once, flapping, no event.
+        for _ in 0..2 {
+            assert!(t.upsert_call(&a, &props(&[("LineIdentification", "+33600000001"), ("State", "active")])).is_empty());
+            assert!(t.upsert_call(&a, &props(&[("State", "disconnected")])).is_empty());
+        }
+        assert!(t.upsert_call(&a, &props(&[("State", "active")])).is_empty());
+        assert_eq!(t.find(&[CallState::Active]), None, "never targeted by a command");
+        // A cellular call meanwhile: shown as usual.
+        assert_eq!(t.upsert_call(&b, &props(&[("LineIdentification", "+332"), ("State", "incoming")])), [HfEvent::IncomingCall, HfEvent::Clip { number: "+332".into() }]);
+        assert_eq!(t.upsert_call(&b, &props(&[("State", "active")])), [ind("call", 1), ind("callsetup", 0), HfEvent::Clip { number: "+332".into() }]);
     }
 
     #[test]
@@ -521,7 +547,8 @@ mod tests {
         let mut t = Tracker::default();
         t.set_ag(path("/org/pipewire/Telephony/ag1"));
         let (a, b) = (path("/org/pipewire/Telephony/ag1/call1"), path("/org/pipewire/Telephony/ag1/call2"));
-        t.upsert_call(&a, &props(&[("LineIdentification", "+331"), ("State", "active")]));
+        t.upsert_call(&a, &props(&[("LineIdentification", "+331"), ("State", "incoming")]));
+        t.upsert_call(&a, &props(&[("State", "active")]));
         let lines = |hold, held: Option<&str>, waiting: Option<&str>| HfEvent::Lines { hold, held: held.map(Into::into), waiting: waiting.map(Into::into) };
         assert_eq!(t.upsert_call(&b, &props(&[("LineIdentification", "+332"), ("State", "waiting")])), [lines(false, None, Some("+332"))]);
         assert_eq!(t.find(&[CallState::Waiting, CallState::Incoming]), Some(b.clone()));

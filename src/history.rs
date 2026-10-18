@@ -539,7 +539,17 @@ fn v3_hidden(tx: &Transaction<'_>, _: &str) -> rusqlite::Result<()> {
 
 /// v4: one history per device; the existing rows and history start go to `device` (the one configured).
 /// Calls recorded twice (same correspondent, second and kind) are kept once.
+/// A v4 base set back to v3 by an older release (which also re-adds `since`) only gets its history start fixed.
 fn v4_device(tx: &Transaction<'_>, device: &str) -> rusqlite::Result<()> {
+    if !has_column(tx, "messages", "device")? {
+        copy_to_v4(tx, device)?;
+    }
+    tx.execute("UPDATE OR IGNORE meta SET k = ?1 WHERE k = 'since'", [since_key(device)])?;
+    tx.execute("DELETE FROM meta WHERE k = 'since'", [])?;
+    Ok(())
+}
+
+fn copy_to_v4(tx: &Transaction<'_>, device: &str) -> rusqlite::Result<()> {
     tx.execute_batch(SCHEMA_V4)?;
     tx.execute(
         "INSERT INTO messages_new (id, device, key, number, ts, text, outgoing, local, hidden) \
@@ -558,9 +568,8 @@ fn v4_device(tx: &Transaction<'_>, device: &str) -> rusqlite::Result<()> {
          ALTER TABLE messages_new RENAME TO messages; ALTER TABLE calls_new RENAME TO calls;
          ALTER TABLE contacts_new RENAME TO contacts; ALTER TABLE reads_new RENAME TO reads;
          CREATE INDEX messages_ts ON messages (device, ts); CREATE INDEX calls_ts ON calls (device, ts);",
-    )?;
-    tx.execute("UPDATE meta SET k = ?1 WHERE k = 'since'", [since_key(device)])?;
-    Ok(())
+    )
+
 }
 
 
@@ -758,6 +767,30 @@ mod tests {
         drop(h);
         let h = History::open(&db, &dev()).unwrap();
         assert_eq!(h.load(10).unwrap().iter().filter(|o| matches!(o, Out::Sms { .. })).count(), 1, "reopening changes nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn v4_set_back_to_v3_by_older_release() {
+        let dir = tmp("v3back");
+        let db = dir.join("history.db");
+        {
+            let mut h = History::open(&db, &dev()).unwrap();
+            h.set_since("20261001T000000");
+            h.add_call("+33600000001", "20261015T110000", CallKind::Missed, 0).unwrap();
+        }
+        // What v0.1.5 does on start: user_version 3 and a fresh 'since'.
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 3; INSERT OR IGNORE INTO meta (k, v) VALUES ('since', '20261018T000000');")
+            .unwrap();
+        let h = History::open(&db, &dev()).unwrap();
+        assert_eq!(h.since(), "20261001T000000", "history start kept");
+        let version: i64 = h.db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(version, 4);
+        let stale: i64 = h.db.query_row("SELECT count(*) FROM meta WHERE k = 'since'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stale, 0);
+        assert_eq!(h.load(10).unwrap().iter().filter(|o| matches!(o, Out::CallLog { .. })).count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

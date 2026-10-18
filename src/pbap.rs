@@ -8,6 +8,7 @@ use zbus::proxy;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use crate::addr::BtAddr;
+use crate::bluez::bounded;
 use crate::error::Result;
 use crate::obex::Session;
 use crate::phone::clean;
@@ -18,33 +19,66 @@ const MAX_VCF_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CONTACTS: usize = 20_000;
 const MAX_NAME: usize = 128;
 const MAX_TEL: usize = 64;
+/// Bound of each step of a size probe (session opening, then `Select` + `GetSize`).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[proxy(interface = "org.bluez.obex.PhonebookAccess1", default_service = "org.bluez.obex")]
 trait PhonebookAccess {
     fn select(&self, location: &str, phonebook: &str) -> zbus::Result<()>;
+    fn get_size(&self) -> zbus::Result<u16>;
     fn pull_all(&self, targetfile: &str, filters: HashMap<&str, Value<'_>>) -> zbus::Result<(OwnedObjectPath, HashMap<String, OwnedValue>)>;
 }
 
-/// Reads the internal phonebook (`int/pb`): (number, name) pairs.
+/// Internal phonebook read through PBAP.
+pub struct Phonebook {
+    /// (number, name) pairs.
+    pub contacts: Vec<(String, String)>,
+    /// Number of entries announced by the iPhone (`GetSize`), `None` if it did not answer.
+    pub size: Option<u16>,
+}
+
+/// Reads the internal phonebook (`int/pb`).
 ///
 /// # Errors
 /// Session refused (iOS authorisation), D-Bus error or failed transfer.
-pub async fn pull(addr: &BtAddr) -> Result<Vec<(String, String)>> {
+pub async fn pull(addr: &BtAddr) -> Result<Phonebook> {
     let session = Session::open(addr, "pbap").await?;
     let r = pull_in(&session).await;
     let _ = session.close().await;
     r
 }
 
-async fn pull_in(session: &Session) -> Result<Vec<(String, String)>> {
+/// Number of entries of the internal phonebook: a cheap change probe (additions and removals only,
+/// the iPhone leaves the PBAP version counters at zero).
+///
+/// # Errors
+/// iPhone unreachable, session refused, D-Bus error or timeout.
+pub async fn size(addr: &BtAddr) -> Result<u16> {
+    let session = bounded(PROBE_TIMEOUT, Session::open(addr, "pbap")).await?;
+    let r = bounded(PROBE_TIMEOUT, async {
+        let pb = select_pb(&session).await?;
+        pb.get_size().await
+    })
+    .await;
+    let _ = session.close().await;
+    r
+}
+
+async fn select_pb(session: &Session) -> zbus::Result<PhonebookAccessProxy<'_>> {
     let pb = PhonebookAccessProxy::builder(&session.conn).path(session.path.as_ref())?.build().await?;
     pb.select("int", "pb").await?;
+    Ok(pb)
+}
+
+async fn pull_in(session: &Session) -> Result<Phonebook> {
+    let pb = select_pb(session).await?;
+    let size = pb.get_size().await.ok();
     let filters = HashMap::from([("Format", Value::from("vcard30")), ("Fields", Value::from(vec!["FN", "N", "TEL"]))]);
     // Empty file: obexd chooses the temporary file and returns it in `Filename`.
     let (transfer, props) = pb.pull_all("", filters).await?;
     let file = crate::bluez::prop_str(&props, "Filename").map(str::to_owned);
     let done = session.wait_transfer(transfer, Duration::from_secs(120)).await;
-    let Some(file) = file else { return done.map(|()| vec![]) };
+    let Some(file) = file else { return done.map(|()| Phonebook { contacts: vec![], size }) };
     // The temporary file (phonebook in clear) is removed whatever the outcome of the transfer.
     let text = done.and_then(|()| Ok(read_bounded(&file).map(|b| String::from_utf8_lossy(&b).into_owned())?));
     if let Err(e) = std::fs::remove_file(&file)
@@ -52,7 +86,7 @@ async fn pull_in(session: &Session) -> Result<Vec<(String, String)>> {
     {
         tracing::warn!("PBAP temporary file not removed: {e}");
     }
-    Ok(parse_vcards(&text?))
+    Ok(Phonebook { contacts: parse_vcards(&text?), size })
 }
 
 /// Reads `MAX_VCF_BYTES` at most: beyond that, the end is ignored (the last truncated card has no `END`).

@@ -3,7 +3,7 @@
 use std::sync::mpsc::Receiver;
 
 use bluez_message::addr::BtAddr;
-use bluez_message::app::state::{Phase, State};
+use bluez_message::app::state::{Msg, Phase, State};
 use bluez_message::app::tapback;
 use bluez_message::engine::{Cmd, dial_number, validate_send};
 use bluez_message::gui::emoji::Emojis;
@@ -37,10 +37,11 @@ impl LinkDots {
             _ => w::Link::Off,
         };
         let map = if st.map_up { w::Link::On } else { w::Link::Off };
+        // A failed sync (refused on the iPhone) is off even if older contacts remain shown.
         let pbap = match st.pbap {
             Some(true) => w::Link::On,
-            Some(false) => w::Link::Pending,
-            None => w::Link::Off,
+            None if st.map_up => w::Link::Pending,
+            _ => w::Link::Off,
         };
         Self { hfp, map, pbap }
     }
@@ -238,6 +239,7 @@ impl App {
         for a in acts {
             match a {
                 ListAction::Delete(key) => self.delete_conv(key),
+                ListAction::DeleteCalls(key) => self.delete_calls(&key),
                 ListAction::Open(t) => self.open(t),
             }
         }
@@ -327,6 +329,19 @@ impl App {
         }
         self.state.delete(&key, None);
         self.submit(Cmd::Delete { key, item: None });
+    }
+
+    /// Deletes the calls of a conversation one by one (the protocol deletes an item or everything);
+    /// the conversation goes if it had no SMS.
+    fn delete_calls(&mut self, key: &str) {
+        let items: Vec<_> = self.state.conv(key).map(|c| c.msgs.iter().filter(|m| m.call.is_some()).map(Msg::item).collect()).unwrap_or_default();
+        for item in items {
+            self.state.delete(key, Some(&item));
+            self.submit(Cmd::Delete { key: key.to_owned(), item: Some(item) });
+        }
+        if self.state.conv(key).is_none_or(|c| c.last_call().is_none()) && matches!(&self.target, Target::Conv(k) if k == key) {
+            self.target = Target::None;
+        }
     }
 
     /// Opens a target chosen from the list: closes Settings, focus on the input.

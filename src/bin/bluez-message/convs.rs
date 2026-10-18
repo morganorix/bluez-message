@@ -29,6 +29,8 @@ pub enum ListAction {
     Open(Target),
     /// Confirmed deletion of a conversation.
     Delete(String),
+    /// Confirmed deletion of the calls of a conversation, its SMS kept.
+    DeleteCalls(String),
 }
 
 /// List shown: conversations able to receive an SMS, or the calls only.
@@ -188,7 +190,7 @@ impl ConvList {
         // Cursor visible during a search or keyboard navigation.
         let cursor = (nav && (r.has_focus() || r.lost_focus() || self.kbd || !q.is_empty())).then_some(self.cursor);
         let mut pick = (nav && enter && self.enter_opens(r.lost_focus(), r.has_focus())).then(|| items[self.cursor].clone());
-        let mut del: Option<String> = None;
+        let mut del: Option<ListAction> = None;
         let mut idx = 0usize;
         let mut line = |ui: &mut egui::Ui, row: &w::Row| {
             let here = cursor == Some(idx);
@@ -227,16 +229,16 @@ impl ConvList {
                 if resp.clicked() {
                     pick = Some(Target::Conv(c.key.clone()));
                 }
-                // Deleting a conversation would also delete its SMS: calls are deleted one by one in the thread.
-                if !calls {
-                    resp.context_menu(|ui| {
-                        ui.menu_image_text_button(w::small_icon(Icon::Delete, ui.visuals().text_color()), t!("Delete conversation…"), |ui| {
-                            if ui.button(t!("Confirm deletion")).clicked() {
-                                del = Some(c.key.clone());
-                            }
-                        });
+                // In the Calls tab, only the calls go: the SMS of the conversation stay.
+                let label = if calls { t!("Delete call history…") } else { t!("Delete conversation…") };
+                resp.context_menu(|ui| {
+                    ui.menu_image_text_button(w::small_icon(Icon::Delete, ui.visuals().text_color()), label, |ui| {
+                        if ui.button(t!("Confirm deletion")).clicked() {
+                            let key = c.key.clone();
+                            del = Some(if calls { ListAction::DeleteCalls(key) } else { ListAction::Delete(key) });
+                        }
                     });
-                }
+                });
             }
             if !contacts.is_empty() || free.is_some() {
                 ui.add_space(w::GAP * 2.0);
@@ -256,7 +258,7 @@ impl ConvList {
                 }
             }
         });
-        del.map(ListAction::Delete).into_iter().chain(pick.map(ListAction::Open)).collect()
+        del.into_iter().chain(pick.map(ListAction::Open)).collect()
     }
 }
 

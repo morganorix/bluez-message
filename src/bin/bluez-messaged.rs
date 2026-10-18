@@ -21,7 +21,7 @@ use bluez_message::{bluez, i18n, ipc, numbering, pbap, t};
 use clap::Parser;
 use futures_util::StreamExt;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 
 /// SMS and calls replayed at startup (the most recent ones).
 const HISTORY: usize = 1000;
@@ -33,7 +33,10 @@ const DIAL_GUARD: Duration = Duration::from_secs(5);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// First contacts read, after the profiles start.
 const CONTACTS_DELAY: Duration = Duration::from_secs(10);
-const CONTACTS_EVERY: Duration = Duration::from_hours(6);
+/// Full read: catches the edits of an existing contact, which the size probe does not see.
+const CONTACTS_EVERY: Duration = Duration::from_hours(1);
+/// Size probe of the phonebook between two full reads (additions and removals).
+const CONTACTS_PROBE: Duration = Duration::from_mins(5);
 /// Spaced out: each attempt may ask for authorisation again on the iPhone.
 const CONTACTS_RETRY: Duration = Duration::from_mins(30);
 const WATCH_EVERY: Duration = Duration::from_secs(20);
@@ -148,8 +151,9 @@ async fn run(args: Args) -> Result<Exit, String> {
     // Without a device the senders are dropped: the contacts branch stays disabled.
     let (ct_tx, mut contacts) = mpsc::channel(1);
     if let Some(dev) = &d.dev {
-        tokio::spawn(sync_contacts(dev.addr.clone(), ct_tx));
-        tokio::spawn(link_watch(dev.addr.clone(), links_rx, dev.engine.nudger()));
+        let reconnected = Arc::new(Notify::new());
+        tokio::spawn(sync_contacts(dev.addr.clone(), ct_tx, Arc::clone(&reconnected)));
+        tokio::spawn(link_watch(dev.addr.clone(), links_rx, dev.engine.nudger(), reconnected));
     }
     let r = loop {
         tokio::select! {
@@ -649,27 +653,50 @@ fn admit(h: &History, o: &Out) -> bool {
     })
 }
 
-/// iPhone contacts through PBAP: at startup, then every 6 h (30 min after a failure).
+/// iPhone contacts through PBAP: at startup and on each reconnection of the iPhone (`reconnected`),
+/// when the phonebook size changes (probe every 5 min), otherwise every hour (30 min after a failure).
+/// PBAP has no change notification and the iPhone leaves its version counters at zero: only the
+/// size betrays a change, and the whole phonebook is read again.
 /// An empty contact list (refusal, transfer without a file) does not replace the one already recorded.
 /// `None` sent on every failure, for the PBAP indicator.
-async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Option<Vec<(String, String)>>>) {
+async fn sync_contacts(addr: BtAddr, tx: mpsc::Sender<Option<Vec<(String, String)>>>, reconnected: Arc<Notify>) {
     tokio::time::sleep(CONTACTS_DELAY).await;
     loop {
-        let (list, wait) = match pbap::pull(&addr).await {
-            Ok(list) if list.is_empty() => {
+        // No probe after a failure: each session may ask for authorisation again on the iPhone.
+        let (list, wait, known) = match pbap::pull(&addr).await {
+            Ok(book) if book.contacts.is_empty() => {
                 tracing::warn!("empty PBAP phonebook: stored contacts kept");
-                (None, CONTACTS_RETRY)
+                (None, CONTACTS_RETRY, None)
             }
-            Ok(list) => (Some(list), CONTACTS_EVERY),
+            Ok(book) => (Some(book.contacts), CONTACTS_EVERY, book.size),
             Err(e) => {
                 tracing::warn!("PBAP phonebook (allow \"Sync Contacts\" on the iPhone?): {e}");
-                (None, CONTACTS_RETRY)
+                (None, CONTACTS_RETRY, None)
             }
         };
         if tx.send(list).await.is_err() {
             return;
         }
-        tokio::time::sleep(wait).await;
+        let due = tokio::time::Instant::now() + wait;
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(due) => break,
+                () = reconnected.notified() => {
+                    tracing::info!("iPhone reconnected: contacts read again");
+                    tokio::time::sleep(CONTACTS_DELAY).await;
+                    break;
+                }
+                () = tokio::time::sleep(CONTACTS_PROBE), if known.is_some() => match pbap::size(&addr).await {
+                    Ok(n) if Some(n) != known => {
+                        tracing::info!("phonebook size changed: contacts read again");
+                        break;
+                    }
+                    Ok(_) => {}
+                    // iPhone away: the next probe or the reconnection takes over.
+                    Err(e) => tracing::debug!("PBAP size probe: {e}"),
+                },
+            }
+        }
     }
 }
 
@@ -738,11 +765,12 @@ impl LinkWatch {
 
 /// Link watch, on each change signalled by BlueZ and every [`WATCH_EVERY`]:
 /// - iPhone not linked and `auto_connect`: `Connect` every [`WATCH_CONNECT_EVERY`] (out of range: silent failure);
-/// - iPhone back (linked, profiles resolved): the MAP session is woken without waiting for its backoff;
+/// - iPhone back (linked, profiles resolved): the MAP session is woken without waiting for its backoff,
+///   and the contacts are read again (`reconnected`);
 /// - linked without its profiles (no HFP or MAP, common after a spontaneous reconnection): `Connect`, then
 ///   first after [`WATCH_GRACE`], then on strikes, rebuilt link (`Disconnect` + `Connect`) if the profiles
 ///   still do not come back. Nothing during a call.
-async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudge) {
+async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudge, reconnected: Arc<Notify>) {
     let phone = loop {
         match bluez::Phone::new(&addr).await {
             Ok(p) => break p,
@@ -786,6 +814,7 @@ async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudg
         if now_up && up == Some(false) {
             tracing::info!("iPhone connected: MAP session woken up");
             nudge.nudge();
+            reconnected.notify_one();
         }
         up = Some(now_up);
         if !link.connected {
