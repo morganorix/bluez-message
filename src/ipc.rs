@@ -262,13 +262,15 @@ impl Windows {
     /// Age past which a held `Open` is dropped instead of handed to the next window.
     pub const HOLD: Duration = Duration::from_secs(10);
 
-    /// Passes `Open { number }` to the subscribed windows; `false`: none left, the caller holds or launches.
+    /// Passes `Open { number }` to the subscribed windows; `false`: none took it (gone or not reading),
+    /// the caller holds or launches.
     pub fn deliver(&mut self, number: Option<&str>) -> bool {
         self.open.retain(|w| !w.is_closed());
+        let mut taken = false;
         for w in &self.open {
-            let _ = w.try_send(Out::Open { number: number.map(str::to_owned) });
+            taken |= w.try_send(Out::Open { number: number.map(str::to_owned) }).is_ok();
         }
-        !self.open.is_empty()
+        taken
     }
 
     /// Keeps `Open { number }` for the next window, replacing an older one.
@@ -283,7 +285,8 @@ impl Windows {
         {
             let _ = w.try_send(Out::Open { number });
         }
-        self.open.retain(|w| !w.is_closed());
+        // A window subscribing twice is kept once.
+        self.open.retain(|o| !o.is_closed() && !o.same_channel(&w));
         self.open.push(w);
     }
 }
@@ -673,6 +676,20 @@ mod tests {
         assert_eq!(rx.try_recv().ok(), None);
         drop(rx);
         assert!(!w.deliver(None));
+    }
+
+    #[test]
+    fn window_kept_once_and_full_channel_not_counted() {
+        let mut w = Windows::default();
+        let t0 = Instant::now();
+        let (tx, mut rx) = mpsc::channel(1);
+        w.add(tx.clone(), t0);
+        w.add(tx, t0);
+        assert!(w.deliver(None));
+        assert_eq!(rx.try_recv().ok(), Some(open(None)));
+        assert_eq!(rx.try_recv().ok(), None, "subscribed once");
+        assert!(w.deliver(None));
+        assert!(!w.deliver(None), "channel full: the caller holds");
     }
 
     #[test]
