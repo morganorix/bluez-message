@@ -9,7 +9,7 @@ use zbus::{OwnedObjectPath, OwnedVariant, Variant, proxy};
 use crate::addr::BtAddr;
 use crate::bluez::bounded;
 use crate::error::Result;
-use crate::obex::Session;
+use crate::obex::{CALL_TIMEOUT, Session};
 use crate::phone::clean;
 
 /// Phonebook bounds: the `Contacts` snapshot goes out on a single IPC line (16 MiB on the GUI side).
@@ -70,11 +70,14 @@ async fn select_pb(session: &Session) -> zbus::Result<PhonebookAccessProxy<'_>> 
 }
 
 async fn pull_in(session: &Session) -> Result<Phonebook> {
-    let pb = select_pb(session).await?;
-    let size = pb.get_size().await.ok();
-    let filters = HashMap::from([("Format", Variant::from("vcard30")), ("Fields", Variant::from(vec!["FN", "N", "TEL"]))]);
-    // Empty file: obexd chooses the temporary file and returns it in `Filename`.
-    let (transfer, props) = pb.pull_all("", filters).await?;
+    let (size, (transfer, props)) = bounded(CALL_TIMEOUT, async {
+        let pb = select_pb(session).await?;
+        let size = pb.get_size().await.ok();
+        let filters = HashMap::from([("Format", Variant::from("vcard30")), ("Fields", Variant::from(vec!["FN", "N", "TEL"]))]);
+        // Empty file: obexd chooses the temporary file and returns it in `Filename`.
+        Ok::<_, zbus::Error>((size, pb.pull_all("", filters).await?))
+    })
+    .await?;
     let file = crate::bluez::prop_str(&props, "Filename").map(str::to_owned);
     let done = session.wait_transfer(transfer, Duration::from_secs(120)).await;
     let Some(file) = file else { return done.map(|()| Phonebook { contacts: vec![], size }) };

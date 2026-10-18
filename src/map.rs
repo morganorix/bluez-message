@@ -9,11 +9,14 @@ use zbus::{OwnedObjectPath, OwnedVariant, Variant, proxy};
 
 use crate::addr::BtAddr;
 use crate::bmsg;
-use crate::bluez::{prop_bool, prop_str};
+use crate::bluez::{bounded, prop_bool, prop_str};
 use crate::error::{Error, Result};
-use crate::obex::Session;
+use crate::obex::{CALL_TIMEOUT, Session};
 use crate::phone::clean;
 use crate::t;
+
+/// Messages kept per listing, the most recent ones (default `MaxListCount` of the MAP specification).
+const LIST_MAX: usize = 1024;
 
 #[proxy(interface = "org.bluez.obex.MessageAccess1", default_service = "org.bluez.obex")]
 trait MessageAccess {
@@ -43,6 +46,16 @@ pub struct Sms {
     /// Recipient (sent messages).
     pub recipient: String,
     pub recipient_address: String,
+}
+
+/// Sorted by timestamp, the [`LIST_MAX`] most recent kept (bound if the phone ignores the specification).
+fn newest(mut v: Vec<Sms>) -> Vec<Sms> {
+    v.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    if v.len() > LIST_MAX {
+        tracing::warn!("MAP listing of {} messages: {LIST_MAX} most recent kept", v.len());
+        v.drain(..v.len() - LIST_MAX);
+    }
+    v
 }
 
 /// Cleaned text property ([`clean`]): sender and text are controlled by the SMS sender.
@@ -144,17 +157,18 @@ impl MapClient {
             .await?)
     }
 
-    /// Messages of folder `folder`.
+    /// Messages of folder `folder`, oldest first, [`LIST_MAX`] most recent at most.
     ///
     /// # Errors
-    /// D-Bus or obexd error.
+    /// D-Bus or obexd error, or timeout.
     pub async fn list(&self, folder: Folder) -> Result<Vec<Sms>> {
-        let ma = self.access().await?;
-        ma.set_folder(&folder.path()).await?;
-        let raw = ma.list_messages("", HashMap::new()).await?;
-        let mut v: Vec<Sms> = raw.iter().map(|(p, props)| sms_from(p, props)).collect();
-        v.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        Ok(v)
+        let raw = bounded(CALL_TIMEOUT, async {
+            let ma = self.access().await?;
+            ma.set_folder(&folder.path()).await?;
+            Ok::<_, Error>(ma.list_messages("", HashMap::new()).await?)
+        })
+        .await?;
+        Ok(newest(raw.iter().map(|(p, props)| sms_from(p, props)).collect()))
     }
 
     /// Sends an SMS and waits for the end of the transfer.
@@ -167,11 +181,14 @@ impl MapClient {
         std::io::Write::write_all(&mut file, bmsg.as_bytes())?;
         let path = file.path().to_str().ok_or_else(|| Error::Io(std::io::Error::other(t!("non UTF-8 path"))))?.to_owned();
 
-        let ma = self.access().await?;
-        ma.set_folder(&Folder::Outbox.path()).await?;
-        // Pitfall: "UTF-8"/"utf-8" => InvalidArguments; only "utf8" is accepted.
-        let args = HashMap::from([("Charset", Variant::from("utf8"))]);
-        let (tpath, _) = ma.push_message(&path, "", args).await?;
+        let (tpath, _) = bounded(CALL_TIMEOUT, async {
+            let ma = self.access().await?;
+            ma.set_folder(&Folder::Outbox.path()).await?;
+            // Pitfall: "UTF-8"/"utf-8" => InvalidArguments; only "utf8" is accepted.
+            let args = HashMap::from([("Charset", Variant::from("utf8"))]);
+            Ok::<_, Error>(ma.push_message(&path, "", args).await?)
+        })
+        .await?;
         self.session.wait_transfer(tpath, Duration::from_secs(15)).await
     }
 
@@ -226,6 +243,15 @@ mod tests {
         // Transient empty listing: nothing forgotten, nothing replayed afterwards.
         assert!(new_messages(&mut seen, vec![]).is_empty());
         assert!(new_messages(&mut seen, vec![sms("2", "a")]).is_empty());
+    }
+
+    #[test]
+    fn listing_keeps_the_most_recent() {
+        let v: Vec<Sms> = (0..LIST_MAX + 3).rev().map(|i| sms(&i.to_string(), &format!("{i:08}"))).collect();
+        let kept = newest(v);
+        assert_eq!(kept.len(), LIST_MAX);
+        assert_eq!(kept.first().map(|m| m.handle.as_str()), Some("3"));
+        assert_eq!(kept.last().map(|m| m.handle.clone()), Some((LIST_MAX + 2).to_string()));
     }
 
     #[test]

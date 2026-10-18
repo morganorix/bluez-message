@@ -7,7 +7,11 @@ use futures_util::StreamExt;
 use zbus::{Connection, ObjectPath, OwnedObjectPath, Variant, proxy};
 
 use crate::addr::BtAddr;
+use crate::bluez::bounded;
 use crate::error::{Error, Result};
+
+/// Bound of each obexd call outside transfers (session opening and closing, folder, listing).
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[proxy(interface = "org.bluez.obex.Client1", default_service = "org.bluez.obex", default_path = "/org/bluez/obex")]
 trait Client {
@@ -28,25 +32,31 @@ pub struct Session {
 }
 
 impl Session {
-    /// Opens an obexd session to `addr` for profile `target`.
+    /// Opens an obexd session to `addr` for profile `target`, within [`CALL_TIMEOUT`]. On timeout, the
+    /// private connection is dropped: obexd removes the sessions of a client that leaves the bus.
     ///
     /// # Errors
-    /// Session bus unreachable or session refused.
+    /// Session bus unreachable, session refused or timeout.
     pub async fn open(addr: &BtAddr, target: &str) -> Result<Self> {
-        let conn = Connection::session().await?;
-        let client = ClientProxy::new(&conn).await?;
-        let path = client.create_session(addr.as_str(), HashMap::from([("Target", Variant::from(target))])).await?;
-        Ok(Self { conn, path })
+        bounded(CALL_TIMEOUT, async {
+            let conn = Connection::session().await?;
+            let client = ClientProxy::new(&conn).await?;
+            let path = client.create_session(addr.as_str(), HashMap::from([("Target", Variant::from(target))])).await?;
+            Ok::<_, Error>(Self { conn, path })
+        })
+        .await
     }
 
-    /// Closes the session.
+    /// Closes the session, within [`CALL_TIMEOUT`] (past it, dropping the connection removes it).
     ///
     /// # Errors
-    /// D-Bus or obexd error.
+    /// D-Bus or obexd error, or timeout.
     pub async fn close(self) -> Result<()> {
-        let client = ClientProxy::new(&self.conn).await?;
-        client.remove_session(&self.path).await?;
-        Ok(())
+        bounded(CALL_TIMEOUT, async {
+            let client = ClientProxy::new(&self.conn).await?;
+            client.remove_session(&self.path).await
+        })
+        .await
     }
 
     /// Waits for the end of an OBEX transfer (`max` at most): success only if `complete` is seen.
