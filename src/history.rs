@@ -13,7 +13,7 @@ use crate::engine::{CallKind, Out};
 use crate::error::Error;
 use crate::map::{Folder, Sms};
 use crate::numbering::{self, Id};
-use crate::phone::sms_peer;
+use crate::phone::{fold, sms_peer};
 use crate::stamp;
 
 /// Single-device schema (v1 to v3): starting point of [`MIGRATIONS`].
@@ -49,14 +49,18 @@ CREATE TABLE reads_new (device TEXT NOT NULL, key TEXT NOT NULL, until TEXT NOT 
 
 /// Step `i` brings the database from `user_version` `i` to `i + 1`, in its own transaction.
 type Migration = fn(&Transaction<'_>, &str) -> rusqlite::Result<()>;
-const MIGRATIONS: [Migration; 4] = [v1_base, v2_reads, v3_hidden, v4_device];
+const MIGRATIONS: [Migration; 5] = [v1_base, v2_reads, v3_hidden, v4_device, v5_convs];
 /// Index in [`MIGRATIONS`] of the step to v4, preceded by a copy to [`V3_BAK`].
 const TO_V4: usize = 3;
+/// Index in [`MIGRATIONS`] of the step to v5, preceded by a copy to [`V4_BAK`].
+const TO_V5: usize = 4;
 
 /// Copy made before the first [`History::rekey`].
 const KEYS_BAK: &str = ".bak";
 /// Copy made before the migration to v4 (one row per device).
 const V3_BAK: &str = ".v3.bak";
+/// Copy made before the migration to v5 (searchable text, conversation flags).
+const V4_BAK: &str = ".v4.bak";
 
 /// Timestamp gap below which an identical SMS (same correspondent, direction and text) is the same one.
 const SAME_SMS_SECS: i64 = 2;
@@ -109,8 +113,10 @@ impl History {
         let start = usize::try_from(version).ok().filter(|&v| v <= MIGRATIONS.len()).ok_or(Error::DbVersion(version))?;
         let device = device.to_string();
         for (v, step) in MIGRATIONS.iter().enumerate().skip(start) {
-            if v == TO_V4 {
-                backup(&db, path.as_deref(), V3_BAK)?;
+            match v {
+                TO_V4 => backup(&db, path.as_deref(), V3_BAK)?,
+                TO_V5 => backup(&db, path.as_deref(), V4_BAK)?,
+                _ => {}
             }
             let tx = db.transaction()?;
             step(&tx, &device)?;
@@ -195,6 +201,23 @@ impl History {
             for (device, old, until) in reads {
                 for new in moved.get(&(device.clone(), old)).into_iter().flatten() {
                     ins.execute(params![device, new, until])?;
+                }
+            }
+        }
+        let convs: Vec<(String, String, bool, bool)> = tx
+            .prepare("SELECT device, key, muted, archived FROM convs")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        tx.execute("DELETE FROM convs", [])?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT INTO convs (device, key, muted, archived) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (device, key) DO UPDATE SET muted = max(muted, excluded.muted), archived = min(archived, excluded.archived)",
+            )?;
+            // Merged conversations: muted if either was, archived only if both were.
+            for (device, old, muted, archived) in convs {
+                for new in moved.get(&(device.clone(), old)).into_iter().flatten() {
+                    ins.execute(params![device, new, muted, archived])?;
                 }
             }
         }
@@ -315,7 +338,7 @@ impl History {
     /// SQLite error.
     pub fn purge_hidden(&self) -> rusqlite::Result<usize> {
         let tx = self.db.unchecked_transaction()?;
-        let n = tx.execute("UPDATE OR REPLACE messages SET text = '' WHERE hidden = 1 AND text <> ''", [])?;
+        let n = tx.execute("UPDATE OR REPLACE messages SET text = '', folded = '' WHERE hidden = 1 AND text <> ''", [])?;
         tx.execute("DELETE FROM messages WHERE hidden = 1 AND ts < (SELECT v FROM meta WHERE k = 'since:' || messages.device)", [])?;
         tx.commit()?;
         Ok(n)
@@ -334,10 +357,11 @@ impl History {
         tx.execute("DELETE FROM messages WHERE device = ?1", [d])?;
         tx.execute("DELETE FROM calls WHERE device = ?1", [d])?;
         tx.execute("DELETE FROM reads WHERE device = ?1", [d])?;
+        tx.execute("DELETE FROM convs WHERE device = ?1", [d])?;
         tx.execute("UPDATE meta SET v = ?2 WHERE k = ?1", [&since_key(d), &now])?;
         tx.commit()?;
         self.since = now;
-        for suffix in [KEYS_BAK, V3_BAK] {
+        for suffix in [KEYS_BAK, V3_BAK, V4_BAK] {
             if let Some(bak) = backup_path(self.path.as_deref(), suffix)
                 && let Err(e) = std::fs::remove_file(&bak)
                 && e.kind() != std::io::ErrorKind::NotFound
@@ -354,8 +378,10 @@ impl History {
     fn insert_msg(&self, number: &str, ts: &str, text: &str, outgoing: bool, local: bool) -> rusqlite::Result<bool> {
         let n = self
             .db
-            .prepare_cached("INSERT OR IGNORE INTO messages (device, key, number, ts, text, outgoing, local) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?
-            .execute(params![self.device, numbering::key(number, self.home), number, ts, text, outgoing, local])?;
+            .prepare_cached(
+                "INSERT OR IGNORE INTO messages (device, key, number, ts, text, outgoing, local, folded) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?
+            .execute(params![self.device, numbering::key(number, self.home), number, ts, text, outgoing, local, fold(text)])?;
         Ok(n == 1)
     }
 
@@ -549,6 +575,25 @@ fn v4_device(tx: &Transaction<'_>, device: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v5: searchable text (lowercase without accents, see [`fold`]) and per-conversation flags (mute, archive).
+/// A v5 base set back by an older release only gets the rows it added without `folded` filled.
+fn v5_convs(tx: &Transaction<'_>, _: &str) -> rusqlite::Result<()> {
+    if !has_column(tx, "messages", "folded")? {
+        tx.execute("ALTER TABLE messages ADD COLUMN folded TEXT NOT NULL DEFAULT ''", [])?;
+    }
+    let rows: Vec<(i64, String)> =
+        tx.prepare("SELECT id, text FROM messages WHERE folded = '' AND text <> ''")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut set = tx.prepare("UPDATE messages SET folded = ?2 WHERE id = ?1")?;
+    for (id, text) in rows {
+        set.execute(params![id, fold(&text)])?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS convs (
+            device TEXT NOT NULL, key TEXT NOT NULL, muted INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (device, key));",
+    )
+}
+
 fn copy_to_v4(tx: &Transaction<'_>, device: &str) -> rusqlite::Result<()> {
     tx.execute_batch(SCHEMA_V4)?;
     tx.execute(
@@ -685,6 +730,11 @@ mod tests {
         h.mark_read("600000001", "20261015T090000").unwrap();
         h.mark_read("legacy", "20261015T100000").unwrap();
         h.mark_read("999999999", "20261015T100000").unwrap();
+        h.db.execute_batch(
+            "INSERT INTO convs (device, key, muted, archived) VALUES
+             ('00:11:22:33:44:55', '600000001', 1, 1), ('00:11:22:33:44:55', 'legacy', 0, 0), ('00:11:22:33:44:55', '999999999', 1, 1);",
+        )
+        .unwrap();
         assert!(h.rekey(Some(Id::FR)).unwrap());
         assert!(!h.rekey(Some(Id::FR)).unwrap(), "already done");
         let keys = |h: &History, t: &str| -> Vec<String> {
@@ -695,6 +745,9 @@ mod tests {
         assert_eq!(keys(&h, "contacts"), ["+33389000000"]);
         let reads: Vec<(String, String)> = h.db.prepare("SELECT key, until FROM reads").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
         assert_eq!(reads, [("+33600000001".to_owned(), "20261015T100000".to_owned())], "latest mark kept, orphan dropped");
+        let convs: Vec<(String, bool, bool)> =
+            h.db.prepare("SELECT key, muted, archived FROM convs").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(convs, [("+33600000001".to_owned(), true, false)], "muted if either, archived if both, orphan dropped");
         // New SMS after the migration: same key.
         assert!(!h.add_sms(&sms("0600000001", "20261015T100000", "a"), false).unwrap());
         // Other country: national numbers read differently.
@@ -752,7 +805,7 @@ mod tests {
         let h = History::open(&db, &dev()).unwrap();
         assert_eq!(h.since(), "20261001T000000", "history start kept");
         let version: i64 = h.db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         for table in ["messages", "calls", "contacts", "reads"] {
             let devices: Vec<String> =
                 h.db.prepare(&format!("SELECT DISTINCT device FROM {table}")).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
@@ -787,7 +840,7 @@ mod tests {
         let h = History::open(&db, &dev()).unwrap();
         assert_eq!(h.since(), "20261001T000000", "history start kept");
         let version: i64 = h.db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         let stale: i64 = h.db.query_row("SELECT count(*) FROM meta WHERE k = 'since'", [], |r| r.get(0)).unwrap();
         assert_eq!(stale, 0);
         assert_eq!(h.load(10).unwrap().iter().filter(|o| matches!(o, Out::CallLog { .. })).count(), 1);
@@ -824,13 +877,86 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn count(c: &Connection, table: &str) -> i64 {
+        c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn migrates_v4_to_v5() {
+        let dir = tmp("v4");
+        let db = dir.join("history.db");
+        {
+            let mut h = History::open(&db, &dev()).unwrap();
+            h.set_since("20261001T000000");
+            h.add_sms(&sms("06 00 00 00 01", "20261015T100000", "Été à l'Île"), false).unwrap();
+            h.add_sms(&sms("06 00 00 00 01", "20261015T100100", "ok"), false).unwrap();
+            h.add_call("06 00 00 00 01", "20261015T110000", CallKind::Missed, 0).unwrap();
+            h.mark_read("+33600000001", "20261015T100000").unwrap();
+            h.db.execute_batch("ALTER TABLE messages DROP COLUMN folded; DROP TABLE convs; PRAGMA user_version = 4;").unwrap();
+        }
+        let h = History::open(&db, &dev()).unwrap();
+        let version: i64 = h.db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(version, 5);
+        let folded: Vec<String> = h.db.prepare("SELECT folded FROM messages ORDER BY ts").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(folded, ["ete a l'ile", "ok"]);
+        assert_eq!([count(&h.db, "messages"), count(&h.db, "calls"), count(&h.db, "reads"), count(&h.db, "convs")], [2, 1, 1, 0]);
+        let ok: String = h.db.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(ok, "ok");
+        let bak = dir.join("history.db.v4.bak");
+        assert_eq!(std::fs::metadata(&bak).unwrap().permissions().mode() & 0o777, 0o600);
+        let old: i64 = Connection::open(&bak).unwrap().pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(old, 4, "copy taken before the migration");
+        // New SMS: folded on insert.
+        h.add_sms(&sms("06 00 00 00 01", "20261015T100200", "ÇA"), false).unwrap();
+        let last: String = h.db.query_row("SELECT folded FROM messages ORDER BY ts DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(last, "ca");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn v5_set_back_by_older_release() {
+        let dir = tmp("v5back");
+        let db = dir.join("history.db");
+        {
+            let mut h = History::open(&db, &dev()).unwrap();
+            h.set_since("20261001T000000");
+            h.add_sms(&sms("06 00 00 00 01", "20261015T100000", "Déjà"), false).unwrap();
+            h.db.execute("INSERT INTO convs (device, key, muted) VALUES (?1, '+33600000001', 1)", [DEV]).unwrap();
+            // Older release: writes without `folded` and resets the version.
+            h.db.execute_batch(
+                "INSERT INTO messages (device, key, number, ts, text, outgoing) VALUES ('00:11:22:33:44:55', '+33600000001', '0600000001', '20261015T100100', 'Où', 0);
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+        let h = History::open(&db, &dev()).unwrap();
+        let folded: Vec<String> = h.db.prepare("SELECT folded FROM messages ORDER BY ts").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(folded, ["deja", "ou"]);
+        assert_eq!(count(&h.db, "convs"), 1, "flags kept");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clear_drops_flags_and_folded_purged() {
+        let mut h = History::memory(&dev()).unwrap();
+        h.set_since("20261001T000000");
+        h.add_sms(&sms("06 00 00 00 01", "20261015T100000", "Déjà"), false).unwrap();
+        h.db.execute("UPDATE messages SET hidden = 1", []).unwrap();
+        h.purge_hidden().unwrap();
+        let f: String = h.db.query_row("SELECT folded FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(f, "", "erased text not searchable");
+        h.db.execute("INSERT INTO convs (device, key, muted) VALUES (?1, '+33600000001', 1), ('66:77:88:99:AA:BB', 'x', 1)", [DEV]).unwrap();
+        h.clear().unwrap();
+        assert_eq!(count(&h.db, "convs"), 1, "other device kept");
+    }
+
     #[test]
     fn newer_version_refused() {
         let dir = tmp("newer");
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("history.db");
-        Connection::open(&db).unwrap().pragma_update(None, "user_version", 5).unwrap();
-        assert!(matches!(History::open(&db, &dev()), Err(Error::DbVersion(5))));
+        Connection::open(&db).unwrap().pragma_update(None, "user_version", 6).unwrap();
+        assert!(matches!(History::open(&db, &dev()), Err(Error::DbVersion(6))));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
