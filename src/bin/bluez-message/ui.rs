@@ -3,7 +3,8 @@
 use std::sync::mpsc::Receiver;
 
 use bluez_message::addr::BtAddr;
-use bluez_message::app::state::{Msg, Phase, State};
+use bluez_message::app::notify;
+use bluez_message::app::state::{Effect, Msg, Phase, State};
 use bluez_message::app::tapback;
 use bluez_message::engine::{Cmd, Out, dial_number, validate_send};
 use bluez_message::gui::emoji::Emojis;
@@ -140,7 +141,7 @@ impl App {
                 st.error = Some(msg);
                 self.state = st;
             }
-            // Notifications are the daemon's business: effects ignored.
+            // Notifications are the daemon's business: effects ignored (export aside, below).
             Link::Event(o) if matches!(*o, Out::Open { .. }) => {
                 if let Out::Open { number } = *o {
                     if let Some(n) = number {
@@ -150,7 +151,12 @@ impl App {
                 }
             }
             Link::Event(o) => {
-                drop(self.state.apply(*o));
+                // Except the export result, asked by this window: notified from here, off the UI thread.
+                for fx in self.state.apply(*o) {
+                    if let Effect::Exported(r) = fx {
+                        std::thread::spawn(move || notify::exported(&r));
+                    }
+                }
                 self.follow_device();
                 // Language changed by the daemon: GUI texts reloaded immediately.
                 if let Some(p) = &self.state.settings

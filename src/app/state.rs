@@ -188,6 +188,8 @@ pub enum Effect {
     Unsent { to: String, error: String, reply: Option<String> },
     /// Closes the SMS notifications still displayed (device change).
     CloseAll,
+    /// History export answered to this client: the file path, or why it failed.
+    Exported(Result<String, String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,14 +562,8 @@ impl State {
                 self.on_older(&key, items, next);
                 vec![]
             }
-            Out::Exported { path } => {
-                self.info = Some(t!("History exported to {0}", path));
-                vec![]
-            }
-            Out::ExportFailed { msg } => {
-                self.error = Some(msg);
-                vec![]
-            }
+            Out::Exported { path } => vec![Effect::Exported(Ok(path))],
+            Out::ExportFailed { msg } => vec![Effect::Exported(Err(msg))],
             // Never leaves the daemon.
             Out::Flags { .. } | Out::Open { .. } => vec![],
         }
@@ -1489,5 +1485,13 @@ mod tests {
         let no_call = |_: &str, c: Option<&Conv>| c.is_none_or(|c| c.last_call().is_none());
         assert_eq!(st.search("emi", 10, no_call).len(), 1, "conversation hidden");
         assert_eq!(st.search("0", 10, |n, _| n.starts_with("07")), [("Anne", "0700000000")], "filtered by number");
+    }
+
+    #[test]
+    fn export_result_is_notified_not_bannered() {
+        let mut st = State::default();
+        assert_eq!(st.apply(Out::Exported { path: "/tmp/x.json".into() }), [Effect::Exported(Ok("/tmp/x.json".into()))]);
+        assert_eq!(st.apply(Out::ExportFailed { msg: "x".into() }), [Effect::Exported(Err("x".into()))]);
+        assert!(st.info.is_none() && st.error.is_none());
     }
 }

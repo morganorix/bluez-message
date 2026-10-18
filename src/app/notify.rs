@@ -48,6 +48,7 @@ pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 's
                 Ok(Effect::Call(c)) => bubble.show(&c, None),
                 Ok(Effect::Ring(c, d)) => bubble.show(&c, d),
                 Ok(Effect::CallEnd(_)) => bubble.close(),
+                Ok(Effect::Exported(r)) => exported(&r),
                 Ok(Effect::CloseAll) => {
                     bubble.close();
                     sms.close_all();
@@ -263,6 +264,17 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Bubble<F> {
             Ok(_) => {}
             Err(e) => tracing::warn!("call notification: {e}"),
         }
+    }
+}
+
+/// Plain card for the result of a history export.
+pub fn exported(r: &Result<String, String>) {
+    let (summary, body, icon) = match r {
+        Ok(path) => (t!("History exported"), path, "document-save"),
+        Err(msg) => (t!("History not exported"), msg, "dialog-error"),
+    };
+    if let Err(e) = Notification::new().appname(APP).summary(summary).body(&escape(body)).icon(icon).show() {
+        tracing::warn!("export notification: {e}");
     }
 }
 
