@@ -182,11 +182,14 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
         }
     }
 
-    /// A broken connection is dropped, reopened at the next card (its listener ends with it); a server's
+    /// A broken connection is closed, which ends its listener, and reopened at the next card; a server's
     /// error reply (no notification server, timeout) keeps it: no new connection or listener per card.
     fn failed(&mut self, e: zbus::Error) -> zbus::Error {
-        if !matches!(e, zbus::Error::MethodError(..) | zbus::Error::FDO(_)) {
-            self.link = None;
+        if !matches!(e, zbus::Error::MethodError(..) | zbus::Error::FDO(_))
+            && let Some(c) = self.link.take()
+            && let Err(close) = block_on(c.close())
+        {
+            tracing::debug!("notification connection close: {close}");
         }
         e
     }
@@ -268,12 +271,14 @@ impl<F: Fn(Cmd) + Clone + Send + 'static> Notifier<F> {
     }
 }
 
-/// Listens to the notification signals on `conn` in a thread that lives as long as the connection.
+/// Listens to the notification signals on `conn` in a thread that ends when the connection closes.
 /// `on_cmd` must not block: this thread drives the signal stream.
 fn listen(conn: &Connection, shared: Arc<Shared>, on_cmd: impl Fn(Cmd) + Send + 'static) -> zbus::Result<()> {
     let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(DEST).path(PATH).build()?;
-    let mut signals = block_on(zbus::MessageStream::for_match_rule(rule, conn, std::num::NonZeroUsize::new(KEPT)))?;
+    let signals = block_on(zbus::MessageStream::for_match_rule(rule, conn, std::num::NonZeroUsize::new(KEPT)))?;
+    let closing = conn.clone();
     thread::spawn(move || block_on(async move {
+        let mut signals = std::pin::pin!(signals.take_until(closing.closed()));
         while let Some(msg) = signals.next().await {
             let msg = match msg {
                 Ok(m) => m,
