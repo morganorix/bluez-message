@@ -52,6 +52,14 @@ pub fn socket_path() -> Result<PathBuf, String> {
     dir.map(|d| d.join("bluez-message.sock")).ok_or_else(|| t!("XDG_RUNTIME_DIR missing or relative").to_owned())
 }
 
+/// Window instance lock, next to the daemon socket: held while a window is open.
+///
+/// # Errors
+/// As [`socket_path`].
+pub fn gui_lock_path() -> Result<PathBuf, String> {
+    socket_path().map(|s| s.with_file_name("bluez-message-gui.lock"))
+}
+
 /// Saves the iPhone address to `~/.config/bluez-message/device` (atomic write, 0600).
 ///
 /// # Errors

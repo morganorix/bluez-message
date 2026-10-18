@@ -51,6 +51,7 @@ pub struct Snapshot {
     call: Vec<Out>,
     log: VecDeque<Out>,
     contacts: Option<Out>,
+    battery: Option<Out>,
     settings: Option<Out>,
     adapter: Option<Out>,
     found: Option<Out>,
@@ -97,6 +98,7 @@ impl Snapshot {
                 push_capped(&mut self.log, o.clone(), MAX_LOG);
             }
             Out::Contacts { .. } => self.contacts = Some(o.clone()),
+            Out::Battery { .. } => self.battery = Some(o.clone()),
             Out::Settings { .. } => self.settings = Some(o.clone()),
             Out::Adapter { .. } => self.adapter = Some(o.clone()),
             Out::Found { .. } => self.found = Some(o.clone()),
@@ -173,6 +175,7 @@ impl Snapshot {
         if self.slc {
             v.push(Out::Call(HfEvent::SlcReady));
         }
+        v.extend(self.battery.iter().cloned());
         v.extend(self.contacts.iter().cloned());
         v.extend(self.sms.iter().cloned());
         v.extend(self.log.iter().cloned());
@@ -233,6 +236,18 @@ pub struct Bound {
 /// File cannot be opened or created.
 pub fn lock_file(path: &Path) -> io::Result<File> {
     File::options().create(true).truncate(false).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+}
+
+/// Variable through which the daemon gives the GUI the conversation to open: unlike an argument, the environment
+/// of a process is not readable by other users (`/proc/<pid>/environ`).
+pub const OPEN_ENV: &str = "BLUEZ_MESSAGE_OPEN";
+
+/// A window holds its instance lock ([`crate::config::gui_lock_path`]). Probing takes the lock for an instant
+/// when it is free: a window started at that very moment exits on it (see the GUI's `--open` forwarding).
+#[must_use]
+pub fn gui_open() -> bool {
+    let Ok(path) = crate::config::gui_lock_path() else { return false };
+    lock_file(&path).is_ok_and(|f| matches!(f.try_lock(), Err(TryLockError::WouldBlock)))
 }
 
 /// Exclusive non-blocking lock: two daemons started together cannot steal each other's socket.
@@ -569,6 +584,23 @@ mod tests {
         // Pairing over: the confirmation is no longer replayed.
         s.record(&Out::Paired { addr, ok: true, error: None }, true);
         assert_eq!(s.replay(), [settings, adapter, Out::Status { link: Profile::Map, up: false }]);
+    }
+
+    #[test]
+    fn snapshot_replays_last_battery() {
+        let mut s = Snapshot::default();
+        s.record(&Out::Battery { percent: Some(80) }, true);
+        s.record(&Out::Battery { percent: Some(79) }, true);
+        assert_eq!(s.replay(), [Out::Battery { percent: Some(79) }]);
+        s.record(&Out::Battery { percent: None }, true);
+        assert_eq!(s.replay(), [Out::Battery { percent: None }]);
+    }
+
+    #[test]
+    fn snapshot_skips_open() {
+        let mut s = Snapshot::default();
+        s.record(&Out::Open { number: "+331".into() }, true);
+        assert!(s.replay().is_empty());
     }
 
     #[test]

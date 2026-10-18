@@ -5,7 +5,7 @@ use std::sync::mpsc::Receiver;
 use bluez_message::addr::BtAddr;
 use bluez_message::app::state::{Msg, Phase, State};
 use bluez_message::app::tapback;
-use bluez_message::engine::{Cmd, dial_number, validate_send};
+use bluez_message::engine::{Cmd, Out, dial_number, validate_send};
 use bluez_message::gui::emoji::Emojis;
 use bluez_message::gui::icons::Icon;
 use bluez_message::gui::theme::{self, Palette, size};
@@ -89,11 +89,18 @@ pub struct App {
     emojis: Emojis,
     /// Text size applied (zoom); `None`: no setting received.
     text_size: Option<TextSize>,
+    /// Window to bring to the foreground at the next frame ([`Out::Open`]).
+    raise: bool,
+    /// `--open` number, shown once the device is known ([`Self::follow_device`] resets the view before).
+    pending_open: Option<String>,
+    /// Target opened by the daemon (notification, declined call): quick replies offered above the input.
+    quick: bool,
 }
 
 impl App {
-    pub fn new(pal: Palette, tx: UnboundedSender<Cmd>, events: Receiver<Link>) -> Self {
-        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), text_size: None }
+    /// `open`: number whose conversation is shown at start (`--open`, already validated).
+    pub fn new(pal: Palette, tx: UnboundedSender<Cmd>, events: Receiver<Link>, open: Option<String>) -> Self {
+        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), text_size: None, raise: false, pending_open: open, quick: false }
     }
 
     /// Local validation (immediate feedback), then sent to the daemon which revalidates.
@@ -127,6 +134,12 @@ impl App {
                 self.state = st;
             }
             // Notifications are the daemon's business: effects ignored.
+            Link::Event(o) if matches!(*o, Out::Open { .. }) => {
+                if let Out::Open { number } = *o {
+                    self.open_number(number);
+                    self.raise = true;
+                }
+            }
             Link::Event(o) => {
                 drop(self.state.apply(*o));
                 self.follow_device();
@@ -177,11 +190,16 @@ impl App {
         let rect = w::header(ui, &pal, Icon::Message, "MESSAGES");
         right_of(ui, rect.shrink2(egui::vec2(size::EDGE, 0.0)), |ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
+            // Right to left: battery in the corner, set apart from the link dots.
+            if let Some(p) = self.state.battery {
+                w::battery(ui, &pal, p).on_hover_text(t!("iPhone battery"));
+                ui.add_space(24.0);
+            }
             w::status_dot(ui, &pal, Icon::Phone, hfp)
                 .on_hover_text(t!("HFP (Hands-Free Profile): calls and call audio. Lit with a halo: ready; lit without a halo: connecting; dim: not connected."));
             w::status_dot(ui, &pal, Icon::MessageText, map)
                 .on_hover_text(t!("MAP (Message Access Profile): reading and sending texts. Lit with a halo: connected; dim: not connected."));
-            let pbap_tip = t!("PBAP (Phone Book Access Profile): contact names, synced every 6 hours. Lit with a halo: last sync succeeded; lit without a halo: last sync failed (allow Sync Contacts on the iPhone); dim: not synced yet.");
+            let pbap_tip = t!("PBAP (Phone Book Access Profile): contact names, synced every hour, on reconnection and when the number of contacts changes. Lit with a halo: last sync succeeded; lit without a halo: last sync failed (allow Sync Contacts on the iPhone); dim: not synced yet.");
             w::status_dot(ui, &pal, Icon::Contacts, pbap).on_hover_text(pbap_tip);
         });
     }
@@ -199,6 +217,11 @@ impl App {
             self.target = Target::None;
             self.list = ConvList::default();
             self.composer = Composer::default();
+        }
+        if self.device.is_some()
+            && let Some(n) = self.pending_open.take()
+        {
+            self.open_number(n);
         }
     }
 
@@ -305,11 +328,30 @@ impl App {
         };
         let who = c.caller("  ·  ");
         let incoming = c.phase == Phase::Incoming;
+        // Mobile caller: declining can answer by SMS.
+        let sms_to = if incoming { c.sms_number(self.state.home()) } else { None };
+        let replies = self.state.settings.as_ref().map(|p| p.settings.quick_replies.as_slice()).unwrap_or_default();
         let pal = self.pal;
         let rect = w::call_card(ui, &pal, Icon::Phone, pal.accent, &who, what, pal.muted());
-        let (mut answer, mut hangup) = (false, false);
+        let (mut answer, mut hangup, mut decline) = (false, false, None);
         right_of(ui, rect.shrink2(egui::vec2(10.0, 0.0)), |ui| {
             hangup = w::button(ui, &pal, t!("HANG UP"), w::Tone::Danger).clicked();
+            if sms_to.is_some() {
+                let pick = w::button(ui, &pal, t!("DECLINE + SMS"), w::Tone::Neutral);
+                egui::Popup::from_toggle_button_response(&pick).show(|ui| {
+                    for r in replies {
+                        if w::menu_item(ui, Icon::MessageText, &ellipsis(r, CHIP_CHARS)).on_hover_text(r).clicked() {
+                            decline = Some(Some(r.clone()));
+                        }
+                    }
+                    if !replies.is_empty() {
+                        ui.separator();
+                    }
+                    if w::menu_item(ui, Icon::Message, t!("Write a message…")).clicked() {
+                        decline = Some(None);
+                    }
+                });
+            }
             if incoming {
                 answer = w::button(ui, &pal, t!("ANSWER"), w::Tone::Accent).clicked();
             }
@@ -319,6 +361,14 @@ impl App {
         }
         if answer {
             self.submit(Cmd::Answer);
+        }
+        // Declined then a quick reply sent, or the conversation opened with its chips.
+        if let (Some(reply), Some(to)) = (decline, sms_to) {
+            self.submit(Cmd::Reject);
+            match reply {
+                Some(text) => drop(self.send(&to, &text)),
+                None => self.open_number(to),
+            }
         }
     }
 
@@ -352,10 +402,40 @@ impl App {
         self.prefs = None;
         self.list.opened(&t);
         self.composer.focus = true;
+        self.quick = false;
         self.target = t;
     }
 
+    /// SMS conversation with `number` (from the daemon or `--open`): the existing one, otherwise the contact
+    /// (switched to the conversation by [`Self::thread`] once the history holds it).
+    fn open_number(&mut self, number: String) {
+        let key = self.state.key(&number);
+        let t = if self.state.conv(&key).is_some() {
+            Target::Conv(key)
+        } else {
+            Target::Contact { name: self.state.name_of(&number).unwrap_or_default(), number }
+        };
+        self.list.tab = Tab::Sms;
+        self.open(t);
+        self.quick = true;
+    }
+
     fn compose(&mut self, ui: &mut egui::Ui) {
+        if self.quick
+            && let Some(p) = &self.state.settings
+            && !p.settings.quick_replies.is_empty()
+        {
+            ui.horizontal_wrapped(|ui| {
+                for r in &p.settings.quick_replies {
+                    // Fills the input only: the text is read again before Enter.
+                    if w::button(ui, &self.pal, &ellipsis(r, CHIP_CHARS), w::Tone::Accent).on_hover_text(r).clicked() {
+                        self.composer.draft.clone_from(r);
+                        self.composer.focus = true;
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
         match self.composer.show(ui, &self.pal, &mut self.emojis) {
             Some(ComposerAction::Send) => self.send_draft(),
             Some(ComposerAction::Leave) => self.list.focus = true,
@@ -446,6 +526,10 @@ impl eframe::App for App {
         if let Some(p) = self.colors.poll(ctx) {
             self.pal = p;
         }
+        if std::mem::take(&mut self.raise) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            raise_hyprland();
+        }
         // Zoom set on change only: egui's Ctrl+/- stays usable between two settings.
         if let Some(z) = self.state.settings.as_ref().map(|p| p.settings.text_size)
             && self.text_size != Some(z)
@@ -519,5 +603,86 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // Closes the connection; the daemon keeps running.
         self.tx = None;
+    }
+}
+
+/// Hyprland ignores the Wayland activation request of a background window: focus asked from the compositor
+/// (Lua dispatcher syntax), in a thread, without a shell. Nothing outside Hyprland.
+fn raise_hyprland() {
+    // One request at a time: repeated `Open` while hyprctl hangs do not pile up threads.
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return;
+    }
+    if BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let focus = format!("hl.dsp.focus({{ window = \"pid:{}\" }})", std::process::id());
+    std::thread::spawn(move || {
+        let null = std::process::Stdio::null;
+        match std::process::Command::new("hyprctl").args(["dispatch", &focus]).stdin(null()).stdout(null()).stderr(null()).spawn() {
+            Ok(mut c) => match wait_for(&mut c, HYPRCTL_WAIT) {
+                Ok(Some(st)) if !st.success() => tracing::warn!("hyprctl focus: {st}"),
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    tracing::warn!("hyprctl focus: timed out");
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+                Err(e) => tracing::warn!("hyprctl focus: {e}"),
+            },
+            Err(e) => tracing::warn!("hyprctl focus: {e}"),
+        }
+        BUSY.store(false, std::sync::atomic::Ordering::Release);
+    });
+}
+
+/// Longest wait for `hyprctl`: a hung compositor socket must not block the focus for good.
+const HYPRCTL_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Exit status of `child` within `limit`; `None` once it has passed.
+fn wait_for(child: &mut std::process::Child, limit: std::time::Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let end = std::time::Instant::now() + limit;
+    loop {
+        if let Some(st) = child.try_wait()? {
+            return Ok(Some(st));
+        }
+        if std::time::Instant::now() >= end {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Characters of a quick reply shown on its chip (the full text on hover).
+const CHIP_CHARS: usize = 32;
+
+fn ellipsis(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", s[..i].trim_end()),
+        None => s.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_for_bounds_a_hung_child() {
+        let mut quick = std::process::Command::new("true").spawn().unwrap();
+        assert!(wait_for(&mut quick, HYPRCTL_WAIT).unwrap().is_some_and(|s| s.success()));
+        let mut hung = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        let t = std::time::Instant::now();
+        assert!(wait_for(&mut hung, std::time::Duration::from_millis(100)).unwrap().is_none());
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        hung.kill().unwrap();
+        hung.wait().unwrap();
+    }
+
+    #[test]
+    fn ellipsis_cuts_at_chars() {
+        assert_eq!(ellipsis("éé ééé", 3), "éé…");
+        assert_eq!(ellipsis("abc", 3), "abc");
     }
 }

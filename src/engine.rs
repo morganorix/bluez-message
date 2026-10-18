@@ -77,6 +77,8 @@ pub enum Cmd {
     PurgeHidden,
     /// Clears the local history: handled by the daemon.
     ClearHistory,
+    /// Shows the conversation with `number` in the window (started if closed): handled by the daemon.
+    Open { number: String },
     /// Powers the Bluetooth adapter on or off: handled by the daemon (setup).
     Powered { on: bool },
     /// Starts or stops the search for nearby devices: handled by the daemon (setup).
@@ -182,6 +184,10 @@ pub enum Out {
     /// Item (or whole conversation if `item` is absent) removed from the history.
     Deleted { key: String, item: Option<Item> },
     Status { link: Profile, up: bool },
+    /// Phone battery level (0..=100), `None` when BlueZ does not expose it.
+    Battery { percent: Option<u8> },
+    /// The open window must show the conversation with `number` and take the focus (transient, never replayed).
+    Open { number: String },
     /// Settings in effect, available languages, paired devices and tracked address; `home`: country
     /// numbers are read with (ISO code, see [`crate::numbering`]), `auto`: the one without a setting.
     Settings {
@@ -419,6 +425,7 @@ impl Engine {
             | Cmd::SetDevice { .. }
             | Cmd::PurgeHidden
             | Cmd::ClearHistory
+            | Cmd::Open { .. }
             | Cmd::Powered { .. }
             | Cmd::Discover { .. }
             | Cmd::Pair { .. }
@@ -617,6 +624,12 @@ mod tests {
         assert_eq!(call, r#"{"event":"call","type":"clip","number":"+331"}"#);
         let st = serde_json::to_string(&Out::Status { link: Profile::Map, up: true }).unwrap();
         assert_eq!(st, r#"{"event":"status","link":"map","up":true}"#);
+        let bat = serde_json::to_string(&Out::Battery { percent: Some(80) }).unwrap();
+        assert_eq!(bat, r#"{"event":"battery","percent":80}"#);
+        assert_eq!(serde_json::from_str::<Out>(r#"{"event":"battery","percent":null}"#).unwrap(), Out::Battery { percent: None });
+        let open = serde_json::to_string(&Out::Open { number: "+331".into() }).unwrap();
+        assert_eq!(open, r#"{"event":"open","number":"+331"}"#);
+        assert_eq!(serde_json::from_str::<Cmd>(r#"{"cmd":"open","number":"+331"}"#).unwrap(), Cmd::Open { number: "+331".into() });
         let sms = Sms { handle: "h".into(), text: "x".into(), ..Default::default() };
         let o = Out::Sms { sms, folder: Folder::Inbox, new: true };
         let line = serde_json::to_string(&o).unwrap();

@@ -136,6 +136,14 @@ pub fn shown_number(n: Option<&str>) -> &str {
 }
 
 impl Call {
+    /// Number able to receive an SMS (separators removed, valid, not a landline): replies to a declined call.
+    #[must_use]
+    pub fn sms_number(&self, home: Option<Id>) -> Option<String> {
+        let n = crate::phone::strip_separators(self.number.as_deref()?);
+        crate::bmsg::validate_number(&n).ok()?;
+        (!numbering::is_landline(&n, home)).then_some(n)
+    }
+
     /// Name from the phonebook and number joined by `sep`, otherwise the number alone (or "Hidden number").
     #[must_use]
     pub fn caller(&self, sep: &str) -> String {
@@ -157,11 +165,23 @@ impl Call {
     }
 }
 
+/// SMS replies of the incoming call bubble: `number` can receive a text (valid, not a landline).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decline {
+    pub number: String,
+    /// Sent by "Decline + SMS" (first quick reply); `None`: only "Decline and write".
+    pub text: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
-    Sms { from: String, text: String },
+    /// `reply`: number the notification's "Reply" action opens ([`Cmd::Open`](crate::engine::Cmd::Open)), `None`
+    /// when the sender cannot be answered (alphanumeric, short code) or for a summary.
+    Sms { from: String, text: String, reply: Option<String> },
     /// Call in progress (ringing, talking, double call): view to display, emitted on every change.
     Call(Call),
+    /// Incoming [`Effect::Call`] as the daemon passes it to the bubble, with what declining can text back.
+    Ring(Call, Option<Decline>),
     /// End of call: what the history records.
     CallEnd(Ended),
     /// Closes the SMS notifications still displayed (device change).
@@ -250,6 +270,8 @@ pub struct State {
     pub slc: bool,
     /// Last contacts synchronisation: `None` before the first attempt.
     pub pbap: Option<bool>,
+    /// Phone battery level (0..=100), `None` if unknown.
+    pub battery: Option<u8>,
     pub call: Call,
     pub error: Option<String>,
     /// Report of a command (purge…), displayed without alarm.
@@ -382,6 +404,10 @@ impl State {
                 self.link_error = false;
                 self.apply(o)
             }
+            Out::Battery { percent } => {
+                self.battery = percent.filter(|p| *p <= 100);
+                vec![]
+            }
             Out::Status { link: Profile::Map, up } => {
                 self.map_up = up;
                 vec![]
@@ -439,7 +465,7 @@ impl State {
                 vec![]
             }
             // Never leaves the daemon.
-            Out::Flags { .. } => vec![],
+            Out::Flags { .. } | Out::Open { .. } => vec![],
         }
     }
 
@@ -551,8 +577,9 @@ impl State {
         }
         self.push(&number, &name, msg, !sent && !sms.read);
         if new && !sent {
+            let reply = Some(crate::phone::strip_separators(&number)).filter(|n| crate::bmsg::validate_number(n).is_ok());
             let from = self.name_of(&number).or((!sms.sender.is_empty()).then_some(sms.sender)).unwrap_or(number);
-            return vec![Effect::Sms { from, text: sms.text }];
+            return vec![Effect::Sms { from, text: sms.text, reply }];
         }
         vec![]
     }
@@ -874,7 +901,11 @@ mod tests {
         let mut st = State::default();
         let Out::Sms { sms, .. } = sms("1", "+331234", "t", "yo", false) else { unreachable!() };
         let fx = st.apply(Out::Sms { sms, folder: Folder::Inbox, new: true });
-        assert_eq!(fx, [Effect::Sms { from: "Alice".into(), text: "yo".into() }]);
+        assert_eq!(fx, [Effect::Sms { from: "Alice".into(), text: "yo".into(), reply: Some("+331234".into()) }]);
+        // Alphanumeric sender: nothing to reply to.
+        let Out::Sms { sms: s, .. } = self::sms("2", "INFO", "t", "code", false) else { unreachable!() };
+        let fx = st.apply(Out::Sms { sms: s, folder: Folder::Inbox, new: true });
+        assert!(matches!(&fx[..], [Effect::Sms { reply: None, .. }]));
     }
 
     fn ind(name: &str, value: u8) -> Out {
@@ -1021,6 +1052,15 @@ mod tests {
     }
 
     #[test]
+    fn battery_bounded() {
+        let mut st = State::default();
+        assert!(st.apply(Out::Battery { percent: Some(42) }).is_empty());
+        assert_eq!(st.battery, Some(42));
+        st.apply(Out::Battery { percent: Some(101) });
+        assert_eq!(st.battery, None, "out of range");
+    }
+
+    #[test]
     fn contacts_name_convs_calls_and_log() {
         let mut st = State::default();
         st.apply(sms("1", "+33612345678", "20261015T100000", "a", false));
@@ -1035,7 +1075,7 @@ mod tests {
         // New SMS: the notification carries the contact name.
         let mut s = Sms { handle: "9".into(), address: "+33612345678".into(), timestamp: "20261015T120000".into(), text: "b".into(), ..Default::default() };
         s.sender = String::new();
-        assert_eq!(st.apply(Out::Sms { sms: s, folder: Folder::Inbox, new: true }), [Effect::Sms { from: "Bob".into(), text: "b".into() }]);
+        assert_eq!(st.apply(Out::Sms { sms: s, folder: Folder::Inbox, new: true }), [Effect::Sms { from: "Bob".into(), text: "b".into(), reply: Some("+33612345678".into()) }]);
     }
 
     #[test]

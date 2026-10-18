@@ -96,16 +96,18 @@ After restarting WirePlumber, reconnect the iPhone (`bluetoothctl disconnect` th
 
 ## Getting started
 
-1. Pair the iPhone once:
-   ```sh
-   bluetoothctl
-   # power on, scan on, pair <address>, trust <address>, connect <address>
-   ```
-2. On the iPhone, in Settings > Bluetooth > (i) next to the PC: enable **Show Notifications** (MAP) and
-   **Sync Contacts** (PBAP). iOS also asks for permission on first access.
-3. Open **bmessage** from the menu, then **Settings > Bluetooth device**: pick the iPhone.
-   (Manual equivalent: write the address `AA:BB:CC:DD:EE:FF` to `~/.config/bluez-message/device`, then
-   `systemctl --user restart bluez-messaged`.)
+1. Open **bmessage** from the menu. Without a configured device, the setup assistant opens (also
+   available from **Settings > Devices > Set up a device**):
+   1. **Bluetooth adapter**: turn it on if needed.
+   2. **Device**: search, then pair the iPhone (confirm the same code on both sides), or pick an
+      already paired one, or type its address.
+   3. **iPhone settings**: in Settings > Bluetooth > (i) next to the PC, enable **Show Notifications**
+      (MAP) and **Sync Contacts** (PBAP); the Calls (HFP), Messages (MAP) and Contacts (PBAP) lights
+      turn green. iOS also asks for permission on first access.
+   4. **Done**.
+
+   Manual equivalent: pair with `bluetoothctl` (`pair`, `trust`, `connect <address>`), write the address
+   `AA:BB:CC:DD:EE:FF` to `~/.config/bluez-message/device`, then `systemctl --user restart bluez-messaged`.
 
 ## Usage
 
@@ -117,21 +119,33 @@ After restarting WirePlumber, reconnect the iPhone (`bluetoothctl disconnect` th
 - Thread: send, emoji button, call button in the header.
 - Right-click on a bubble: reaction, Resend, Copy, Delete (local deletion only, never on the iPhone).
 - A pending message shows a progress bar; if sending fails, a button resends it.
+- Header: Calls (HFP), Messages (MAP) and Contacts (PBAP) lights, and the iPhone battery level (red
+  below 20 %).
+- New SMS notification: **Reply** opens the window on the conversation (started if closed).
 
 Shortcuts: `↑`/`↓` + `Enter` in the list, `Esc`, `Ctrl+F` (search), `Ctrl+,` (settings).
 
 ### Calls
 
-When the phone rings, a notification offers **Answer** / **Decline**. Once the call is up, the
+When the phone rings, a notification offers **Answer** / **Decline**, plus, for a known mobile number,
+**Decline + SMS** (declines and sends the first quick reply) and **Decline and write** (declines and opens
+the conversation, with the quick replies as chips above the input: a click fills it, nothing is sent
+automatically). In the window, the call banner offers the same choices; **DECLINE + SMS** opens the list
+of quick replies. Once the call is up, the
 `bluez-msg-call` window shows the duration and the Mute, Hold, Hang up buttons (plus Answer / Decline /
 Swap during call waiting). It closes by itself when the call ends.
 
 ### Settings
 
-Language (applied live), Phone number country (Automatic: from the language or the locale; used to
-recognise landlines and to group a number written as `06…` or `+33…`), text / call notifications / hide message text, Bluetooth device, Reconnect,
-retention (30 / 90 / 365 days), purge deleted messages, Erase everything (double confirmation, contacts
-are kept).
+Tabs:
+- **General**: language (applied live), phone number country (Automatic: from the language or the
+  locale; used to recognise landlines and to group a number written as `06…` or `+33…`).
+- **Notifications**: new SMS, incoming calls, hide message text.
+- **Devices**: Bluetooth device, Connect automatically, Set up a device.
+- **History**: retention (30 / 90 / 365 days), purge deleted messages, Clear history (double
+  confirmation, contacts are kept).
+- **Replies**: quick replies used when declining a call (5 at most, 160 characters each; the first one
+  is the default for **Decline + SMS**).
 
 ### Command line
 
@@ -142,6 +156,7 @@ bluez-msg watch <address> [--interval 5]
 bluez-msg serve <address>                              # engine driven by JSON over stdin/stdout
 bluez-msg hfp <address> [--answer]                     # raw RFCOMM HFP, no audio (hfp_hf disabled)
 bluez-msg locale template | check <file>
+bluez-message --open <number>                          # window on that conversation
 ```
 
 ## Files
@@ -163,6 +178,7 @@ bluez-msg locale template | check <file>
 
 Window classes: `bluez-message` (main; suggested: floating, centred, 900×640) and `bluez-msg-call`
 (call; suggested: floating, pinned, 420×150, top of the screen).
+When a notification opens a conversation, the window is focused with `hyprctl dispatch` (Lua syntax).
 
 ## Translations
 

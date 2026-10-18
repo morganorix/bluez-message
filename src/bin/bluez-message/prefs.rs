@@ -1,4 +1,5 @@
-//! Settings view (right panel), in tabs: General (language, text size), Notifications, Devices, History.
+//! Settings view (right panel), in tabs: General (language, text size), Notifications, Devices, History,
+//! Replies (quick replies of declined calls).
 //! The settings belong to the daemon: each change goes out as a command, the display follows its reply.
 
 use std::time::{Duration, Instant};
@@ -11,7 +12,7 @@ use bluez_message::gui::theme::{CORNER, Palette, font, size};
 use bluez_message::gui::widgets as w;
 use bluez_message::i18n;
 use bluez_message::numbering;
-use bluez_message::settings::{RETENTIONS, Settings, TextSize};
+use bluez_message::settings::{QUICK_REPLIES_MAX, QUICK_REPLY_LEN, RETENTIONS, Settings, TextSize, clean_reply};
 use bluez_message::t;
 use eframe::egui::{self, Key, ScrollArea};
 
@@ -47,6 +48,21 @@ pub struct View {
     menu: Option<(Menu, usize)>,
     /// The list scrolls to its keyboard row (just opened or moved).
     follow: bool,
+    /// Quick reply being edited (Replies tab): its index (`None`: new one), the typed text and the original one.
+    edit: Option<(Option<usize>, String, String)>,
+    /// The editor field takes the focus at its first frame.
+    focus_edit: bool,
+}
+
+/// Index of the Replies tab in `tabs()`.
+const REPLIES: usize = 4;
+
+/// Editor button pressed.
+enum Edit {
+    Save,
+    First,
+    Delete,
+    Cancel,
 }
 
 /// Settings chosen from a drop-down list.
@@ -79,8 +95,8 @@ enum Ctl {
 type Section<'a> = (&'a str, Vec<Item<'a>>);
 
 /// Tab labels, in display order.
-fn tabs() -> [&'static str; 4] {
-    [t!("General"), t!("Notifications"), t!("Devices"), t!("History")]
+fn tabs() -> [&'static str; 5] {
+    [t!("General"), t!("Notifications"), t!("Devices"), t!("History"), t!("Replies")]
 }
 
 #[derive(Clone)]
@@ -97,6 +113,8 @@ enum Act {
     Purge,
     Clear,
     Setup,
+    /// Edits this quick reply (`None`: adds one).
+    Reply(Option<usize>),
 }
 
 /// Key pressed at this frame, auto-repeat excluded: holding Enter confirms nothing.
@@ -139,10 +157,11 @@ impl View {
             None => None,
         };
         if let Some((i, cursor)) = switch {
-            (self.tab, self.cursor, self.armed, self.menu) = (i, cursor, None, None);
+            (self.tab, self.cursor, self.armed, self.menu, self.edit) = (i, cursor, None, None, None);
         }
         ui.add_space(w::GAP);
         let s = &p.settings;
+        let mut cmds = if self.tab == REPLIES { self.editor(ui, pal, s) } else { vec![] };
 
         // Language choice: system, then each available language under its name.
         let langs: Choices =
@@ -202,7 +221,6 @@ impl View {
                 self.menu = None;
             }
         }
-        let mut cmds = vec![];
         if let Some((m, i)) = pick {
             self.menu = None;
             let (choices, current) = lists(m);
@@ -297,6 +315,18 @@ impl View {
         let clear_hint = if matches!(self.armed, Some((Armed::Clear, _))) { t!("Press again to confirm") } else { t!("Messages and calls on this PC") };
         hist.push(Item { row: w::Row { sub: Some(clear_hint), ..row(Some(Icon::Delete), t!("Clear history"), "", false) }, ctl: Ctl::None, act: Act::Clear });
         sections.push((3, (t!("History"), hist)));
+        let editing = |i: Option<usize>| self.edit.as_ref().is_some_and(|(a, ..)| *a == i);
+        let mut replies: Vec<Item> = s
+            .quick_replies
+            .iter()
+            .enumerate()
+            .map(|(i, r)| Item { row: row(Some(Icon::MessageText), r, if i == 0 { t!("default") } else { "" }, editing(Some(i))), ctl: Ctl::None, act: Act::Reply(Some(i)) })
+            .collect();
+        if replies.len() < QUICK_REPLIES_MAX {
+            let add = w::Row { sub: Some(t!("The default one is sent by “Decline + SMS”")), ..row(Some(Icon::Plus), t!("Add a reply"), "", editing(None)) };
+            replies.push(Item { row: add, ctl: Ctl::None, act: Act::Reply(None) });
+        }
+        sections.push((REPLIES, (t!("Quick replies"), replies)));
         sections.into_iter().filter(|(t, _)| *t == self.tab).map(|(_, s)| s).collect()
     }
 
@@ -384,7 +414,70 @@ impl View {
             Act::Device(a) if device == Some(&a) => vec![],
             Act::Device(a) => self.confirm(Armed::Device(a.clone()), Cmd::SetDevice { addr: a }),
             Act::Clear => self.confirm(Armed::Clear, Cmd::ClearHistory),
+            Act::Reply(i) => {
+                let text = i.and_then(|i| s.quick_replies.get(i)).cloned().unwrap_or_default();
+                (self.edit, self.focus_edit) = (Some((i, text.clone(), text)), true);
+                vec![]
+            }
         }
+    }
+
+    /// Field and buttons of the quick reply being edited; the new list goes out as a command.
+    fn editor(&mut self, ui: &mut egui::Ui, pal: &Palette, s: &Settings) -> Vec<Cmd> {
+        let Some((at, text, orig)) = self.edit.as_mut() else { return vec![] };
+        // The list may have changed since (other window, daemon reply): the edited text is looked up again,
+        // and becomes a new one if it is gone.
+        let at = at.and_then(|i| if s.quick_replies.get(i) == Some(orig) { Some(i) } else { s.quick_replies.iter().position(|r| r == orig) });
+        let r = ui.add(w::field(text, t!("Quick reply")).char_limit(QUICK_REPLY_LEN).desired_width(f32::INFINITY));
+        if std::mem::take(&mut self.focus_edit) {
+            r.request_focus();
+        }
+        let (enter, esc) = if r.lost_focus() { ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape))) } else { (false, false) };
+        ui.add_space(w::GAP);
+        let mut act = enter.then_some(Edit::Save).or(esc.then_some(Edit::Cancel));
+        ui.horizontal_wrapped(|ui| {
+            if w::button(ui, pal, t!("Save"), w::Tone::Accent).clicked() {
+                act = Some(Edit::Save);
+            }
+            if let Some(i) = at {
+                if i > 0 && w::button(ui, pal, t!("Make default"), w::Tone::Neutral).clicked() {
+                    act = Some(Edit::First);
+                }
+                if w::button(ui, pal, t!("Delete"), w::Tone::Danger).clicked() {
+                    act = Some(Edit::Delete);
+                }
+            }
+            if w::button(ui, pal, t!("Cancel"), w::Tone::Neutral).clicked() {
+                act = Some(Edit::Cancel);
+            }
+        });
+        ui.add_space(w::GAP);
+        let Some(act) = act else { return vec![] };
+        let mut n = s.clone();
+        let list = &mut n.quick_replies;
+        match (act, at) {
+            (Edit::Save, _) => {
+                let clean = clean_reply(text);
+                if clean.is_empty() {
+                    // Nothing to keep: the field stays open.
+                    self.focus_edit = true;
+                    return vec![];
+                }
+                match at {
+                    Some(i) => list[i] = clean,
+                    None if list.len() < QUICK_REPLIES_MAX => list.push(clean),
+                    None => {}
+                }
+            }
+            (Edit::First, Some(i)) => {
+                let r = list.remove(i);
+                list.insert(0, r);
+            }
+            (Edit::Delete, Some(i)) => drop(list.remove(i)),
+            _ => {}
+        }
+        self.edit = None;
+        if n.quick_replies == s.quick_replies { vec![] } else { vec![Cmd::Settings { settings: n }] }
     }
 
     /// First trigger: armed; second within the delay (and not too early): command.

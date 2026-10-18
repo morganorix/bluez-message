@@ -9,6 +9,9 @@ use crate::t;
 
 /// Offered retention periods (days); `None`: keep everything.
 pub const RETENTIONS: [u32; 3] = [30, 90, 365];
+/// Bounds of [`Settings::quick_replies`]: number of texts, characters per text (one SMS).
+pub const QUICK_REPLIES_MAX: usize = 5;
+pub const QUICK_REPLY_LEN: usize = 160;
 
 /// Window interface size (egui zoom: text and spacing together).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,12 +73,23 @@ pub struct Settings {
     pub auto_connect: bool,
     /// Home country for the numbering plan (`fr`…, see [`crate::numbering`]); `None`: from the locale.
     pub country: Option<String>,
+    /// Texts offered when declining a call; the first one is sent by "Decline + SMS".
+    pub quick_replies: Vec<String>,
 }
 
+/// The default quick replies are in the active language (`t!`): written to `settings.json` on the first save,
+/// they do not follow a later language change.
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None }
+        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None, quick_replies: vec![t!("Can't talk now, I'll call you back.").to_owned(), t!("I'm in a meeting.").to_owned()] }
     }
+}
+
+/// Quick reply as the settings keep it: trimmed, control characters removed, at most [`QUICK_REPLY_LEN`] characters.
+#[must_use]
+pub fn clean_reply(text: &str) -> String {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    text.trim().chars().take(QUICK_REPLY_LEN).collect::<String>().trim_end().to_owned()
 }
 
 /// Language code usable as a file name: letters, digits, `_`, `-` (no traversal).
@@ -88,7 +102,7 @@ impl Settings {
     /// Check of the values received from a client.
     ///
     /// # Errors
-    /// Translated message: invalid language, retention or country.
+    /// Translated message: invalid language, retention, country or quick replies.
     pub fn validate(&self) -> Result<(), String> {
         if self.lang.as_deref().is_some_and(|l| !valid_lang(l)) {
             return Err(t!("invalid language code").to_owned());
@@ -98,6 +112,9 @@ impl Settings {
         }
         if self.country.as_deref().is_some_and(|c| crate::numbering::parse_code(c).is_none()) {
             return Err(t!("unknown country").to_owned());
+        }
+        if self.quick_replies.len() > QUICK_REPLIES_MAX || self.quick_replies.iter().any(|r| r.is_empty() || clean_reply(r) != *r) {
+            return Err(t!("invalid quick replies").to_owned());
         }
         Ok(())
     }
@@ -161,5 +178,23 @@ mod tests {
         assert!(bad_country.validate().is_err());
         let ok = Settings { lang: Some("pt_BR".into()), retention_days: Some(90), country: Some("fr".into()), ..Settings::default() };
         assert!(ok.validate().is_ok());
+        for bad in [vec![String::new()], vec![" x".into()], vec!["a\nb".into()], vec!["é".repeat(161)], vec!["x".into(); 6]] {
+            assert!(Settings { quick_replies: bad, ..Settings::default() }.validate().is_err());
+        }
+        let ok = Settings { quick_replies: vec!["é".repeat(160); 5], ..Settings::default() };
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn quick_replies() {
+        assert_eq!(clean_reply("  On\u{7}my way\n "), "Onmy way");
+        assert_eq!(clean_reply(&"é".repeat(200)).chars().count(), QUICK_REPLY_LEN);
+        let cut = format!("{} x", "é".repeat(159));
+        assert_eq!(clean_reply(&cut), clean_reply(&clean_reply(&cut)), "idempotent at the cut");
+        // Older settings file: default texts.
+        let s: Settings = serde_json::from_str(r#"{"notify_sms": true}"#).unwrap();
+        assert_eq!(s.quick_replies.len(), 2);
+        let s: Settings = serde_json::from_str(r#"{"quick_replies": []}"#).unwrap();
+        assert!(s.quick_replies.is_empty() && s.validate().is_ok());
     }
 }

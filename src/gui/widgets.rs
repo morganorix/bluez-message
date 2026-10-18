@@ -340,6 +340,20 @@ pub enum Link {
     On,
 }
 
+/// Level under which the battery is shown in `danger`.
+const BATTERY_LOW: u8 = 20;
+
+/// Phone battery: tiered icon followed by the percentage, `danger` under [`BATTERY_LOW`].
+pub fn battery(ui: &mut Ui, pal: &Palette, percent: u8) -> Response {
+    let c = if percent < BATTERY_LOW { pal.danger } else { pal.muted() };
+    let text = ui.painter().layout_no_wrap(format!("{percent}%"), regular(font::BODY), c);
+    let (rect, resp) = ui.allocate_exact_size(vec2(font::ICON + 4.0 + text.size().x, 30.0), Sense::hover());
+    let y = rect.center().y;
+    paint_icon(ui, Icon::battery(percent), Pos2::new(rect.left() + font::ICON / 2.0, y), font::ICON, c);
+    ui.painter().galley(Pos2::new(rect.left() + font::ICON + 4.0, y - text.size().y / 2.0), text, c);
+    resp
+}
+
 /// `KnownCard` status dot (circle 4.5; halo 8 accent 22 % if linked; off `fg` 25 %, in progress accent2),
 /// icon 16 at 40 % to its left.
 pub fn status_dot(ui: &mut Ui, pal: &Palette, icon: Icon, state: Link) -> Response {

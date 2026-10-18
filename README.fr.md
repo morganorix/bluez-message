@@ -96,16 +96,19 @@ Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
 
 ## Mise en route
 
-1. Appairer l'iPhone une seule fois :
-   ```sh
-   bluetoothctl
-   # power on, scan on, pair <adresse>, trust <adresse>, connect <adresse>
-   ```
-2. Sur l'iPhone, dans Réglages > Bluetooth > (i) du PC : activer **Afficher les notifications** (MAP)
-   et **Synchroniser les contacts** (PBAP). iOS demande aussi l'autorisation au premier accès.
-3. Ouvrir **bmessage** depuis le menu, puis **Paramètres > Appareil Bluetooth** : choisir l'iPhone.
-   (Équivalent manuel : écrire l'adresse `AA:BB:CC:DD:EE:FF` dans `~/.config/bluez-message/device`, puis
-   `systemctl --user restart bluez-messaged`.)
+1. Ouvrir **bmessage** depuis le menu. Sans appareil configuré, l'assistant de configuration s'ouvre
+   (aussi accessible par **Paramètres > Appareils > Configurer un appareil**) :
+   1. **Adaptateur Bluetooth** : l'allumer si besoin.
+   2. **Appareil** : rechercher puis appairer l'iPhone (confirmer le même code des deux côtés), ou choisir
+      un appareil déjà appairé, ou saisir son adresse.
+   3. **Réglages de l'iPhone** : dans Réglages > Bluetooth > (i) à côté du PC, activer **Afficher les
+      notifications** (MAP) et **Synchroniser les contacts** (PBAP) ; les voyants Appels (HFP), Messages
+      (MAP) et Contacts (PBAP) passent au vert. iOS demande aussi l'autorisation au premier accès.
+   4. **Terminé**.
+
+   Équivalent manuel : appairer avec `bluetoothctl` (`pair`, `trust`, `connect <adresse>`), écrire
+   l'adresse `AA:BB:CC:DD:EE:FF` dans `~/.config/bluez-message/device`, puis
+   `systemctl --user restart bluez-messaged`.
 
 ## Utilisation
 
@@ -118,21 +121,33 @@ Après un redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
 - Clic droit sur une bulle : réaction, Renvoyer, Copier, Supprimer (suppression locale seulement, jamais
   sur l'iPhone).
 - Un envoi en attente affiche une barre de progression ; en échec, un bouton permet de le renvoyer.
+- En-tête : voyants Appels (HFP), Messages (MAP) et Contacts (PBAP), et niveau de batterie de l'iPhone
+  (en rouge sous 20 %).
+- Notification de nouveau SMS : **Répondre** ouvre la fenêtre sur la conversation (lancée si fermée).
 
 Raccourcis : `↑`/`↓` + `Entrée` dans la liste, `Échap`, `Ctrl+F` (recherche), `Ctrl+,` (paramètres).
 
 ### Appels
 
-À la sonnerie, une notification propose **Décrocher** / **Refuser**. Une fois l'appel établi, la fenêtre
+À la sonnerie, une notification propose **Décrocher** / **Refuser** et, pour un numéro mobile connu,
+**Refuser + SMS** (refuse et envoie la première réponse rapide) et **Refuser et écrire** (refuse et ouvre
+la conversation, avec les réponses rapides en puces au-dessus du champ : un clic le remplit, rien n'est
+envoyé d'office). Dans la fenêtre, la bande d'appel propose les mêmes choix ; **REFUSER + SMS** déroule la
+liste des réponses rapides. Une fois l'appel établi, la fenêtre
 `bluez-msg-call` affiche la durée et les boutons Muet, Attente, Raccrocher (et Répondre / Refuser /
 Basculer en double appel). Elle se ferme seule en fin d'appel.
 
 ### Paramètres
 
-Langue (à chaud), Pays des numéros (Automatique : selon la langue ou la locale ; sert à reconnaître les
-fixes et à regrouper un numéro écrit `06…` ou `+33…`), notifications SMS / appels / masquage du texte, appareil Bluetooth, Reconnecter,
-durée de conservation (30 / 90 / 365 jours), purge des messages supprimés, Tout effacer (double
-confirmation, les contacts sont gardés).
+Onglets :
+- **Général** : langue (à chaud), pays des numéros (Automatique : selon la langue ou la locale ; sert à
+  reconnaître les fixes et à regrouper un numéro écrit `06…` ou `+33…`).
+- **Notifications** : nouveaux SMS, appels entrants, masquage du texte.
+- **Appareils** : appareil Bluetooth, Connexion automatique, Configurer un appareil.
+- **Historique** : durée de conservation (30 / 90 / 365 jours), purge des messages supprimés, Tout
+  effacer (double confirmation, les contacts sont gardés).
+- **Réponses** : réponses rapides utilisées au refus d'un appel (5 au plus, 160 caractères chacune ; la
+  première sert par défaut à **Refuser + SMS**).
 
 ### Ligne de commande
 
@@ -143,6 +158,7 @@ bluez-msg watch <adresse> [--interval 5]
 bluez-msg serve <adresse>                              # moteur piloté en JSON par stdin/stdout
 bluez-msg hfp <adresse> [--answer]                     # HFP RFCOMM brut, sans audio (hfp_hf désactivé)
 bluez-msg locale template | check <fichier>
+bluez-message --open <numéro>                          # fenêtre sur cette conversation
 ```
 
 ## Fichiers
@@ -165,6 +181,7 @@ adresses ; `debug` pour un diagnostic, par ex. `systemctl --user edit bluez-mess
 
 Classes de fenêtre : `bluez-message` (principale ; conseillé : flottante, centrée, 900×640) et
 `bluez-msg-call` (appel ; conseillé : flottante, épinglée, 420×150, en haut de l'écran).
+Quand une notification ouvre une conversation, la fenêtre prend le focus via `hyprctl dispatch` (syntaxe Lua).
 
 ## Traductions
 

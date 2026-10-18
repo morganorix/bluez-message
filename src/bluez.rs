@@ -66,6 +66,15 @@ pub(crate) async fn device(conn: &Connection, addr: &BtAddr) -> Result<DevicePro
     Ok(DeviceProxy::builder(conn).path(path)?.cache_properties(zbus::proxy::CacheProperties::No).build().await?)
 }
 
+#[proxy(interface = "org.bluez.Battery1", default_service = "org.bluez")]
+trait Battery {
+    #[zbus(property)]
+    fn percentage(&self) -> zbus::Result<u8>;
+}
+
+/// Timeout of a battery level read.
+const BATTERY_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Device link as seen by BlueZ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Link {
@@ -73,9 +82,16 @@ pub struct Link {
     pub resolved: bool,
 }
 
+/// Interface and properties followed by [`Phone::changes`].
+type Watched = (&'static str, &'static [&'static str]);
+
+/// Link properties of the device.
+const LINK_PROPS: Watched = ("org.bluez.Device1", &["Connected", "ServicesResolved"]);
+
 /// BlueZ device of address `addr`, on the `hci0` adapter.
 pub struct Phone {
     dev: DeviceProxy<'static>,
+    battery: BatteryProxy<'static>,
 }
 
 impl Phone {
@@ -85,7 +101,13 @@ impl Phone {
     /// System bus unreachable or D-Bus path refused.
     pub async fn new(addr: &BtAddr) -> Result<Self> {
         let conn = Connection::system().await?;
-        Ok(Self { dev: device(&conn, addr).await? })
+        let dev = device(&conn, addr).await?;
+        let battery = BatteryProxy::builder(&conn)
+            .path(dev.inner().path().clone())?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        Ok(Self { dev, battery })
     }
 
     /// Current link state (linked, profiles resolved).
@@ -104,12 +126,37 @@ impl Phone {
         Ok(self.dev.connect().await?)
     }
 
+    /// Battery level reported by the phone (0..=100); `None` if BlueZ does not expose it
+    /// (`Battery1` absent: link down or HFP not mounted) or the value is out of range.
+    pub async fn battery(&self) -> Option<u8> {
+        match bounded(BATTERY_TIMEOUT, self.battery.percentage()).await {
+            Ok(p) => (p <= 100).then_some(p),
+            Err(e) => {
+                tracing::debug!("battery level: {e}");
+                None
+            }
+        }
+    }
+
     /// Changes of `Connected` or `ServicesResolved` signalled by BlueZ (`PropertiesChanged`);
     /// the stream stays silent if the device disappears.
     ///
     /// # Errors
     /// Signal subscription refused.
     pub async fn link_changes(&self) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
+        self.changes(&[LINK_PROPS]).await
+    }
+
+    /// Changes of the battery level, or of the link (which makes `Battery1` appear or disappear).
+    ///
+    /// # Errors
+    /// Signal subscription refused.
+    pub async fn battery_changes(&self) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
+        self.changes(&[LINK_PROPS, ("org.bluez.Battery1", &["Percentage"])]).await
+    }
+
+    /// `PropertiesChanged` signals of the device touching one of the `watched` (interface, properties).
+    async fn changes(&self, watched: &'static [Watched]) -> Result<impl futures_util::Stream<Item = ()> + Unpin + use<>> {
         let props = zbus::fdo::PropertiesProxy::builder(self.dev.inner().connection())
             .destination("org.bluez")?
             .path(self.dev.inner().path().clone())?
@@ -117,11 +164,13 @@ impl Phone {
             .build()
             .await?;
         let changes = props.receive_properties_changed().await?;
-        Ok(futures_util::StreamExt::filter_map(changes, |sig| {
-            let link = sig.args().is_ok_and(|a| {
-                a.interface_name() == "org.bluez.Device1" && ["Connected", "ServicesResolved"].iter().any(|k| a.changed_properties().contains_key(k))
+        Ok(futures_util::StreamExt::filter_map(changes, move |sig| {
+            let hit = sig.args().is_ok_and(|a| {
+                watched
+                    .iter()
+                    .any(|(iface, keys)| a.interface_name() == *iface && keys.iter().any(|k| a.changed_properties().contains_key(k)))
             });
-            std::future::ready(link.then_some(()))
+            std::future::ready(hit.then_some(()))
         }))
     }
 

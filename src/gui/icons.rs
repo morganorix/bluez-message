@@ -32,6 +32,11 @@ macro_rules! icons {
 icons! {
     Account => "account",
     Alert => "alert",
+    Battery => "battery",
+    Battery20 => "battery-20",
+    Battery50 => "battery-50",
+    Battery80 => "battery-80",
+    BatteryAlert => "battery-alert",
     Bluetooth => "bluetooth",
     BluetoothConnect => "bluetooth-connect",
     BluetoothOff => "bluetooth-off",
@@ -67,11 +72,30 @@ impl Icon {
     pub fn image(self) -> egui::Image<'static> {
         egui::Image::new(self.source())
     }
+
+    /// Battery icon for a level `percent` (0..=100), in 5 tiers.
+    #[must_use]
+    pub fn battery(percent: u8) -> Self {
+        match percent {
+            0..10 => Self::BatteryAlert,
+            10..35 => Self::Battery20,
+            35..65 => Self::Battery50,
+            65..90 => Self::Battery80,
+            _ => Self::Battery,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn battery_tiers() {
+        use Icon::{Battery, Battery20, Battery50, Battery80, BatteryAlert};
+        let tiers = [0, 9, 10, 34, 35, 64, 65, 89, 90, 100].map(Icon::battery);
+        assert_eq!(tiers, [BatteryAlert, BatteryAlert, Battery20, Battery20, Battery50, Battery50, Battery80, Battery80, Battery, Battery]);
+    }
 
     #[test]
     fn icons_are_white_svg() {

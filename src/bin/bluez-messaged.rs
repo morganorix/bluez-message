@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use bluez_message::addr::BtAddr;
 use bluez_message::app::notify;
-use bluez_message::app::state::{Effect, Phase, State, phone_reads};
+use bluez_message::app::state::{Decline, Effect, Phase, State, phone_reads};
 use bluez_message::config;
 use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
@@ -55,6 +55,8 @@ const WATCH_TRIES: u32 = 3;
 /// Delay before the first restart of an incomplete link, outside the strikes and the pause: an iPhone that
 /// reconnects by itself often leaves its profiles unresolved until a `Connect` (measured: 2 s after it).
 const WATCH_GRACE: Duration = Duration::from_secs(8);
+/// Battery level reread without signal (`Battery1` appears without `PropertiesChanged`).
+const BATTERY_EVERY: Duration = Duration::from_mins(1);
 const WPCTL_TIMEOUT: Duration = Duration::from_secs(3);
 /// Wait for the notification thread at shutdown.
 const NOTIFY_FLUSH: Duration = Duration::from_secs(1);
@@ -150,7 +152,9 @@ async fn run(args: Args) -> Result<Exit, String> {
     let mut daily = tokio::time::interval_at(tokio::time::Instant::now() + RETENTION_EVERY, RETENTION_EVERY);
     // Without a device the senders are dropped: the contacts branch stays disabled.
     let (ct_tx, mut contacts) = mpsc::channel(1);
+    let (bat_tx, mut battery) = mpsc::channel(1);
     if let Some(dev) = &d.dev {
+        tokio::spawn(battery_watch(dev.addr.clone(), bat_tx));
         let reconnected = Arc::new(Notify::new());
         tokio::spawn(sync_contacts(dev.addr.clone(), ct_tx, Arc::clone(&reconnected)));
         tokio::spawn(link_watch(dev.addr.clone(), links_rx, dev.engine.nudger(), reconnected));
@@ -163,6 +167,7 @@ async fn run(args: Args) -> Result<Exit, String> {
             }
             Some(o) = setup_events.recv() => d.on_setup(o).await,
             Some(list) = contacts.recv() => d.on_contacts(list.as_deref()),
+            Some(percent) = battery.recv() => d.apply_publish(Out::Battery { percent }),
             r = requests.recv() => {
                 let Some((cmd, reply)) = r else { break Err(t!("command channel closed").to_owned()) };
                 if let Some(exit) = d.on_request(cmd, reply).await {
@@ -321,7 +326,7 @@ impl Daemon {
             {
                 self.popin.ensure();
             }
-            if let Some(fx) = for_notify(fx, &self.settings) {
+            if let Some(fx) = for_notify(fx, &self.settings, self.state.home()) {
                 let _ = self.fx_tx.send(fx);
             }
         }
@@ -349,7 +354,7 @@ impl Daemon {
         }
         let n = std::mem::take(&mut self.recap);
         if n > 0 && self.settings.notify_sms {
-            let _ = self.fx_tx.send(Effect::Sms { from: "iPhone".to_owned(), text: t!("{0} new messages", n) });
+            let _ = self.fx_tx.send(Effect::Sms { from: "iPhone".to_owned(), text: t!("{0} new messages", n), reply: None });
         }
     }
 
@@ -406,6 +411,7 @@ impl Daemon {
             },
             Cmd::PurgeHidden => self.purge_hidden(reply.as_ref()),
             Cmd::ClearHistory => self.clear_history(),
+            Cmd::Open { number } => open_conversation(&number, &self.hub),
             cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
             cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
         };
@@ -628,12 +634,16 @@ async fn settings_out(settings: &Settings, addr: Option<&BtAddr>) -> Out {
     Out::Settings { settings: settings.clone(), langs: i18n::available(), devices, device: addr.cloned(), home, auto }
 }
 
-/// What the settings let through to Navi notifications.
-fn for_notify(fx: Effect, s: &Settings) -> Option<Effect> {
+/// What the settings let through to Navi notifications; a ringing call gets its SMS replies ([`Decline`]).
+fn for_notify(fx: Effect, s: &Settings, home: Option<numbering::Id>) -> Option<Effect> {
     match fx {
         Effect::Sms { .. } if !s.notify_sms => None,
-        Effect::Sms { from, .. } if s.hide_preview => Some(Effect::Sms { from, text: t!("New message").to_owned() }),
+        Effect::Sms { from, reply, .. } if s.hide_preview => Some(Effect::Sms { from, text: t!("New message").to_owned(), reply }),
         Effect::Call(_) if !s.notify_calls => None,
+        Effect::Call(c) if c.phase == Phase::Incoming => {
+            let decline = c.sms_number(home).map(|number| Decline { number, text: s.quick_replies.first().cloned() });
+            Some(Effect::Ring(c, decline))
+        }
         fx => Some(fx),
     }
 }
@@ -763,6 +773,51 @@ impl LinkWatch {
     }
 }
 
+/// Device proxy, retried every [`WATCH_INIT_RETRY`] while the system bus refuses it.
+async fn phone(addr: &BtAddr) -> bluez::Phone {
+    loop {
+        match bluez::Phone::new(addr).await {
+            Ok(p) => return p,
+            Err(e) => {
+                tracing::warn!("Bluetooth watch: {e}");
+                tokio::time::sleep(WATCH_INIT_RETRY).await;
+            }
+        }
+    }
+}
+
+/// Follows the phone's battery level and sends each change (`None`: unknown).
+async fn battery_watch(addr: BtAddr, tx: mpsc::Sender<Option<u8>>) {
+    let phone = phone(&addr).await;
+    let mut changes = match phone.battery_changes().await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("battery watch: {e}; polling only");
+            None
+        }
+    };
+    let mut last = None;
+    loop {
+        let level = phone.battery().await;
+        if last != Some(level) {
+            last = Some(level);
+            tracing::debug!(level, "battery level");
+            if tx.send(level).await.is_err() {
+                return;
+            }
+        }
+        match changes.as_mut() {
+            Some(c) => {
+                // Stream ended (connection lost): polling only.
+                if let Ok(None) = tokio::time::timeout(BATTERY_EVERY, futures_util::StreamExt::next(c)).await {
+                    changes = None;
+                }
+            }
+            None => tokio::time::sleep(BATTERY_EVERY).await,
+        }
+    }
+}
+
 /// Link watch, on each change signalled by BlueZ and every [`WATCH_EVERY`]:
 /// - iPhone not linked and `auto_connect`: `Connect` every [`WATCH_CONNECT_EVERY`] (out of range: silent failure);
 /// - iPhone back (linked, profiles resolved): the MAP session is woken without waiting for its backoff,
@@ -771,15 +826,7 @@ impl LinkWatch {
 ///   first after [`WATCH_GRACE`], then on strikes, rebuilt link (`Disconnect` + `Connect`) if the profiles
 ///   still do not come back. Nothing during a call.
 async fn link_watch(addr: BtAddr, mut links: watch::Receiver<Links>, nudge: Nudge, reconnected: Arc<Notify>) {
-    let phone = loop {
-        match bluez::Phone::new(&addr).await {
-            Ok(p) => break p,
-            Err(e) => {
-                tracing::warn!("Bluetooth watch: {e}");
-                tokio::time::sleep(WATCH_INIT_RETRY).await;
-            }
-        }
-    };
+    let phone = phone(&addr).await;
     let mut changes = match phone.link_changes().await {
         Ok(c) => Some(c),
         Err(e) => {
@@ -910,17 +957,46 @@ impl Popin {
         let running = Arc::clone(&self.0);
         // Dedicated thread: `systemctl` and the wait for the window do not block the daemon loop.
         std::thread::spawn(move || {
-            let exe = std::env::current_exe().map(|p| p.with_file_name("bluez-msg-call"));
-            let child = exe.and_then(|p| std::process::Command::new(p).envs(display_env()).stdin(std::process::Stdio::null()).spawn());
-            match child {
-                Ok(mut c) => {
-                    let _ = c.wait();
-                }
-                Err(e) => tracing::warn!("call window: {e}"),
-            }
+            run_ui("bluez-msg-call", &[]);
             running.store(false, Ordering::Release);
         });
     }
+}
+
+/// Starts a window binary installed next to the daemon, with the display variables and `env`, and waits for it
+/// (blocking: to be called from a dedicated thread).
+fn run_ui(bin: &str, env: &[(&str, &str)]) {
+    let exe = std::env::current_exe().map(|p| p.with_file_name(bin));
+    let child = exe.and_then(|p| std::process::Command::new(p).envs(display_env()).envs(env.iter().copied()).stdin(std::process::Stdio::null()).spawn());
+    match child {
+        Ok(mut c) => {
+            let _ = c.wait();
+        }
+        Err(e) => tracing::warn!("{bin}: {e}"),
+    }
+}
+
+/// Shows the conversation with `number`: the open window receives [`Out::Open`], otherwise one is started on it.
+/// The number is not logged: a rejection only says it is invalid.
+fn open_conversation(number: &str, hub: &ipc::Hub) -> Result<(), String> {
+    let number = bluez_message::phone::strip_separators(number);
+    bluez_message::bmsg::validate_number(&number).map_err(|_| t!("open: invalid number").to_owned())?;
+    if ipc::gui_open() {
+        // Transient: never replayed to a window opened later.
+        hub.publish(Out::Open { number }, true);
+    } else {
+        // One launch at a time: repeated `Open` before the window takes its lock start nothing more.
+        static LAUNCHING: AtomicBool = AtomicBool::new(false);
+        if LAUNCHING.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        // Number in the environment, not in argv (visible to all in `/proc`).
+        std::thread::spawn(move || {
+            run_ui("bluez-message", &[(ipc::OPEN_ENV, &number)]);
+            LAUNCHING.store(false, Ordering::Release);
+        });
+    }
+    Ok(())
 }
 
 /// Display variables missing from the daemon environment (started before the graphical session):
@@ -1017,5 +1093,32 @@ mod tests {
         assert_eq!(w.next_check(), WATCH_EVERY);
         w.healthy();
         assert!(!w.early_due());
+    }
+
+    #[test]
+    fn ringing_call_gets_sms_replies() {
+        let fr = Some(numbering::Id::FR);
+        let s = Settings::default();
+        let ring = |number: Option<&str>, s: &Settings| {
+            let mut c = bluez_message::app::state::Call::default();
+            (c.phase, c.number) = (Phase::Incoming, number.map(Into::into));
+            match for_notify(Effect::Call(c), s, fr) {
+                Some(Effect::Ring(_, d)) => d,
+                fx => panic!("{fx:?}"),
+            }
+        };
+        let d = ring(Some("+33 6 12 34 56 78"), &s).expect("mobile");
+        assert_eq!(d.number, "+33612345678");
+        assert_eq!(d.text, s.quick_replies.first().cloned());
+        assert_eq!(ring(Some("+33 1 23 45 67 89"), &s), None, "landline");
+        assert_eq!(ring(Some("INFO"), &s), None, "not a number");
+        assert_eq!(ring(None, &s), None, "hidden");
+        let empty = Settings { quick_replies: Vec::new(), ..Settings::default() };
+        assert_eq!(ring(Some("+33612345678"), &empty).and_then(|d| d.text), None, "only Decline and write");
+        let mut active = bluez_message::app::state::Call::default();
+        active.phase = Phase::Active;
+        assert!(matches!(for_notify(Effect::Call(active), &s, fr), Some(Effect::Call(_))));
+        let off = Settings { notify_calls: false, ..Settings::default() };
+        assert_eq!(for_notify(Effect::Call(bluez_message::app::state::Call::default()), &off, fr), None);
     }
 }
