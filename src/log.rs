@@ -13,9 +13,13 @@ fn level(raw: Option<&str>) -> Result<LevelFilter, ()> {
     raw.map_or(Ok(LevelFilter::INFO), |v| v.trim().parse().map_err(|_| ()))
 }
 
-/// Last 4 characters only (`****5601`): numbers and invalid input in logs and errors.
+/// Last 4 characters only (`****5601`): numbers and invalid input in logs and errors; nothing of a
+/// value of 8 characters or less (short number, code), which the tail would give away.
 #[must_use]
 pub fn mask(value: &str) -> String {
+    if value.chars().count() <= 8 {
+        return "****".into();
+    }
     let tail: String = value.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
     format!("****{tail}")
 }

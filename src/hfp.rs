@@ -416,6 +416,7 @@ mod tests {
     #[test]
     fn masking() {
         assert_eq!(mask("+33712345601"), "****5601");
-        assert_eq!(mask("12"), "****12");
+        assert_eq!(mask("12"), "****");
+        assert_eq!(mask("12345678"), "****");
     }
 }
