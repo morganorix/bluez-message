@@ -94,7 +94,8 @@ impl fmt::Display for Error {
             Self::Invalid(Field::Retention) => t!("invalid retention").to_owned(),
             Self::Invalid(Field::Country) => t!("unknown country").to_owned(),
             Self::Invalid(Field::QuickReplies) => t!("invalid quick replies").to_owned(),
-            Self::BadCommand(e) => t!("unreadable command: {0}", e),
+            // Kind and position only: serde quotes the offending value (number, address).
+            Self::BadCommand(e) => t!("unreadable command: {0}", format!("{:?} {}:{}", e.classify(), e.line(), e.column())),
             Self::StaleSettings => t!("settings changed elsewhere, try again").to_owned(),
             Self::NoRuntimeDir => t!("XDG_RUNTIME_DIR missing or relative").to_owned(),
             Self::Busy(Queue::Send) => t!("send queue full").to_owned(),
@@ -114,6 +115,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::Error;
+
+    #[test]
+    fn bad_command_hides_value() {
+        let e = serde_json::from_str::<u8>("\"+33600000001\"").unwrap_err();
+        assert!(!Error::BadCommand(e).to_string().contains("336"));
+    }
 
     #[test]
     fn invalid_input_masked() {

@@ -111,6 +111,15 @@ impl Previews {
         }
     }
 
+    /// Preview of `url` if already ready, without asking for it: bubbles out of view keep their height.
+    #[must_use]
+    pub fn ready(&self, url: &str) -> Option<&Card> {
+        match self.cache.get(url) {
+            Some(Entry::Ready(card)) => card.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Marks `url` as the most recently shown.
     fn touch(&mut self, url: &str) {
         if let Some(i) = self.order.iter().position(|u| u == url)

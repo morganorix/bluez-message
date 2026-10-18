@@ -290,7 +290,7 @@ impl Actor {
 /// `Pair` (already paired: success), `Trusted`, then `Out::Paired` and best-effort profile connection.
 async fn pair(conn: Connection, addr: BtAddr, pairing: Shared, out: mpsc::UnboundedSender<Out>) {
     // Target released whatever ends the task: error, panic, or abort at shutdown.
-    let release = Release(pairing);
+    let release = Release(pairing, addr.clone());
     let r = async {
         let dev = bluez::device(&conn, &addr).await?;
         match bounded(PAIR, dev.pair()).await {
@@ -321,12 +321,15 @@ async fn pair(conn: Connection, addr: BtAddr, pairing: Shared, out: mpsc::Unboun
     }
 }
 
-/// Resets the pairing in progress when dropped.
-struct Release(Shared);
+/// Resets the pairing in progress when dropped, unless a cancel already released it for a newer attempt.
+struct Release(Shared, BtAddr);
 
 impl Drop for Release {
     fn drop(&mut self) {
-        *lock(&self.0) = Pairing::default();
+        let mut p = lock(&self.0);
+        if p.target.as_ref() == Some(&self.1) {
+            *p = Pairing::default();
+        }
     }
 }
 
@@ -412,5 +415,20 @@ impl Agent {
 
     async fn release(&self) {
         lock(&self.pairing).answer = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Arc, BtAddr, Mutex, Pairing, Release, lock};
+
+    #[test]
+    fn late_release_keeps_newer_target() {
+        let (old, new): (BtAddr, BtAddr) = ("00:11:22:33:44:55".parse().unwrap(), "66:77:88:99:AA:BB".parse().unwrap());
+        let shared = Arc::new(Mutex::new(Pairing { target: Some(new.clone()), answer: None }));
+        drop(Release(shared.clone(), old));
+        assert_eq!(lock(&shared).target.as_ref(), Some(&new), "cancelled attempt ending late");
+        drop(Release(shared.clone(), new));
+        assert!(lock(&shared).target.is_none());
     }
 }

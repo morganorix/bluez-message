@@ -616,10 +616,12 @@ impl eframe::App for App {
                 let links = (self.state.map_up, self.state.hfp_up && self.state.slc, self.state.pbap == Some(true));
                 let (cmds, nav) = v.show(ui, &pal, self.state.settings.as_ref(), links);
                 for c in cmds {
-                    if matches!(c, Cmd::Export { .. }) && std::mem::replace(&mut self.exporting, true) {
+                    let export = matches!(c, Cmd::Export { .. });
+                    if export && self.exporting {
                         continue;
                     }
-                    self.submit(c);
+                    let sent = self.submit(c);
+                    self.exporting |= export && sent;
                 }
                 match nav {
                     Nav::Stay => {}

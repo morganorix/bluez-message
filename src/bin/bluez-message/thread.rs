@@ -176,9 +176,8 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, previews: Optio
                     ui.spacing_mut().item_spacing.y = 3.0;
                     let t = emojis.label(ui, &m.text, font::BODY, ink);
                     if let Some(p) = previews
-                        && ui.is_rect_visible(t.rect)
                         && let Some(url) = link::links(&m.text).first().copied()
-                        && let Some(c) = p.get(ui.ctx(), url)
+                        && let Some(c) = if ui.is_rect_visible(t.rect) { p.get(ui.ctx(), url) } else { p.ready(url) }
                     {
                         card(ui, pal, url, c);
                     }
