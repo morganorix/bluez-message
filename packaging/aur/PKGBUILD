@@ -20,6 +20,8 @@ optdepends=(
   'notification-daemon: SMS and call notifications'
 )
 makedepends=('cargo')
+# GCC LTO bytecode in ring's C objects cannot be linked by rust-lld.
+options=('!lto')
 install=bluez-message.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('450a51312961a8529d0660f5f52b9d383939289531ae554b472a0b896682281d')
