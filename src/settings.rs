@@ -75,13 +75,15 @@ pub struct Settings {
     pub country: Option<String>,
     /// Texts offered when declining a call; the first one is sent by "Decline + SMS".
     pub quick_replies: Vec<String>,
+    /// Preview card under a web link (title, image): the GUI contacts the linked site.
+    pub link_previews: bool,
 }
 
 /// The default quick replies are in the active language (`t!`): written to `settings.json` on the first save,
 /// they do not follow a later language change.
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None, quick_replies: vec![t!("Can't talk now, I'll call you back.").to_owned(), t!("I'm in a meeting.").to_owned()] }
+        Self { lang: None, notify_sms: true, notify_calls: true, hide_preview: false, retention_days: None, text_size: TextSize::Normal, auto_connect: true, country: None, quick_replies: vec![t!("Can't talk now, I'll call you back.").to_owned(), t!("I'm in a meeting.").to_owned()], link_previews: false }
     }
 }
 

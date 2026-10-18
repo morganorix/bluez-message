@@ -55,6 +55,7 @@ icons! {
     Font => "format-font",
     History => "history",
     Info => "information-outline",
+    Link => "link-variant",
     Magnify => "magnify",
     Message => "message",
     MessageText => "message-text",

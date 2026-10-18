@@ -8,6 +8,7 @@ use bluez_message::app::tapback;
 use bluez_message::engine::{Cmd, Out, dial_number, validate_send};
 use bluez_message::gui::emoji::Emojis;
 use bluez_message::gui::icons::Icon;
+use bluez_message::gui::preview::Previews;
 use bluez_message::gui::theme::{self, Palette, size};
 use bluez_message::gui::widgets::{self as w, right_of};
 use bluez_message::ipc::Link;
@@ -87,6 +88,8 @@ pub struct App {
     lang: Lang,
     /// Colour emojis (Twemoji SVG).
     emojis: Emojis,
+    /// Link previews (fetched only if enabled in the settings).
+    previews: Previews,
     /// Text size applied (zoom); `None`: no setting received.
     text_size: Option<TextSize>,
     /// Window to bring to the foreground at the next frame ([`Out::Open`]).
@@ -100,7 +103,7 @@ pub struct App {
 impl App {
     /// `open`: number whose conversation is shown at start (`--open`, already validated).
     pub fn new(pal: Palette, tx: UnboundedSender<Cmd>, events: Receiver<Link>, open: Option<String>) -> Self {
-        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), text_size: None, raise: false, pending_open: open, quick: false }
+        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), previews: Previews::default(), text_size: None, raise: false, pending_open: open, quick: false }
     }
 
     /// Local validation (immediate feedback), then sent to the daemon which revalidates.
@@ -471,7 +474,8 @@ impl App {
             w::hint(ui, &pal, t!("Sending…"));
             return;
         };
-        let acts = thread::conv(ui, &pal, &mut self.emojis, c, self.state.rev(), calls);
+        let previews = self.state.settings.as_ref().is_some_and(|p| p.settings.link_previews).then_some(&mut self.previews);
+        let acts = thread::conv(ui, &pal, &mut self.emojis, previews, c, self.state.rev(), calls);
         let number = c.number.clone();
         self.apply(&key, &number, acts);
     }

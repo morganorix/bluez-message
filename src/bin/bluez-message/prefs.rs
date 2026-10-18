@@ -103,6 +103,7 @@ fn tabs() -> [&'static str; 5] {
 enum Act {
     Menu(Menu),
     Size(TextSize),
+    LinkPreviews,
     Sms,
     Calls,
     Preview,
@@ -267,7 +268,8 @@ impl View {
         sections.push((0, (t!("Language"), language)));
         // Click on the row or Enter: next size; click on a segment: that size.
         let size_row = Item { row: row(Some(Icon::Font), t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
-        sections.push((0, (t!("Display"), vec![size_row])));
+        let previews = Item { row: w::Row { sub: Some(t!("Contacts the site of the link")), ..row(Some(Icon::Link), t!("Link previews"), "", false) }, ctl: Ctl::Switch(s.link_previews), act: Act::LinkPreviews };
+        sections.push((0, (t!("Display"), vec![size_row, previews])));
         let notify = vec![
             Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
             Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
@@ -407,6 +409,7 @@ impl View {
             Act::Sms => with(&|n| n.notify_sms = !n.notify_sms),
             Act::Calls => with(&|n| n.notify_calls = !n.notify_calls),
             Act::Preview => with(&|n| n.hide_preview = !n.hide_preview),
+            Act::LinkPreviews => with(&|n| n.link_previews = !n.link_previews),
             Act::Retention(d) => with(&|n| n.retention_days = d),
             Act::Reconnect => vec![Cmd::Reconnect],
             Act::AutoConnect => with(&|n| n.auto_connect = !n.auto_connect),

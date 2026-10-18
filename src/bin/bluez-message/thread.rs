@@ -9,6 +9,8 @@ use bluez_message::app::tapback::{self, Badge};
 use bluez_message::engine::{CallKind, Item};
 use bluez_message::gui::emoji::{self, Emojis};
 use bluez_message::gui::icons::Icon;
+use bluez_message::gui::link;
+use bluez_message::gui::preview::{Card, Previews};
 use bluez_message::gui::theme::{CORNER, Palette, font};
 use bluez_message::gui::widgets as w;
 use bluez_message::t;
@@ -23,8 +25,9 @@ pub enum ThreadAction {
     Dial,
 }
 
-/// Thread of conversation `c`, from the state at revision `rev`; `calls_only`: call lines only.
-pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, c: &Conv, rev: Rev, calls_only: bool) -> Vec<ThreadAction> {
+/// Thread of conversation `c`, from the state at revision `rev`; `calls_only`: call lines only;
+/// `previews`: link previews, `None` when disabled.
+pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, mut previews: Option<&mut Previews>, c: &Conv, rev: Rev, calls_only: bool) -> Vec<ThreadAction> {
     let dial = header(ui, pal, &c.name, &c.number);
     if calls_only && c.last_call().is_none() {
         placeholder(ui, pal, t!("No calls"));
@@ -58,7 +61,7 @@ pub fn conv(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, c: &Conv, rev
                 big(ui, pal, emojis, m, &fold.badges[i], (seen > opened).then_some(now - seen), &mut acts);
                 continue;
             }
-            bubble(ui, pal, emojis, m, &fold.badges[i], max_w, &mut acts);
+            bubble(ui, pal, emojis, previews.as_deref_mut(), m, &fold.badges[i], max_w, &mut acts);
         }
     });
     if dial {
@@ -107,8 +110,10 @@ fn call_line(ui: &mut egui::Ui, pal: &Palette, m: &Msg, kind: CallKind, secs: u6
 }
 
 /// SMS bubble: pending (progress bar), failed (resend button), right-click menu
-/// (react, resend, copy, delete); reactions as badges on the top corner.
-fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges: &[Badge], max_w: f32, acts: &mut Vec<ThreadAction>) {
+/// (react, resend, copy, delete); reactions as badges on the top corner; preview of the first
+/// link below the text, once loaded.
+#[expect(clippy::too_many_arguments)]
+fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, previews: Option<&mut Previews>, m: &Msg, badges: &[Badge], max_w: f32, acts: &mut Vec<ThreadAction>) {
     if !badges.is_empty() {
         ui.add_space(BADGE_R);
     }
@@ -127,6 +132,12 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 let t = emojis.label(ui, &m.text, font::BODY, ink);
+                if let Some(p) = previews
+                    && let Some(url) = link::links(&m.text).first().copied()
+                    && let Some(c) = p.get(ui.ctx(), url)
+                {
+                    card(ui, pal, url, c);
+                }
                 match m.delivery {
                     Delivery::Pending => progress(ui, pal, t.rect.width().max(90.0)),
                     Delivery::Failed => drop(ui.label(w::text(t!("Not sent"), font::TINY, pal.danger))),
@@ -136,6 +147,43 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, emojis: &mut Emojis, m: &Msg, badges
         });
         actions(ui, pal, emojis, m, &frame.response, badges, acts);
     });
+}
+
+/// Height of the thumbnail in a preview card.
+const CARD_THUMB: f32 = 48.0;
+
+/// Preview card of `url`: thumbnail, bold title, description on 2 lines, domain; a click opens `url`.
+fn card(ui: &mut egui::Ui, pal: &Palette, url: &str, c: &Card) {
+    let r = Frame::new().fill(pal.dim(0.06)).corner_radius(CORNER).inner_margin(Margin::same(6)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            if let Some(tex) = &c.image {
+                let [tw, th] = tex.size().map(|v| v.max(1) as f32);
+                let size = egui::vec2((tw * CARD_THUMB / th).min(2.0 * CARD_THUMB), CARD_THUMB);
+                ui.add(egui::Image::new((tex.id(), size)).corner_radius(CORNER / 2));
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                let wrap = ui.available_width();
+                let rows = |s: &str, font: egui::FontId, color, max_rows| {
+                    let mut job = egui::text::LayoutJob::simple(s.to_owned(), font, color, wrap);
+                    job.wrap.max_rows = max_rows;
+                    job
+                };
+                let title = rows(&c.title, w::bold_font(font::BODY), pal.fg, 2);
+                ui.add(egui::Label::new(title).selectable(false));
+                if !c.description.is_empty() {
+                    let desc = rows(&c.description, w::regular(font::SMALL), pal.muted(), 2);
+                    ui.add(egui::Label::new(desc).selectable(false));
+                }
+                ui.add(egui::Label::new(w::text(&c.domain, font::TINY, pal.muted())).selectable(false));
+            });
+        });
+    });
+    let r = r.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &c.title));
+    if r.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
 }
 
 /// After the bubble (or emojis) of `m`: badges, resend button on failure, right-click menu
@@ -319,6 +367,27 @@ pub fn short_stamp(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_card_opens_its_link() {
+        use egui::OutputCommand;
+        use egui_kittest::kittest::Queryable;
+        let c = Card { title: "Example title".into(), description: "Some text".into(), domain: "example.com".into(), image: None };
+        // Fonts set at the first frame are bound from the next one only (`bold` family of the card).
+        let mut fonts = false;
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            if !std::mem::replace(&mut fonts, true) {
+                ui.ctx().set_fonts(bluez_message::gui::theme::fonts());
+                ui.ctx().request_repaint();
+                return;
+            }
+            card(ui, &Palette::default(), "https://example.com/a", &c);
+        });
+        harness.get_by_role_and_label(egui::accesskit::Role::Link, "Example title").click();
+        harness.step();
+        let opened = harness.output().platform_output.commands.iter().any(|c| matches!(c, OutputCommand::OpenUrl(u) if u.url == "https://example.com/a"));
+        assert!(opened);
+    }
 
     #[test]
     // Expected values built with `t!`: tests pass whatever the locale.
