@@ -24,7 +24,7 @@ makedepends=('cargo')
 options=('!lto')
 install=bluez-message.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('450a51312961a8529d0660f5f52b9d383939289531ae554b472a0b896682281d')
+sha256sums=('6ed13b579385035d37c9e9d5ed7433b434d4674008c7a44e6be0640c781f6bb8')
 
 prepare() {
   cd "$pkgname-$pkgver"
