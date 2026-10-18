@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::addr::BtAddr;
-use crate::engine::{CallKind, Device, Item, Out, Profile};
+use crate::engine::{CallKind, Cmd, Device, Item, Nearby, Out, Profile};
 use crate::history::SENT_ECHO_SECS;
 use crate::hfp::{HfEvent, Indicator};
 use crate::map::Sms;
@@ -164,6 +164,8 @@ pub enum Effect {
     Call(Call),
     /// End of call: what the history records.
     CallEnd(Ended),
+    /// Closes the SMS notifications still displayed (device change).
+    CloseAll,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,11 +182,45 @@ pub struct Prefs {
     pub settings: Settings,
     pub langs: Vec<String>,
     pub devices: Vec<Device>,
-    pub device: BtAddr,
+    /// `None`: none configured yet (setup mode).
+    pub device: Option<BtAddr>,
     /// Country numbers are read with.
     pub home: Option<Id>,
     /// Country chosen without a setting ("Automatic").
     pub auto: Option<Id>,
+}
+
+/// Bluetooth adapter as the daemon publishes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Adapter {
+    pub present: bool,
+    pub powered: bool,
+    pub discovering: bool,
+}
+
+/// Adapter and pairing, read by the setup wizard.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pairing {
+    /// `None`: not received yet.
+    pub adapter: Option<Adapter>,
+    /// Devices seen by the last search.
+    pub found: Vec<Nearby>,
+    /// Passkey awaiting confirmation.
+    pub confirm: Option<(BtAddr, u32)>,
+    /// Result of the last pairing: `Err` holds the daemon's reason.
+    pub paired: Option<(BtAddr, Result<(), String>)>,
+}
+
+impl Pairing {
+    /// Command sent: a new pairing forgets the previous result, an answer withdraws the question
+    /// (neither can then be shown stale nor sent twice).
+    pub fn sent(&mut self, cmd: &Cmd) {
+        match cmd {
+            Cmd::Pair { .. } => self.paired = None,
+            Cmd::Confirm { .. } => self.confirm = None,
+            _ => {}
+        }
+    }
 }
 
 /// Revision of a [`State`]'s conversations and contacts, unique in the process: two states never
@@ -220,6 +256,7 @@ pub struct State {
     pub info: Option<String>,
     /// Settings published by the daemon (`None`: not received yet).
     pub settings: Option<Prefs>,
+    pub pairing: Pairing,
     /// `error` comes from a link (`Out::Error`): cleared when a link comes back.
     link_error: bool,
     handles: HashSet<String>,
@@ -383,6 +420,26 @@ impl State {
                 self.handles.clear();
                 vec![]
             }
+            Out::Adapter { present, powered, discovering } => {
+                self.pairing.adapter = Some(Adapter { present, powered, discovering });
+                vec![]
+            }
+            Out::Found { devices } => {
+                self.pairing.found = devices;
+                vec![]
+            }
+            Out::Confirm { addr, passkey } => {
+                self.pairing.confirm = Some((addr, passkey));
+                vec![]
+            }
+            Out::Paired { addr, ok, error } => {
+                self.pairing.confirm = None;
+                let r = if ok { Ok(()) } else { Err(error.unwrap_or_default()) };
+                self.pairing.paired = Some((addr, r));
+                vec![]
+            }
+            // Never leaves the daemon.
+            Out::Flags { .. } => vec![],
         }
     }
 
@@ -447,6 +504,12 @@ impl State {
     #[must_use]
     pub fn conv(&self, key: &str) -> Option<&Conv> {
         self.convs.iter().find(|c| c.key == key)
+    }
+
+    /// Date up to which conversation `key` is read.
+    #[must_use]
+    pub fn read_until(&self, key: &str) -> Option<&str> {
+        self.reads.get(key).map(String::as_str)
     }
 
     /// Unread calls of `c` (badge of the Calls tab).
@@ -616,10 +679,68 @@ impl State {
     }
 }
 
+/// Read marks reported by the iPhone (inbox listing): per conversation, the date of the latest received SMS
+/// such that it and all the earlier ones are read. A conversation whose oldest listed SMS is unread gives nothing.
+#[must_use]
+pub fn phone_reads(items: &[Sms], home: Option<Id>) -> Vec<(String, String)> {
+    let mut by_key: HashMap<String, Vec<&Sms>> = HashMap::new();
+    for sms in items {
+        by_key.entry(numbering::key(sms_peer(sms, false).0, home)).or_default().push(sms);
+    }
+    let mut out: Vec<_> = by_key
+        .into_iter()
+        .filter_map(|(key, mut list)| {
+            list.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            let until = list.iter().take_while(|s| s.read).last()?.timestamp.clone();
+            Some((key, until))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::map::Folder;
+
+    fn inbox(addr: &str, ts: &str, read: bool) -> Sms {
+        Sms { address: addr.into(), timestamp: ts.into(), read, ..Default::default() }
+    }
+
+    #[test]
+    fn reads_reported_by_the_phone() {
+        assert!(phone_reads(&[], None).is_empty());
+        let items = [
+            inbox("0612345678", "20261015T120000", false),
+            inbox("0612345678", "20261015T100000", true),
+            inbox("0612345678", "20261015T110000", true),
+            inbox("0698765432", "20261015T090000", false),
+            inbox("0698765432", "20261015T100000", true),
+        ];
+        // Stops at the first unread one; an unread oldest SMS gives nothing.
+        assert_eq!(phone_reads(&items, None), [("612345678".to_owned(), "20261015T110000".to_owned())]);
+    }
+
+    #[test]
+    fn pairing_follows_the_daemon() {
+        let addr: BtAddr = "00:11:22:33:44:55".parse().unwrap();
+        let mut st = State::default();
+        drop(st.apply(Out::Adapter { present: true, powered: false, discovering: false }));
+        assert_eq!(st.pairing.adapter, Some(Adapter { present: true, powered: false, discovering: false }));
+        drop(st.apply(Out::Confirm { addr: addr.clone(), passkey: 42 }));
+        assert_eq!(st.pairing.confirm, Some((addr.clone(), 42)));
+        // The end of the pairing withdraws the confirmation.
+        drop(st.apply(Out::Paired { addr: addr.clone(), ok: false, error: Some("rejected".into()) }));
+        assert_eq!(st.pairing.confirm, None);
+        assert_eq!(st.pairing.paired, Some((addr.clone(), Err("rejected".into()))));
+        // Retrying forgets the failure; answering withdraws the question.
+        st.pairing.sent(&Cmd::Pair { addr: addr.clone() });
+        assert_eq!(st.pairing.paired, None);
+        drop(st.apply(Out::Confirm { addr, passkey: 42 }));
+        st.pairing.sent(&Cmd::Confirm { ok: true });
+        assert_eq!(st.pairing.confirm, None);
+    }
 
     fn sms(handle: &str, addr: &str, ts: &str, text: &str, sent: bool) -> Out {
         let mut s = Sms { handle: handle.into(), timestamp: ts.into(), text: text.into(), ..Default::default() };
@@ -838,6 +959,15 @@ mod tests {
         assert!(matches!(&st.apply(ind("call", 1))[..], [Effect::Call(c)] if c.phase == Phase::Active && c.since.is_some()));
         st.apply(ind("callsetup", 0));
         assert_eq!(ended(&st.apply(ind("call", 0))).kind, CallKind::Out);
+    }
+
+    #[test]
+    fn unanswered_outgoing_call_keeps_its_number() {
+        let mut st = State::default();
+        st.apply(ind("callsetup", 3));
+        assert!(matches!(&st.apply(Out::Call(HfEvent::Clip { number: "+331".into() }))[..], [Effect::Call(c)] if c.phase == Phase::Outgoing));
+        let e = ended(&st.apply(ind("callsetup", 0)));
+        assert_eq!((e.kind, e.secs, e.number.as_str()), (CallKind::Out, 0, "+331"));
     }
 
     #[test]

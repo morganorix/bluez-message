@@ -7,6 +7,8 @@ pub enum Error {
     InvalidNumber(String),
     InvalidAddress(String),
     InvalidFolder(String),
+    /// `HOME` missing: no configuration or data directory.
+    NoHome,
     TransferFailed,
     TransferTimeout,
     Dbus(#[from] zbus::Error),
@@ -14,6 +16,12 @@ pub enum Error {
     Io(#[from] std::io::Error),
     Db(#[from] rusqlite::Error),
     Hfp(String),
+    /// `user_version` of a history written by a newer version (or corrupted).
+    DbVersion(i64),
+    /// A pairing is already running (one at a time).
+    PairingBusy,
+    /// `Confirm` received while no passkey is waiting.
+    NoConfirmation,
 }
 
 /// Translated messages (`thiserror` only accepts literals); system details left as is.
@@ -23,6 +31,7 @@ impl fmt::Display for Error {
             Self::InvalidNumber(n) => t!("invalid number: {0}", format!("{n:?}")),
             Self::InvalidAddress(a) => t!("invalid Bluetooth address: {0}", format!("{a:?}")),
             Self::InvalidFolder(d) => t!("invalid MAP folder: {0}", format!("{d:?}")),
+            Self::NoHome => t!("HOME not set").to_owned(),
             Self::TransferFailed => t!("OBEX transfer failed").to_owned(),
             Self::TransferTimeout => t!("OBEX transfer timed out").to_owned(),
             Self::Dbus(e) => format!("D-Bus: {e}"),
@@ -30,6 +39,9 @@ impl fmt::Display for Error {
             Self::Io(e) => t!("I/O: {0}", e),
             Self::Db(e) => format!("SQLite: {e}"),
             Self::Hfp(e) => format!("HFP: {e}"),
+            Self::DbVersion(v) => t!("history database version {0} is not supported", v),
+            Self::PairingBusy => t!("pairing already in progress").to_owned(),
+            Self::NoConfirmation => t!("no pairing waiting for confirmation").to_owned(),
         };
         f.write_str(&s)
     }

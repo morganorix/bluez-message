@@ -1,4 +1,4 @@
-//! Settings view (right panel): language, text size, notifications, Bluetooth device, history.
+//! Settings view (right panel), in tabs: General (language, text size), Notifications, Devices, History.
 //! The settings belong to the daemon: each change goes out as a command, the display follows its reply.
 
 use std::time::{Duration, Instant};
@@ -27,8 +27,19 @@ enum Armed {
     Clear,
 }
 
+/// What the window does with the view after this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    Stay,
+    Close,
+    /// Setup wizard requested (Devices tab).
+    Setup,
+}
+
 #[derive(Default)]
 pub struct View {
+    /// Tab shown (index in `tabs()`).
+    tab: usize,
     /// Row chosen with the keyboard; `None`: mouse.
     cursor: Option<usize>,
     armed: Option<(Armed, Instant)>,
@@ -67,6 +78,11 @@ enum Ctl {
 /// Section: title and rows.
 type Section<'a> = (&'a str, Vec<Item<'a>>);
 
+/// Tab labels, in display order.
+fn tabs() -> [&'static str; 4] {
+    [t!("General"), t!("Notifications"), t!("Devices"), t!("History")]
+}
+
 #[derive(Clone)]
 enum Act {
     Menu(Menu),
@@ -80,6 +96,7 @@ enum Act {
     Retention(Option<u32>),
     Purge,
     Clear,
+    Setup,
 }
 
 /// Key pressed at this frame, auto-repeat excluded: holding Enter confirms nothing.
@@ -88,8 +105,8 @@ fn pressed(ui: &egui::Ui, key: Key) -> bool {
 }
 
 impl View {
-    /// Rendering; returns the commands to send to the daemon and `true` if the view must close.
-    pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, prefs: Option<&Prefs>, links: (bool, bool, bool)) -> (Vec<Cmd>, bool) {
+    /// Rendering; returns the commands to send to the daemon and what the window does next.
+    pub fn show(&mut self, ui: &mut egui::Ui, pal: &Palette, prefs: Option<&Prefs>, links: (bool, bool, bool)) -> (Vec<Cmd>, Nav) {
         if self.armed.as_ref().is_some_and(|(_, t)| t.elapsed() > ARM) {
             self.armed = None;
         }
@@ -104,14 +121,27 @@ impl View {
         } else {
             (false, false, false, false)
         };
+        let (left, right) = if free && self.menu.is_none() { ui.input(|i| (i.key_pressed(Key::ArrowLeft), i.key_pressed(Key::ArrowRight))) } else { (false, false) };
         let rect = w::header_with(ui, pal, Icon::Cog, t!("SETTINGS"), 60.0);
         let mut close = w::header_button(ui, pal, rect, Icon::Close).on_hover_text(t!("Close (Esc)")).clicked();
         w::rule(ui, pal);
         ui.add_space(12.0);
         let Some(p) = prefs else {
             w::hint(ui, pal, t!("Settings unavailable: daemon not connected"));
-            return (vec![], close || esc);
+            return (vec![], if close || esc { Nav::Close } else { Nav::Stay });
         };
+        let labels = tabs();
+        // Click: mouse mode; arrows: keyboard cursor on the first row of the tab.
+        let switch = match w::tabs(ui, pal, &labels, self.tab) {
+            Some(i) => Some((i, None)),
+            None if left => Some((self.tab.saturating_sub(1), Some(0))),
+            None if right => Some(((self.tab + 1).min(labels.len() - 1), Some(0))),
+            None => None,
+        };
+        if let Some((i, cursor)) = switch {
+            (self.tab, self.cursor, self.armed, self.menu) = (i, cursor, None, None);
+        }
+        ui.add_space(w::GAP);
         let s = &p.settings;
 
         // Language choice: system, then each available language under its name.
@@ -192,45 +222,43 @@ impl View {
                 self.menu = if self.menu.is_some_and(|(o, _)| o == m) { None } else { Some((m, lists(m).1)) };
                 self.follow = self.menu.is_some();
             }
+            Some(Act::Setup) => return (cmds, Nav::Setup),
             Some(a) => {
                 self.menu = None;
-                cmds.extend(self.run(a, s, &p.device));
+                cmds.extend(self.run(a, s, p.device.as_ref()));
             }
             None => {}
         }
-        (cmds, close)
+        (cmds, if close { Nav::Close } else { Nav::Stay })
     }
 
-    /// Rows per section, in display order (keyboard cursor target); `lang`: chosen language;
-    /// `country`: country national numbers are read with (landlines stay out of SMS).
+    /// Rows per section of the open tab, in display order (keyboard cursor target); `lang`: chosen
+    /// language; `country`: country national numbers are read with (landlines stay out of SMS).
     fn sections<'a>(&self, p: &'a Prefs, lang: &'a str, country: &'a str, links: (bool, bool, bool)) -> Vec<Section<'a>> {
         let s = &p.settings;
-        let mut sections: Vec<Section> = vec![];
+        // Each section with its tab.
+        let mut sections: Vec<(usize, Section)> = vec![];
         // Chosen language on the right, before the chevron.
         let open = |m: Menu| self.menu.is_some_and(|(o, _)| o == m);
         let lang_row = w::Row { hint: lang, ..row(Some(Icon::Translate), t!("Language"), "", open(Menu::Lang)) };
         let country_row = w::Row { sub: Some(t!("Landlines stay out of SMS")), hint: country, ..row(Some(Icon::Earth), t!("Country of phone numbers"), "", open(Menu::Country)) };
-        sections.push((
-            t!("Language"),
-            vec![
-                Item { row: lang_row, ctl: Ctl::None, act: Act::Menu(Menu::Lang) },
-                Item { row: country_row, ctl: Ctl::None, act: Act::Menu(Menu::Country) },
-            ],
-        ));
+        let language = vec![
+            Item { row: lang_row, ctl: Ctl::None, act: Act::Menu(Menu::Lang) },
+            Item { row: country_row, ctl: Ctl::None, act: Act::Menu(Menu::Country) },
+        ];
+        sections.push((0, (t!("Language"), language)));
         // Click on the row or Enter: next size; click on a segment: that size.
         let size_row = Item { row: row(Some(Icon::Font), t!("Text size"), "", false), ctl: Ctl::Size(s.text_size), act: Act::Size(s.text_size.next()) };
-        sections.push((t!("Display"), vec![size_row]));
-        sections.push((
-            t!("Notifications"),
-            vec![
-                Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
-                Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
-                Item { row: row(Some(Icon::EyeOff), t!("Hide message text"), "", false), ctl: Ctl::Switch(s.hide_preview), act: Act::Preview },
-            ],
-        ));
+        sections.push((0, (t!("Display"), vec![size_row])));
+        let notify = vec![
+            Item { row: row(Some(Icon::Message), t!("New SMS"), "", false), ctl: Ctl::Switch(s.notify_sms), act: Act::Sms },
+            Item { row: row(Some(Icon::Phone), t!("Incoming calls"), "", false), ctl: Ctl::Switch(s.notify_calls), act: Act::Calls },
+            Item { row: row(Some(Icon::EyeOff), t!("Hide message text"), "", false), ctl: Ctl::Switch(s.hide_preview), act: Act::Preview },
+        ];
+        sections.push((1, (t!("Notifications"), notify)));
         let mut devs = vec![];
         for d in &p.devices {
-            let current = d.addr == p.device;
+            let current = p.device.as_ref() == Some(&d.addr);
             let hint = match (current, &self.armed) {
                 (false, Some((Armed::Device(a), _))) if *a == d.addr => t!("Confirm: daemon restarts"),
                 (true, _) => match profiles(links) {
@@ -243,12 +271,15 @@ impl View {
             };
             devs.push(Item { row: row(Some(Icon::PhoneBluetooth), &d.name, hint, current), ctl: Ctl::None, act: Act::Device(d.addr.clone()) });
         }
-        if !p.devices.iter().any(|d| d.addr == p.device) {
-            devs.insert(0, Item { row: row(Some(Icon::PhoneBluetooth), p.device.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(p.device.clone()) });
+        if let Some(dev) = &p.device
+            && !p.devices.iter().any(|d| d.addr == *dev)
+        {
+            devs.insert(0, Item { row: row(Some(Icon::PhoneBluetooth), dev.as_str(), t!("not paired"), true), ctl: Ctl::None, act: Act::Device(dev.clone()) });
         }
         devs.push(Item { row: row(Some(Icon::Refresh), t!("Reconnect"), "", false), ctl: Ctl::None, act: Act::Reconnect });
         devs.push(Item { row: row(Some(Icon::BluetoothConnect), t!("Connect automatically"), "", false), ctl: Ctl::Switch(s.auto_connect), act: Act::AutoConnect });
-        sections.push((t!("Bluetooth device"), devs));
+        devs.push(Item { row: row(Some(Icon::Bluetooth), t!("Set up a device"), "", false), ctl: Ctl::None, act: Act::Setup });
+        sections.push((2, (t!("Bluetooth device"), devs)));
         let mut hist = vec![Item { row: row(Some(Icon::History), t!("Keep everything"), "", s.retention_days.is_none()), ctl: Ctl::None, act: Act::Retention(None) }];
         for d in RETENTIONS {
             let label = match d {
@@ -265,8 +296,8 @@ impl View {
         });
         let clear_hint = if matches!(self.armed, Some((Armed::Clear, _))) { t!("Press again to confirm") } else { t!("Messages and calls on this PC") };
         hist.push(Item { row: w::Row { sub: Some(clear_hint), ..row(Some(Icon::Delete), t!("Clear history"), "", false) }, ctl: Ctl::None, act: Act::Clear });
-        sections.push((t!("History"), hist));
-        sections
+        sections.push((3, (t!("History"), hist)));
+        sections.into_iter().filter(|(t, _)| *t == self.tab).map(|(_, s)| s).collect()
     }
 
     /// Sections and rows; a click fills `fire`. Returns the row of the open list if it is visible
@@ -333,14 +364,14 @@ impl View {
         anchor
     }
 
-    fn run(&mut self, act: Act, s: &Settings, device: &BtAddr) -> Vec<Cmd> {
+    fn run(&mut self, act: Act, s: &Settings, device: Option<&BtAddr>) -> Vec<Cmd> {
         let with = |f: &dyn Fn(&mut Settings)| {
             let mut n = s.clone();
             f(&mut n);
             vec![Cmd::Settings { settings: n }]
         };
         match act {
-            Act::Menu(_) => vec![],
+            Act::Menu(_) | Act::Setup => vec![],
             Act::Size(z) if z == s.text_size => vec![],
             Act::Size(z) => with(&|n| n.text_size = z),
             Act::Sms => with(&|n| n.notify_sms = !n.notify_sms),
@@ -350,7 +381,7 @@ impl View {
             Act::Reconnect => vec![Cmd::Reconnect],
             Act::AutoConnect => with(&|n| n.auto_connect = !n.auto_connect),
             Act::Purge => vec![Cmd::PurgeHidden],
-            Act::Device(a) if a == *device => vec![],
+            Act::Device(a) if device == Some(&a) => vec![],
             Act::Device(a) => self.confirm(Armed::Device(a.clone()), Cmd::SetDevice { addr: a }),
             Act::Clear => self.confirm(Armed::Clear, Cmd::ClearHistory),
         }

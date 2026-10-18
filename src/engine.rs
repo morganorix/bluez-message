@@ -77,7 +77,25 @@ pub enum Cmd {
     PurgeHidden,
     /// Clears the local history: handled by the daemon.
     ClearHistory,
+    /// Powers the Bluetooth adapter on or off: handled by the daemon (setup).
+    Powered { on: bool },
+    /// Starts or stops the search for nearby devices: handled by the daemon (setup).
+    Discover { on: bool },
+    /// Pairs a device (then trusts and connects it): handled by the daemon (setup).
+    Pair { addr: BtAddr },
+    /// Answer to the pending passkey confirmation ([`Out::Confirm`]): handled by the daemon (setup).
+    Confirm { ok: bool },
+    /// Connects a paired device: handled by the daemon (setup).
+    Connect { addr: BtAddr },
     Quit,
+}
+
+impl Cmd {
+    /// Command for the adapter and pairing ([`crate::setup::Setup`]), available without a configured device.
+    #[must_use]
+    pub fn is_setup(&self) -> bool {
+        matches!(self, Self::Powered { .. } | Self::Discover { .. } | Self::Pair { .. } | Self::Confirm { .. } | Self::Connect { .. })
+    }
 }
 
 /// Paired Bluetooth device.
@@ -86,6 +104,33 @@ pub struct Device {
     pub addr: BtAddr,
     pub name: String,
     pub connected: bool,
+}
+
+/// Most devices listed by [`Out::Found`].
+pub const MAX_FOUND: usize = 32;
+/// Characters kept from a device name (set by whoever is nearby).
+pub const MAX_NAME: usize = 64;
+/// Largest passkey displayed by BlueZ (6 digits).
+pub const MAX_PASSKEY: u32 = 999_999;
+
+/// Device seen by the search (paired or not).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Nearby {
+    pub addr: BtAddr,
+    pub name: String,
+    pub paired: bool,
+    pub connected: bool,
+    /// Device class or icon says phone.
+    pub phone: bool,
+}
+
+impl Nearby {
+    /// The name comes from any device in range: cleaned ([`crate::phone::clean`]) and capped at [`MAX_NAME`] characters.
+    #[must_use]
+    pub fn new(addr: BtAddr, name: &str, paired: bool, connected: bool, phone: bool) -> Self {
+        let name = crate::phone::clean(name, false).chars().take(MAX_NAME).collect();
+        Self { addr, name, paired, connected, phone }
+    }
 }
 
 /// Item of a conversation (SMS or call line), designated for a deletion.
@@ -143,7 +188,9 @@ pub enum Out {
         settings: Settings,
         langs: Vec<String>,
         devices: Vec<Device>,
-        device: BtAddr,
+        /// `None`: no device configured (setup mode).
+        #[serde(default)]
+        device: Option<BtAddr>,
         #[serde(default)]
         home: Option<String>,
         #[serde(default)]
@@ -154,6 +201,37 @@ pub enum Out {
     /// Report of a command (purge…), addressed to the requester only.
     Info { msg: String },
     Error { msg: String },
+    /// Bluetooth adapter state (`present`: adapter found on the system bus).
+    Adapter { present: bool, powered: bool, discovering: bool },
+    /// Devices seen by the search, at most [`MAX_FOUND`] (see [`Out::found`]).
+    Found { devices: Vec<Nearby> },
+    /// Pairing in progress: the passkey shown by the phone must be confirmed ([`Cmd::Confirm`]).
+    Confirm { addr: BtAddr, passkey: u32 },
+    /// End of a pairing.
+    Paired {
+        addr: BtAddr,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Inbox listing with the phone's read flags, for the daemon only: never serialised nor published.
+    #[serde(skip)]
+    Flags { items: Vec<Sms> },
+}
+
+impl Out {
+    /// [`Out::Found`] capped at [`MAX_FOUND`] devices.
+    #[must_use]
+    pub fn found(mut devices: Vec<Nearby>) -> Self {
+        devices.truncate(MAX_FOUND);
+        Self::Found { devices }
+    }
+
+    /// [`Out::Confirm`], `None` if BlueZ gives a passkey beyond 6 digits.
+    #[must_use]
+    pub fn confirm(addr: BtAddr, passkey: u32) -> Option<Self> {
+        (passkey <= MAX_PASSKEY).then_some(Self::Confirm { addr, passkey })
+    }
 }
 
 /// Tracked Bluetooth link: calls (HFP), messages (MAP) or contacts (PBAP, result of the last synchronisation).
@@ -340,7 +418,12 @@ impl Engine {
             | Cmd::Reconnect
             | Cmd::SetDevice { .. }
             | Cmd::PurgeHidden
-            | Cmd::ClearHistory => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
+            | Cmd::ClearHistory
+            | Cmd::Powered { .. }
+            | Cmd::Discover { .. }
+            | Cmd::Pair { .. }
+            | Cmd::Confirm { .. }
+            | Cmd::Connect { .. } => Err(t!("command handled by the bluez-messaged daemon").to_owned()),
             Cmd::Quit => Ok(()),
         }
     }
@@ -450,6 +533,8 @@ async fn session(
                 }
                 Err(e) => return Err(e),
             };
+            // After the SMS: the read marks apply to conversations already known.
+            let flags = (!folder.is_sent()).then(|| all.clone());
             match seen.as_mut() {
                 None => {
                     *seen = Some(all.iter().map(|m| m.handle.clone()).collect());
@@ -462,6 +547,9 @@ async fn session(
                         let _ = out.send(Out::Sms { sms, folder, new: true });
                     }
                 }
+            }
+            if let Some(items) = flags {
+                let _ = out.send(Out::Flags { items });
             }
         }
         tokio::select! {
@@ -543,5 +631,42 @@ mod tests {
         assert_eq!(serde_json::from_str::<Out>(&serde_json::to_string(&c).unwrap()).unwrap(), c);
         let s = Out::Sent { to: "+331".into(), text: "x".into(), ok: true, error: None, timestamp: "20261015T100000".into() };
         assert_eq!(serde_json::from_str::<Out>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
+    }
+
+    #[test]
+    fn setup_commands() {
+        let addr: BtAddr = "00:11:22:33:44:55".parse().unwrap();
+        assert_eq!(parse_cmd(r#"{"cmd":"powered","on":true}"#), Ok(Cmd::Powered { on: true }));
+        assert_eq!(parse_cmd(r#"{"cmd":"discover","on":false}"#), Ok(Cmd::Discover { on: false }));
+        assert_eq!(parse_cmd(r#"{"cmd":"confirm","ok":true}"#), Ok(Cmd::Confirm { ok: true }));
+        assert_eq!(parse_cmd(r#"{"cmd":"pair","addr":"00:11:22:33:44:55"}"#), Ok(Cmd::Pair { addr: addr.clone() }));
+        assert_eq!(parse_cmd(r#"{"cmd":"connect","addr":"00:11:22:33:44:55"}"#), Ok(Cmd::Connect { addr }));
+        for a in ["", "00:11:22:33:44", "00:11:22:33:44:GG", "../../x", "00:11:22:33:44:55:66"] {
+            assert!(parse_cmd(&format!(r#"{{"cmd":"pair","addr":"{a}"}}"#)).is_err(), "{a}");
+        }
+        assert!(parse_cmd(r#"{"cmd":"powered"}"#).is_err());
+    }
+
+    #[test]
+    fn setup_events() {
+        let addr: BtAddr = "00:11:22:33:44:55".parse().unwrap();
+        let name = format!("\u{202E}iPhone\n{}", "x".repeat(100));
+        let d = Nearby::new(addr.clone(), &name, false, false, true);
+        assert_eq!(d.name.chars().count(), MAX_NAME);
+        assert!(d.name.starts_with("iPhonex"), "{}", d.name);
+        let Out::Found { devices } = Out::found(vec![d; MAX_FOUND + 3]) else { unreachable!() };
+        assert_eq!(devices.len(), MAX_FOUND);
+        assert_eq!(Out::confirm(addr.clone(), MAX_PASSKEY + 1), None);
+        let c = Out::confirm(addr.clone(), 42).unwrap();
+        let line = serde_json::to_string(&c).unwrap();
+        assert_eq!(line, r#"{"event":"confirm","addr":"00:11:22:33:44:55","passkey":42}"#);
+        assert_eq!(serde_json::from_str::<Out>(&line).unwrap(), c);
+        let p = Out::Paired { addr, ok: false, error: Some("e".into()) };
+        assert_eq!(serde_json::from_str::<Out>(&serde_json::to_string(&p).unwrap()).unwrap(), p);
+        let a = Out::Adapter { present: true, powered: false, discovering: false };
+        assert_eq!(serde_json::to_string(&a).unwrap(), r#"{"event":"adapter","present":true,"powered":false,"discovering":false}"#);
+        // Internal event: cannot reach a client.
+        assert!(serde_json::to_string(&Out::Flags { items: vec![] }).is_err());
+        assert!(serde_json::from_str::<Out>(r#"{"event":"flags","items":[]}"#).is_err());
     }
 }

@@ -2,6 +2,7 @@
 
 use std::sync::mpsc::Receiver;
 
+use bluez_message::addr::BtAddr;
 use bluez_message::app::state::{Phase, State};
 use bluez_message::app::tapback;
 use bluez_message::engine::{Cmd, dial_number, validate_send};
@@ -17,6 +18,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::composer::{Composer, ComposerAction};
 use crate::convs::{ConvList, ListAction, Tab, Target};
+use crate::prefs::Nav;
+use crate::setup::Wizard;
 use crate::thread::{self, ThreadAction};
 
 /// Language applied to the GUI texts.
@@ -51,6 +54,10 @@ pub struct App {
     was_focused: bool,
     /// Settings view open in place of the thread.
     prefs: Option<crate::prefs::View>,
+    /// Setup wizard, in place of Settings and the thread.
+    setup: Option<Wizard>,
+    /// Device of the displayed data; another one in the settings resets the view.
+    device: Option<BtAddr>,
     /// Language applied to the GUI; survives reconnections.
     lang: Lang,
     /// Colour emojis (Twemoji SVG).
@@ -61,7 +68,7 @@ pub struct App {
 
 impl App {
     pub fn new(pal: Palette, tx: UnboundedSender<Cmd>, events: Receiver<Link>) -> Self {
-        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, lang: Lang::Unset, emojis: Emojis::default(), text_size: None }
+        Self { colors: theme::Watch::new(), state: State::default(), pal, tx: Some(tx), events, target: Target::None, list: ConvList::default(), composer: Composer::default(), was_focused: false, prefs: None, setup: None, device: None, lang: Lang::Unset, emojis: Emojis::default(), text_size: None }
     }
 
     /// Local validation (immediate feedback), then sent to the daemon which revalidates.
@@ -97,6 +104,7 @@ impl App {
             // Notifications are the daemon's business: effects ignored.
             Link::Event(o) => {
                 drop(self.state.apply(*o));
+                self.follow_device();
                 // Language changed by the daemon: GUI texts reloaded immediately.
                 if let Some(p) = &self.state.settings
                     && !self.lang.is(p.settings.lang.as_deref())
@@ -163,13 +171,55 @@ impl App {
         });
     }
 
+    /// Device switched (daemon restarted on another one): open thread and list reset. Without a
+    /// device, the wizard opens; it cannot be closed until one is configured.
+    fn follow_device(&mut self) {
+        let Some(p) = &self.state.settings else { return };
+        if p.device.is_none() && self.setup.is_none() {
+            self.prefs = None;
+            self.setup = Some(Wizard::default());
+        }
+        if self.device != p.device {
+            self.device.clone_from(&p.device);
+            self.target = Target::None;
+            self.list = ConvList::default();
+            self.composer = Composer::default();
+        }
+    }
+
+    /// Closes the wizard, unless no device is configured; `true` if it is closed.
+    fn close_setup(&mut self) -> bool {
+        if self.device.is_some()
+            && let Some(s) = self.setup.take()
+        {
+            for c in s.leave(&self.state) {
+                self.submit(c);
+            }
+        }
+        self.setup.is_none()
+    }
+
+    /// No field keeps focus (arrows for the side view).
+    fn release_focus(ctx: &egui::Context) {
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+    }
+
+    /// Settings or the wizard open in place of the thread.
+    fn side_view(&self) -> bool {
+        self.prefs.is_some() || self.setup.is_some()
+    }
+
     /// Left column: conversations, and Settings at the bottom (rule then row).
     fn side(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
         let foot_h = 1.0 + w::GAP * 2.0 + size::ROW_H;
         let (top, foot) = full.split_top_bottom_at_y(full.bottom() - foot_h);
         let pal = self.pal;
-        let keys = self.prefs.is_none();
+        let keys = !self.side_view();
         let acts = ui.scope_builder(egui::UiBuilder::new().max_rect(top), |ui| self.list.show(ui, &pal, &mut self.emojis, &self.state, &self.target, keys)).inner;
         for a in acts {
             match a {
@@ -193,13 +243,12 @@ impl App {
 
     /// Opens or closes Settings; when open, no field keeps focus (arrows for the view).
     fn toggle_prefs(&mut self, ctx: &egui::Context) {
+        if !self.close_setup() {
+            return;
+        }
         if self.prefs.take().is_none() {
             self.prefs = Some(crate::prefs::View::default());
-            ctx.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
-            });
+            Self::release_focus(ctx);
         } else {
             self.focus_target();
         }
@@ -268,6 +317,9 @@ impl App {
 
     /// Opens a target chosen from the list: closes Settings, focus on the input.
     fn open(&mut self, t: Target) {
+        if !self.close_setup() {
+            return;
+        }
         self.prefs = None;
         self.list.opened(&t);
         self.composer.focus = true;
@@ -378,11 +430,11 @@ impl eframe::App for App {
         let pal = self.pal;
         // Back in the foreground: cursor in the search, or in the message if a thread is open.
         let focused = ui.ctx().input(|i| i.focused);
-        if focused && !self.was_focused && self.prefs.is_none() {
+        if focused && !self.was_focused && !self.side_view() {
             self.focus_target();
         }
         self.was_focused = focused;
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) && self.close_setup() {
             self.prefs = None;
             self.list.focus = true;
         }
@@ -402,21 +454,36 @@ impl eframe::App for App {
         }
         Panel::left("convs").resizable(false).exact_size(340.0).frame(side(p, p, w::TOP, w::TOP)).show(ui, |ui| self.side(ui));
         // Calls tab: calling only, from the thread header.
-        if self.target != Target::None && self.prefs.is_none() && self.list.tab == Tab::Sms {
+        if self.target != Target::None && !self.side_view() && self.list.tab == Tab::Sms {
             Panel::bottom("compose").frame(side(p, p, w::TOP, w::TOP)).show(ui, |ui| self.compose(ui));
         }
-        CentralPanel::default_margins().frame(side(p, p, 0, 4)).show(ui, |ui| match self.prefs.as_mut() {
-            Some(v) => {
+        CentralPanel::default_margins().frame(side(p, p, 0, 4)).show(ui, |ui| {
+            if let Some(s) = self.setup.as_mut() {
+                let (cmds, close) = s.show(ui, &pal, &self.state);
+                for c in cmds {
+                    self.state.pairing.sent(&c);
+                    self.submit(c);
+                }
+                if close && self.close_setup() {
+                    self.focus_target();
+                }
+            } else if let Some(v) = self.prefs.as_mut() {
                 let links = (self.state.map_up, self.state.hfp_up && self.state.slc, self.state.pbap == Some(true));
-                let (cmds, close) = v.show(ui, &pal, self.state.settings.as_ref(), links);
+                let (cmds, nav) = v.show(ui, &pal, self.state.settings.as_ref(), links);
                 for c in cmds {
                     self.submit(c);
                 }
-                if close {
-                    self.toggle_prefs(ui.ctx());
+                match nav {
+                    Nav::Stay => {}
+                    Nav::Close => self.toggle_prefs(ui.ctx()),
+                    Nav::Setup => {
+                        (self.prefs, self.setup) = (None, Some(Wizard::default()));
+                        Self::release_focus(ui.ctx());
+                    }
                 }
+            } else {
+                self.thread(ui);
             }
-            None => self.thread(ui),
         });
     }
 

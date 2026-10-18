@@ -32,7 +32,9 @@ macro_rules! icons {
 icons! {
     Account => "account",
     Alert => "alert",
+    Bluetooth => "bluetooth",
     BluetoothConnect => "bluetooth-connect",
+    BluetoothOff => "bluetooth-off",
     Broom => "broom",
     Chat => "chat",
     Check => "check",

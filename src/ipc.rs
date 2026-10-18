@@ -52,6 +52,10 @@ pub struct Snapshot {
     log: VecDeque<Out>,
     contacts: Option<Out>,
     settings: Option<Out>,
+    adapter: Option<Out>,
+    found: Option<Out>,
+    /// Passkey awaiting an answer; cleared by the end of the pairing.
+    confirm: Option<Out>,
     /// Read up to, per conversation.
     reads: BTreeMap<String, String>,
 }
@@ -94,6 +98,10 @@ impl Snapshot {
             }
             Out::Contacts { .. } => self.contacts = Some(o.clone()),
             Out::Settings { .. } => self.settings = Some(o.clone()),
+            Out::Adapter { .. } => self.adapter = Some(o.clone()),
+            Out::Found { .. } => self.found = Some(o.clone()),
+            Out::Confirm { .. } => self.confirm = Some(o.clone()),
+            Out::Paired { .. } => self.confirm = None,
             Out::Cleared => {
                 self.sms.clear();
                 self.keys.clear();
@@ -159,11 +167,12 @@ impl Snapshot {
 
     #[must_use]
     pub fn replay(&self) -> Vec<Out> {
-        let mut v: Vec<Out> = self.status.iter().map(|(link, up)| Out::Status { link: *link, up: *up }).collect();
+        // Settings first: they tell the client which device (or setup mode) the rest belongs to.
+        let mut v: Vec<Out> = [&self.settings, &self.adapter, &self.found, &self.confirm].into_iter().flatten().cloned().collect();
+        v.extend(self.status.iter().map(|(link, up)| Out::Status { link: *link, up: *up }));
         if self.slc {
             v.push(Out::Call(HfEvent::SlcReady));
         }
-        v.extend(self.settings.iter().cloned());
         v.extend(self.contacts.iter().cloned());
         v.extend(self.sms.iter().cloned());
         v.extend(self.log.iter().cloned());
@@ -191,6 +200,23 @@ impl Hub {
         let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         g.0.record(&o, call_idle);
         let _ = g.1.send(o);
+    }
+
+    /// Counter of connected clients, usable outside the hub (the search stops when none is left).
+    #[must_use]
+    pub fn clients(&self) -> Clients {
+        Clients(self.inner.lock().unwrap_or_else(PoisonError::into_inner).1.downgrade())
+    }
+}
+
+/// Connected clients of a [`Hub`]; weak: does not keep the broadcast open.
+#[derive(Clone)]
+pub struct Clients(broadcast::WeakSender<Out>);
+
+impl Clients {
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.0.upgrade().map_or(0, |s| s.receiver_count())
     }
 }
 
@@ -518,7 +544,7 @@ mod tests {
             settings: crate::settings::Settings::default(),
             langs: vec![],
             devices: vec![],
-            device: "00:11:22:33:44:55".parse().unwrap(),
+            device: Some("00:11:22:33:44:55".parse().unwrap()),
             home: Some("fr".into()),
             auto: Some("fr".into()),
         };
@@ -526,6 +552,23 @@ mod tests {
         s.record(&Out::CallLog { number: "03 89 00 00 00".into(), timestamp: "20261015T120000".into(), kind: CallKind::Out, secs: 3, read: false }, true);
         s.record(&Out::Deleted { key: "+33389000000".into(), item: None }, true);
         assert_eq!(s.replay(), [settings], "conversation keyed in E.164 forgotten");
+    }
+
+    #[test]
+    fn snapshot_replays_setup_after_settings() {
+        let mut s = Snapshot::default();
+        let addr: crate::addr::BtAddr = "00:11:22:33:44:55".parse().unwrap();
+        let settings = Out::Settings { settings: crate::settings::Settings::default(), langs: vec![], devices: vec![], device: None, home: None, auto: None };
+        let adapter = Out::Adapter { present: true, powered: true, discovering: false };
+        let confirm = Out::Confirm { addr: addr.clone(), passkey: 123_456 };
+        s.record(&Out::Status { link: Profile::Map, up: false }, true);
+        s.record(&adapter, true);
+        s.record(&confirm, true);
+        s.record(&settings, true);
+        assert_eq!(s.replay(), [settings.clone(), adapter.clone(), confirm, Out::Status { link: Profile::Map, up: false }]);
+        // Pairing over: the confirmation is no longer replayed.
+        s.record(&Out::Paired { addr, ok: true, error: None }, true);
+        assert_eq!(s.replay(), [settings, adapter, Out::Status { link: Profile::Map, up: false }]);
     }
 
     #[test]

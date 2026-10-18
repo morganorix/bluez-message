@@ -1,6 +1,7 @@
 //! "Navi" notifications (pleamar server) in a dedicated thread: a slow server does not freeze the UI.
 //! The call notification's actions come back as a [`Cmd`] through `on_cmd`.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -22,25 +23,44 @@ fn escape(s: &str) -> String {
 
 /// Ringing bubble refresh: a replacement restarts the pleamar card's delay.
 const TICK: Duration = Duration::from_secs(1);
+/// SMS notifications remembered for `CloseAll`; the oldest are forgotten (closed by the server or the user long ago).
+const KEPT: usize = 64;
 
-pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 'static) {
+/// Ends once every sender is dropped and the pending effects are applied.
+pub fn spawn(effects: Receiver<Effect>, on_cmd: impl Fn(Cmd) + Clone + Send + 'static) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut bubble = Bubble { on_cmd, id: Arc::new(AtomicU32::new(0)), number: None };
+        let mut shown = VecDeque::with_capacity(KEPT);
         loop {
             match effects.recv_timeout(TICK) {
                 Ok(Effect::Sms { from, text }) => {
-                    if let Err(e) = Notification::new().appname(APP).summary(&escape(&from)).body(&escape(&text)).icon("phone").show() {
-                        tracing::warn!("SMS notification: {e}");
+                    match Notification::new().appname(APP).summary(&escape(&from)).body(&escape(&text)).icon("phone").show() {
+                        Ok(h) => {
+                            if shown.len() == KEPT {
+                                shown.pop_front();
+                            }
+                            shown.push_back(h.id());
+                        }
+                        Err(e) => tracing::warn!("SMS notification: {e}"),
                     }
                 }
                 Ok(Effect::Call(c)) => bubble.show(&c),
                 Ok(Effect::CallEnd(_)) => bubble.close(),
+                Ok(Effect::CloseAll) => {
+                    bubble.close();
+                    for id in shown.drain(..) {
+                        // Already closed (expired, dismissed): the server ignores it.
+                        if let Err(e) = close(id) {
+                            tracing::debug!("closing notification: {e}");
+                        }
+                    }
+                }
                 Err(RecvTimeoutError::Timeout) => bubble.tick(),
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
         bubble.close();
-    });
+    })
 }
 
 /// The ringing bubble (Answer / Decline), replaced in place (same id) while it rings.

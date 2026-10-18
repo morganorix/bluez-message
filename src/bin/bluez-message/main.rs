@@ -4,6 +4,7 @@
 mod composer;
 mod convs;
 mod prefs;
+mod setup;
 mod thread;
 mod ui;
 

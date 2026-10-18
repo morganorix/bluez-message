@@ -19,5 +19,6 @@ pub mod pbap;
 pub mod phone;
 pub mod serve;
 pub mod settings;
+pub mod setup;
 pub mod stamp;
 pub mod telephony;

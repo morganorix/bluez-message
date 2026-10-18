@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::addr::BtAddr;
+use crate::error::Error;
 use crate::t;
 
 /// XDG `var` directory if absolute, otherwise `~/{fallback}`.
@@ -26,16 +27,20 @@ pub fn data_dir() -> Option<PathBuf> {
 }
 
 /// Address given as argument, otherwise read from `~/.config/bluez-message/device`; validated.
+/// `None`: no device configured yet (missing file).
 ///
 /// # Errors
-/// Translated message: `HOME` missing, unreadable file or invalid address.
-pub fn resolve_addr(arg: Option<BtAddr>) -> Result<BtAddr, String> {
-    if let Some(a) = arg {
-        return Ok(a);
+/// `HOME` missing, unreadable file or invalid address.
+pub fn resolve_addr(arg: Option<BtAddr>) -> crate::error::Result<Option<BtAddr>> {
+    if arg.is_some() {
+        return Ok(arg);
     }
-    let p = config_dir().ok_or(t!("HOME not set"))?.join("bluez-message/device");
-    let raw = std::fs::read_to_string(&p).map_err(|e| t!("address missing (argument or {0}): {1}", p.display(), e))?;
-    raw.trim().parse().map_err(|e: crate::error::Error| e.to_string())
+    let p = config_dir().ok_or(Error::NoHome)?.join("bluez-message/device");
+    match std::fs::read_to_string(&p) {
+        Ok(raw) => raw.trim().parse().map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Daemon socket in `$XDG_RUNTIME_DIR` (0700 directory owned by the user).
@@ -88,7 +93,8 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if r.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    r
+    // The rename itself is durable only once the directory entry is synced.
+    r.and_then(|()| std::fs::File::open(dir)?.sync_all())
 }
 
 #[cfg(test)]

@@ -10,11 +10,13 @@ use std::time::{Duration, Instant};
 
 use bluez_message::addr::BtAddr;
 use bluez_message::app::notify;
-use bluez_message::app::state::{Effect, Phase, State};
+use bluez_message::app::state::{Effect, Phase, State, phone_reads};
 use bluez_message::config;
 use bluez_message::engine::{Cmd, Engine, Item, Nudge, Out, Profile};
 use bluez_message::history::History;
+use bluez_message::map::Sms;
 use bluez_message::settings::Settings;
+use bluez_message::setup::Setup;
 use bluez_message::{bluez, i18n, ipc, numbering, pbap, t};
 use clap::Parser;
 use futures_util::StreamExt;
@@ -48,6 +50,8 @@ const WATCH_CONNECT_EVERY: Duration = Duration::from_secs(60);
 /// Restarts without return to normal before giving up (HFP deliberately absent, iPhone taken elsewhere…).
 const WATCH_TRIES: u32 = 3;
 const WPCTL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Wait for the notification thread at shutdown.
+const NOTIFY_FLUSH: Duration = Duration::from_secs(1);
 
 #[derive(Parser)]
 #[command(about = "iPhone SMS/call relay daemon (Navi notifications, socket for the GUI)")]
@@ -88,19 +92,29 @@ enum Exit {
 
 async fn run(args: Args) -> Result<Exit, String> {
     let fixed_addr = args.addr.is_some();
-    let addr = config::resolve_addr(args.addr)?;
+    // No device: setup mode (socket, settings and pairing only) until the wizard registers one.
+    let addr = config::resolve_addr(args.addr).map_err(|e| e.to_string())?;
     let settings = Settings::load();
     let path = config::socket_path()?;
     let bound = ipc::bind(&path).await.map_err(|e| e.to_string())?;
     let mut term = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut int = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
-    let history = open_history()?;
-    let (engine, mut events) = Engine::start(&addr, Duration::from_secs(args.interval));
+    let (dev, mut events) = if let Some(addr) = addr {
+        let history = open_history(&addr)?;
+        let (engine, events) = Engine::start(&addr, Duration::from_secs(args.interval));
+        (Some(Linked { addr, history, engine }), Some(events))
+    } else {
+        tracing::info!("no device configured: setup mode");
+        (None, None)
+    };
 
     let (req_tx, mut requests) = mpsc::channel::<ipc::Request>(64);
     let hub = ipc::spawn_server(bound, req_tx.clone());
+    let bus = zbus::Connection::system().await.map_err(|e| e.to_string())?;
+    let (setup_tx, mut setup_events) = mpsc::unbounded_channel();
+    let setup = Setup::start(bus, setup_tx, hub.clients()).await.map_err(|e| e.to_string())?;
     let (fx_tx, fx_rx) = std_mpsc::channel();
-    notify::spawn(fx_rx, move |cmd| {
+    let notifier = notify::spawn(fx_rx, move |cmd| {
         // Notification action (answer, reply…): lost if the queue is full or the daemon is stopping.
         if let Err(e) = req_tx.try_send((cmd, None)) {
             tracing::warn!("notification action dropped: {e}");
@@ -110,32 +124,37 @@ async fn run(args: Args) -> Result<Exit, String> {
 
     let (links_tx, links_rx) = watch::channel(Links::default());
     let mut d = Daemon {
-        addr,
+        dev,
         fixed_addr,
         settings,
-        history,
         state: State::default(),
         hub,
-        engine,
+        setup,
         fx_tx,
+        notifier,
         links_tx,
         mic: None,
         dialing: None,
         popin: Popin::default(),
         reconnecting: Arc::default(),
+        recap: 0,
     };
     d.sync_links();
     d.start().await?;
     let mut daily = tokio::time::interval_at(tokio::time::Instant::now() + RETENTION_EVERY, RETENTION_EVERY);
+    // Without a device the senders are dropped: the contacts branch stays disabled.
     let (ct_tx, mut contacts) = mpsc::channel(1);
-    tokio::spawn(sync_contacts(d.addr.clone(), ct_tx));
-    tokio::spawn(link_watch(d.addr.clone(), links_rx, d.engine.nudger()));
+    if let Some(dev) = &d.dev {
+        tokio::spawn(sync_contacts(dev.addr.clone(), ct_tx));
+        tokio::spawn(link_watch(dev.addr.clone(), links_rx, dev.engine.nudger()));
+    }
     let r = loop {
         tokio::select! {
-            o = events.recv() => {
+            o = next(events.as_mut()) => {
                 let Some(o) = o else { break Err(t!("engine stopped").to_owned()) };
                 d.on_event(o).await;
             }
+            Some(o) = setup_events.recv() => d.on_setup(o).await,
             Some(list) = contacts.recv() => d.on_contacts(list.as_deref()),
             r = requests.recv() => {
                 let Some((cmd, reply)) = r else { break Err(t!("command channel closed").to_owned()) };
@@ -152,29 +171,52 @@ async fn run(args: Args) -> Result<Exit, String> {
     r
 }
 
+/// Next engine event; never resolves without a device.
+async fn next(events: Option<&mut mpsc::UnboundedReceiver<Out>>) -> Option<Out> {
+    match events {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The device part of a command, or the error sent back to the requester.
+fn need<T>(dev: Option<T>) -> Result<T, String> {
+    dev.ok_or_else(|| t!("no device configured").to_owned())
+}
+
 /// SQLite history; unreadable database: the daemon runs anyway (in-memory history) rather than looping under systemd.
-fn open_history() -> Result<History, String> {
+fn open_history(addr: &BtAddr) -> Result<History, String> {
     let db = config::data_dir().ok_or(t!("HOME not set"))?.join("bluez-message/history.db");
-    History::open(&db)
+    History::open(&db, addr)
         .or_else(|e| {
             tracing::error!("history {}: {e}; in-memory history for this session", db.display());
-            History::memory()
+            History::memory(addr)
         })
         .map_err(|e| e.to_string())
 }
 
-/// Daemon state: engine, history, call state and clients; one method per event or command.
-struct Daemon {
+/// What exists only once a device is configured.
+struct Linked {
     addr: BtAddr,
+    history: History,
+    engine: Engine,
+}
+
+/// Daemon state: device (engine, history), setup, call state and clients; one method per event or command.
+struct Daemon {
+    /// `None`: setup mode, the device commands are refused.
+    dev: Option<Linked>,
     /// Address given as an argument: changing device is refused.
     fixed_addr: bool,
     settings: Settings,
-    history: History,
     state: State,
     hub: ipc::Hub,
-    engine: Engine,
+    /// Adapter, search and pairing (both modes).
+    setup: Setup,
     /// Effects towards Navi notifications.
     fx_tx: std_mpsc::Sender<Effect>,
+    /// Notification thread, joined at shutdown so that `CloseAll` is applied before an `exec`.
+    notifier: std::thread::JoinHandle<()>,
     /// State seen by the link watch.
     links_tx: watch::Sender<Links>,
     /// PC microphone muted by the bubble: restored at the end of the call.
@@ -184,6 +226,8 @@ struct Daemon {
     popin: Popin,
     /// Reconnection requested from Settings in progress (only one at a time).
     reconnecting: Arc<AtomicBool>,
+    /// Received SMS, unread on the iPhone, inserted by the current listing: summed up in one notification.
+    recap: usize,
 }
 
 impl Daemon {
@@ -198,15 +242,22 @@ impl Daemon {
         self.publish(o);
     }
 
+    fn addr(&self) -> Option<&BtAddr> {
+        self.dev.as_ref().map(|d| &d.addr)
+    }
+
     /// Settings, retention, then the local history: the snapshot replays it to each client.
     async fn start(&mut self) -> Result<(), String> {
-        self.apply_publish(settings_out(&self.settings, &self.addr).await);
+        self.apply_publish(settings_out(&self.settings, self.addr()).await);
+        if self.dev.is_none() {
+            return Ok(());
+        }
         // Failure logged: the history keeps its former keys.
         let _ = self.rekey(self.state.home());
         if let Some(n) = self.purge_old() {
             tracing::info!(rows = n, "history: retention applied");
         }
-        for o in self.history.load(HISTORY).map_err(|e| t!("history: {0}", e))? {
+        for o in need(self.dev.as_ref())?.history.load(HISTORY).map_err(|e| t!("history: {0}", e))? {
             self.state.apply(o.clone());
             self.hub.publish(o, true);
         }
@@ -214,25 +265,46 @@ impl Daemon {
     }
 
     async fn shutdown(self, socket: &Path) {
-        self.engine.shutdown().await;
+        // Pairing cancelled and agent unregistered before the engine stops.
+        self.setup.shutdown().await;
+        if let Some(dev) = self.dev {
+            dev.engine.shutdown().await;
+        }
         // Socket removed before the lock is released (held by `hub`).
         let _ = std::fs::remove_file(socket);
         drop(self.hub);
         if let Some(h) = self.mic {
             h.restore().await;
         }
+        // Pending effects (`CloseAll`) applied; bounded: a stuck notification server does not block the stop.
+        drop(self.fx_tx);
+        let notifier = tokio::task::spawn_blocking(move || self.notifier.join());
+        if tokio::time::timeout(NOTIFY_FLUSH, notifier).await.is_err() {
+            tracing::warn!("notifications: not flushed in time");
+        }
     }
 
     async fn on_event(&mut self, o: Out) {
-        if !admit(&self.history, &o) {
+        let o = match o {
+            Out::Flags { items } => return self.on_flags(&items),
+            o => o,
+        };
+        let Some(dev) = self.dev.as_ref() else { return };
+        if !admit(&dev.history, &o) {
             return;
+        }
+        if let Out::Sms { sms, folder, new: false } = &o
+            && !folder.is_sent()
+            && !sms.read
+        {
+            self.recap += 1;
         }
         let mut logs = vec![];
         for fx in self.state.apply(o.clone()) {
             if let Effect::CallEnd(e) = &fx
                 && !e.number.is_empty()
             {
-                if let Err(err) = self.history.add_call(&e.number, &e.timestamp, e.kind, e.secs) {
+                if let Err(err) = dev.history.add_call(&e.number, &e.timestamp, e.kind, e.secs) {
                     tracing::warn!("call history: {err}");
                 }
                 logs.push(Out::CallLog { number: e.number.clone(), timestamp: e.timestamp.clone(), kind: e.kind, secs: e.secs, read: false });
@@ -259,6 +331,30 @@ impl Daemon {
         self.sync_links();
     }
 
+    /// iPhone read marks (never backwards), then the summary of what the session's first listing brought.
+    fn on_flags(&mut self, items: &[Sms]) {
+        for (key, until) in phone_reads(items, self.state.home()) {
+            if self.state.read_until(&key).is_none_or(|r| until.as_str() > r)
+                && let Err(e) = self.mark_read(key, until)
+            {
+                tracing::debug!("read on the phone: {e}");
+            }
+        }
+        let n = std::mem::take(&mut self.recap);
+        if n > 0 && self.settings.notify_sms {
+            let _ = self.fx_tx.send(Effect::Sms { from: "iPhone".to_owned(), text: t!("{0} new messages", n) });
+        }
+    }
+
+    /// Setup events (adapter, search, pairing); a new pairing refreshes the paired devices.
+    async fn on_setup(&mut self, o: Out) {
+        let paired = matches!(o, Out::Paired { ok: true, .. });
+        self.publish(o);
+        if paired {
+            self.apply_publish(settings_out(&self.settings, self.addr()).await);
+        }
+    }
+
     /// Passes to the link watch what it needs to know (call, HFP, setting).
     fn sync_links(&self) {
         let now = Links { hfp: self.state.hfp_up, call: !self.state.call.is_idle(), auto_connect: self.settings.auto_connect };
@@ -267,7 +363,8 @@ impl Daemon {
 
     /// `None`: synchronisation failed (refusal, empty contacts), recorded contacts kept.
     fn on_contacts(&mut self, list: Option<&[(String, String)]>) {
-        let ok = match list.map(|l| self.history.replace_contacts(l)) {
+        let Some(dev) = self.dev.as_mut() else { return };
+        let ok = match list.map(|l| dev.history.replace_contacts(l)) {
             Some(Ok(names)) => {
                 tracing::info!(contacts = names.len(), "iPhone contacts synced");
                 self.apply_publish(Out::Contacts { names });
@@ -292,13 +389,18 @@ impl Daemon {
             Cmd::Settings { settings } => self.set_settings(settings).await,
             Cmd::Reconnect => self.reconnect(reply.clone()),
             Cmd::SetDevice { addr } => match self.set_device(&addr).await {
-                Ok(true) => return Some(Exit::Restart),
+                Ok(true) => {
+                    // No trace of the former device left on the desktop.
+                    let _ = self.fx_tx.send(Effect::CloseAll);
+                    return Some(Exit::Restart);
+                }
                 Ok(false) => Ok(()),
                 Err(e) => Err(e),
             },
             Cmd::PurgeHidden => self.purge_hidden(reply.as_ref()),
             Cmd::ClearHistory => self.clear_history(),
-            cmd => self.engine.submit(cmd),
+            cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
+            cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
         };
         if let Err(msg) = res {
             tracing::warn!("command rejected: {msg}");
@@ -319,10 +421,11 @@ impl Daemon {
 
     /// Only a known conversation, up to its last item at most: `reads` stays bounded.
     fn mark_read(&mut self, key: String, until: String) -> Result<(), String> {
+        let dev = need(self.dev.as_ref())?;
         if self.state.conv(&key).is_none_or(|c| until.get(..15) > c.last_stamp().get(..15)) {
             return Err(t!("mark as read: unknown conversation or future date").to_owned());
         }
-        if let Err(e) = self.history.mark_read(&key, &until) {
+        if let Err(e) = dev.history.mark_read(&key, &until) {
             tracing::warn!("history (read): {e}");
         }
         self.apply_publish(Out::Read { key, until });
@@ -334,12 +437,12 @@ impl Daemon {
         if !self.state.hfp_up || !self.state.call.is_idle() || self.dialing.is_some_and(|t| t.elapsed() < DIAL_GUARD) {
             return Err(t!("cannot call: phone not linked or a call is already in progress").to_owned());
         }
-        self.engine.submit(cmd).inspect(|()| self.dialing = Some(Instant::now()))
+        need(self.dev.as_ref())?.engine.submit(cmd).inspect(|()| self.dialing = Some(Instant::now()))
     }
 
     /// Local history only: nothing is erased on the iPhone.
     fn delete(&mut self, key: String, item: Option<Item>) -> Result<(), String> {
-        match self.history.delete(&key, item.as_ref()) {
+        match need(self.dev.as_ref())?.history.delete(&key, item.as_ref()) {
             Ok(_) => {
                 self.apply_publish(Out::Deleted { key, item });
                 Ok(())
@@ -368,7 +471,7 @@ impl Daemon {
         }
         self.settings = new;
         self.sync_links();
-        self.apply_publish(settings_out(&self.settings, &self.addr).await);
+        self.apply_publish(settings_out(&self.settings, self.addr()).await);
         if regrouped && let Err(e) = self.reload() {
             tracing::warn!("history (reload): {e}");
         }
@@ -380,7 +483,8 @@ impl Daemon {
 
     /// Grouping keys of the history aligned on the country `home` numbers are read with; `true` if they changed.
     fn rekey(&mut self, home: Option<numbering::Id>) -> Result<bool, String> {
-        match self.history.rekey(home) {
+        let Some(dev) = self.dev.as_mut() else { return Ok(false) };
+        match dev.history.rekey(home) {
             Ok(changed) => {
                 if changed {
                     tracing::info!(country = home.map(numbering::code).unwrap_or_default(), "history: numbers regrouped");
@@ -396,13 +500,14 @@ impl Daemon {
 
     /// Restarts the link in the background; the result goes to the requester only.
     fn reconnect(&self, reply: Option<mpsc::Sender<Out>>) -> Result<(), String> {
+        let addr = need(self.addr())?.clone();
         if !self.state.call.is_idle() {
             return Err(t!("not during a call").to_owned());
         }
         if self.reconnecting.swap(true, Ordering::AcqRel) {
             return Err(t!("reconnection already in progress").to_owned());
         }
-        let (addr, running) = (self.addr.clone(), Arc::clone(&self.reconnecting));
+        let running = Arc::clone(&self.reconnecting);
         tokio::spawn(async move {
             let r = match bluez::Phone::new(&addr).await {
                 Ok(p) => p.reconnect(RECONNECT_TIMEOUT).await,
@@ -432,7 +537,7 @@ impl Daemon {
         if !known {
             return Err(t!("unknown device (not paired)").to_owned());
         }
-        if *new == self.addr {
+        if self.addr() == Some(new) {
             return Ok(false);
         }
         config::write_device(new).map_err(|e| t!("cannot save the device: {0}", e))?;
@@ -441,7 +546,7 @@ impl Daemon {
     }
 
     fn purge_hidden(&mut self, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
-        match self.history.purge_hidden() {
+        match need(self.dev.as_mut())?.history.purge_hidden() {
             Ok(n) => {
                 tracing::info!(rows = n, "history: deleted items purged");
                 if let Some(reply) = reply {
@@ -457,7 +562,7 @@ impl Daemon {
     }
 
     fn clear_history(&mut self) -> Result<(), String> {
-        match self.history.clear() {
+        match need(self.dev.as_mut())?.history.clear() {
             Ok(()) => {
                 tracing::info!("history cleared");
                 self.apply_publish(Out::Cleared);
@@ -473,7 +578,9 @@ impl Daemon {
     /// Applies the retention period; `Some(rows erased)`, `None` without a period or on error.
     fn purge_old(&mut self) -> Option<usize> {
         let days = self.settings.retention_days?;
-        self.history
+        self.dev
+            .as_mut()?
+            .history
             .purge_before(&bluez_message::stamp::ago(u64::from(days) * 86_400))
             .inspect_err(|e| tracing::warn!("history (retention): {e}"))
             .ok()
@@ -490,10 +597,11 @@ impl Daemon {
 
     /// Republishes the history after a purge: clients clear their threads then receive what remains.
     fn reload(&mut self) -> rusqlite::Result<()> {
+        let Some(dev) = self.dev.as_ref() else { return Ok(()) };
         let idle = self.state.call.is_idle();
         self.state.apply(Out::Cleared);
         self.hub.publish(Out::Cleared, idle);
-        for o in self.history.load(HISTORY)? {
+        for o in dev.history.load(HISTORY)? {
             self.state.apply(o.clone());
             self.hub.publish(o, idle);
         }
@@ -502,7 +610,7 @@ impl Daemon {
 }
 
 /// Settings published to the clients: languages and paired devices reread each time.
-async fn settings_out(settings: &Settings, addr: &BtAddr) -> Out {
+async fn settings_out(settings: &Settings, addr: Option<&BtAddr>) -> Out {
     let devices = bluez::paired().await.unwrap_or_else(|e| {
         tracing::warn!("paired devices: {e}");
         vec![]
@@ -510,7 +618,7 @@ async fn settings_out(settings: &Settings, addr: &BtAddr) -> Out {
     let lang = settings.lang.as_deref();
     let home = numbering::home(settings.country.as_deref(), lang).map(numbering::code);
     let auto = numbering::home(None, lang).map(numbering::code);
-    Out::Settings { settings: settings.clone(), langs: i18n::available(), devices, device: addr.clone(), home, auto }
+    Out::Settings { settings: settings.clone(), langs: i18n::available(), devices, device: addr.cloned(), home, auto }
 }
 
 /// What the settings let through to Navi notifications.
@@ -526,6 +634,7 @@ fn for_notify(fx: Effect, s: &Settings) -> Option<Effect> {
 /// Filters and records: an SMS older than the history start, or already recorded, is not published.
 fn admit(h: &History, o: &Out) -> bool {
     let r = match o {
+        Out::Flags { .. } => Ok(false),
         Out::Sms { sms, new: false, .. } if sms.timestamp.as_str() < h.since() => Ok(false),
         Out::Sms { sms, folder, .. } => h.add_sms(sms, folder.is_sent()),
         Out::Sent { to, text, ok: true, timestamp, .. } => h.add_local_sent(to, timestamp, text).map(|_| true),

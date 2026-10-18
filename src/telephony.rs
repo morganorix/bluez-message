@@ -92,8 +92,15 @@ fn call_events(state: &CallState, number: &str) -> Option<Vec<HfEvent>> {
     Some(match state {
         CallState::Incoming if number.is_empty() => vec![HfEvent::IncomingCall],
         CallState::Incoming => vec![HfEvent::IncomingCall, HfEvent::Clip { number: number.into() }],
-        CallState::Dialing => vec![ind(Indicator::CallSetup, 2)],
-        CallState::Alerting => vec![ind(Indicator::CallSetup, 3)],
+        // The number follows, otherwise an unanswered outgoing call ends without one and is not logged.
+        CallState::Dialing | CallState::Alerting => {
+            let setup = if *state == CallState::Dialing { 2 } else { 3 };
+            let mut evs = vec![ind(Indicator::CallSetup, setup)];
+            if !number.is_empty() {
+                evs.push(HfEvent::Clip { number: number.into() });
+            }
+            evs
+        }
         // HFP order: call=1 before callsetup=0, otherwise the client state closes the call and loses the number;
         // the number follows, for a client discovering the call already in progress.
         CallState::Active | CallState::Held => vec![ind(Indicator::Call, 1), ind(Indicator::CallSetup, 0), HfEvent::Clip { number: number.into() }],
@@ -453,6 +460,7 @@ mod tests {
         assert_eq!(ev("incoming", "+331"), Some(vec![HfEvent::IncomingCall, HfEvent::Clip { number: "+331".into() }]));
         assert_eq!(ev("incoming", ""), Some(vec![HfEvent::IncomingCall]));
         assert_eq!(ev("alerting", ""), Some(vec![ind("callsetup", 3)]));
+        assert_eq!(ev("dialing", "+331"), Some(vec![ind("callsetup", 2), HfEvent::Clip { number: "+331".into() }]));
         assert_eq!(ev("active", "+331"), Some(vec![ind("call", 1), ind("callsetup", 0), HfEvent::Clip { number: "+331".into() }]));
         assert_eq!(ev("active", ""), Some(vec![ind("call", 1), ind("callsetup", 0), HfEvent::Clip { number: String::new() }]));
         assert_eq!(ev("waiting", "+331"), None);
