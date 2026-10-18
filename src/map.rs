@@ -177,6 +177,7 @@ impl MapClient {
     ///
     /// # Errors
     /// Invalid number, temporary file impossible, or transfer refused, failed or too long.
+    /// After a timeout the phone may still have sent the message: never resend automatically.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
         let bmsg = bmsg::encode_sms(to, text)?;
         let mut file = tempfile::NamedTempFile::new()?; // 0600

@@ -40,6 +40,52 @@ pub enum Error {
     MicNoCall,
     /// `wpctl` did not report a usable default source.
     MicNoSource,
+    /// Command needing an iPhone while the daemon runs in setup mode.
+    NoDevice,
+    /// Command refused by the daemon in its current state.
+    Refused(Refusal),
+    /// Write that failed; details are logged by the daemon only.
+    NotSaved(Store),
+    /// History that cannot be loaded or regrouped.
+    History(Box<Error>),
+    /// Device file that cannot be written.
+    DeviceNotSaved(std::io::Error),
+    /// Slow read not queued.
+    Reads(crate::reads::Refused),
+    /// Internal channel of the daemon closed.
+    Stopped(Channel),
+}
+
+/// Reason named by [`Error::Refused`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// Unknown conversation or marker past its last item.
+    ReadMark,
+    /// HFP down or a call already in progress or being dialed.
+    CallUnavailable,
+    InCall,
+    ReconnectRunning,
+    /// Address forced by `--addr`: the device cannot change.
+    AddressFromCli,
+    /// Address not among the paired devices.
+    UnknownDevice,
+}
+
+/// Data named by [`Error::NotSaved`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+    ConvState,
+    Delete,
+    Settings,
+    Purge,
+    Clear,
+}
+
+/// Channel named by [`Error::Stopped`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Engine,
+    Commands,
 }
 
 /// Client field rejected by [`Error::Invalid`].
@@ -105,6 +151,23 @@ impl fmt::Display for Error {
             Self::Timeout => t!("timed out").to_owned(),
             Self::MicNoCall => t!("microphone: no call in progress").to_owned(),
             Self::MicNoSource => t!("microphone: default source not found").to_owned(),
+            Self::NoDevice => t!("no device configured").to_owned(),
+            Self::Refused(Refusal::ReadMark) => t!("mark as read: unknown conversation or future date").to_owned(),
+            Self::Refused(Refusal::CallUnavailable) => t!("cannot call: phone not linked or a call is already in progress").to_owned(),
+            Self::Refused(Refusal::InCall) => t!("not during a call").to_owned(),
+            Self::Refused(Refusal::ReconnectRunning) => t!("reconnection already in progress").to_owned(),
+            Self::Refused(Refusal::AddressFromCli) => t!("address set on the command line").to_owned(),
+            Self::Refused(Refusal::UnknownDevice) => t!("unknown device (not paired)").to_owned(),
+            Self::NotSaved(Store::ConvState) => t!("cannot save the conversation state (history)").to_owned(),
+            Self::NotSaved(Store::Delete) => t!("cannot delete (history)").to_owned(),
+            Self::NotSaved(Store::Settings) => t!("cannot save settings").to_owned(),
+            Self::NotSaved(Store::Purge) => t!("cannot purge the history").to_owned(),
+            Self::NotSaved(Store::Clear) => t!("cannot clear the history").to_owned(),
+            Self::History(e) => t!("history: {0}", e),
+            Self::DeviceNotSaved(e) => t!("cannot save the device: {0}", e),
+            Self::Reads(e) => e.msg(),
+            Self::Stopped(Channel::Engine) => t!("engine stopped").to_owned(),
+            Self::Stopped(Channel::Commands) => t!("command channel closed").to_owned(),
         };
         f.write_str(&s)
     }

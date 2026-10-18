@@ -169,13 +169,16 @@ struct Agent {
 #[interface(name = "org.bluez.Profile1")]
 impl Agent {
     #[allow(clippy::needless_pass_by_value, reason = "D-Bus method signature, arguments owned by zbus")]
-    fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::OwnedFd, _props: HashMap<String, OwnedVariant>) {
+    fn new_connection(&self, device: ObjectPath<'_>, fd: zbus::OwnedFd, _props: HashMap<String, OwnedVariant>) -> zbus::fdo::Result<()> {
         if device.as_str().ends_with(&self.device_suffix) {
             // Never awaits: a blocked handler would stall every BlueZ call on this connection.
+            // Queue full: the error reply makes BlueZ drop the link, so the phone reconnects instead of hanging.
             if let Err(e) = self.tx.try_send(fd.into()) {
-                tracing::warn!("HFP connection dropped: {e}");
+                tracing::warn!("HFP connection refused: {e}");
+                return Err(zbus::fdo::Error::LimitsExceeded("HFP connection queue full".into()));
             }
         } // otherwise: fd closed on drop, foreign device ignored
+        Ok(())
     }
 
     async fn request_disconnection(&self, _device: ObjectPath<'_>) {}

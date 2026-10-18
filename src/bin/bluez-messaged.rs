@@ -13,7 +13,7 @@ use bluez_message::app::notify;
 use bluez_message::app::state::{Effect, Phase, State, phone_reads, sms_peer};
 use bluez_message::config;
 use bluez_message::engine::{Cmd, ConvFlags, Engine, Item, Nudge, Out, Profile};
-use bluez_message::error::Error;
+use bluez_message::error::{Channel, Error, Field, Refusal, Result, Store};
 use bluez_message::history::History;
 use bluez_message::reads::{Job, Reads};
 use bluez_message::map::Sms;
@@ -103,18 +103,18 @@ enum Exit {
     Restart,
 }
 
-async fn run(args: Args) -> Result<Exit, String> {
+async fn run(args: Args) -> Result<Exit> {
     let fixed_addr = args.addr.is_some();
     // No device: setup mode (socket, settings and pairing only) until the wizard registers one.
-    let addr = config::resolve_addr(args.addr).map_err(|e| e.to_string())?;
+    let addr = config::resolve_addr(args.addr)?;
     let settings = Settings::load();
-    let path = config::socket_path().map_err(|e| e.to_string())?;
-    let bound = ipc::bind(&path).await.map_err(|e| e.to_string())?;
-    let mut term = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
-    let mut int = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
+    let path = config::socket_path()?;
+    let bound = ipc::bind(&path).await?;
+    let mut term = signal(SignalKind::terminate())?;
+    let mut int = signal(SignalKind::interrupt())?;
     let (dev, mut events) = if let Some(addr) = addr {
         let history = open_history(&addr)?;
-        let reads = Reads::spawn(history.reader().map_err(|e| e.to_string())?);
+        let reads = Reads::spawn(history.reader()?);
         let (engine, events) = Engine::start(&addr, Duration::from_secs(args.interval));
         (Some(Linked { addr, history, reads, engine }), Some(events))
     } else {
@@ -124,9 +124,9 @@ async fn run(args: Args) -> Result<Exit, String> {
 
     let (req_tx, mut requests) = mpsc::channel::<ipc::Request>(64);
     let hub = ipc::spawn_server(bound, req_tx.clone());
-    let bus = zbus::Connection::system().await.map_err(|e| e.to_string())?;
+    let bus = zbus::Connection::system().await?;
     let (setup_tx, mut setup_events) = mpsc::unbounded_channel();
-    let setup = Setup::start(bus, setup_tx, hub.clients()).await.map_err(|e| e.to_string())?;
+    let setup = Setup::start(bus, setup_tx, hub.clients()).await?;
     let (fx_tx, fx_rx) = std_mpsc::channel();
     let notifier = notify::spawn(fx_rx, move |cmd| {
         // Notification action (answer, reply…): lost if the queue is full or the daemon is stopping.
@@ -169,14 +169,14 @@ async fn run(args: Args) -> Result<Exit, String> {
     let r = loop {
         tokio::select! {
             o = next(events.as_mut()) => {
-                let Some(o) = o else { break Err(t!("engine stopped").to_owned()) };
+                let Some(o) = o else { break Err(Error::Stopped(Channel::Engine)) };
                 d.on_event(o).await;
             }
             Some(o) = setup_events.recv() => d.on_setup(o).await,
             Some(list) = contacts.recv() => d.on_contacts(list.as_deref()),
             Some(percent) = battery.recv() => d.apply_publish(Out::Battery { percent }),
             r = requests.recv() => {
-                let Some((cmd, reply)) = r else { break Err(t!("command channel closed").to_owned()) };
+                let Some((cmd, reply)) = r else { break Err(Error::Stopped(Channel::Commands)) };
                 if let Some(exit) = d.on_request(cmd, reply).await {
                     break Ok(exit);
                 }
@@ -199,19 +199,18 @@ async fn next(events: Option<&mut mpsc::UnboundedReceiver<Out>>) -> Option<Out> 
 }
 
 /// The device part of a command, or the error sent back to the requester.
-fn need<T>(dev: Option<T>) -> Result<T, String> {
-    dev.ok_or_else(|| t!("no device configured").to_owned())
+fn need<T>(dev: Option<T>) -> Result<T> {
+    dev.ok_or(Error::NoDevice)
 }
 
 /// SQLite history; unreadable database: the daemon runs anyway (in-memory history) rather than looping under systemd.
-fn open_history(addr: &BtAddr) -> Result<History, String> {
-    let db = config::data_dir().ok_or(t!("HOME not set"))?.join("bluez-message/history.db");
+fn open_history(addr: &BtAddr) -> Result<History> {
+    let db = config::data_dir().ok_or(Error::NoHome)?.join("bluez-message/history.db");
     History::open(&db, addr)
         .or_else(|e| {
             tracing::error!("history {}: {e}; in-memory history for this session", db.display());
             History::memory(addr)
         })
-        .map_err(|e| e.to_string())
 }
 
 /// What exists only once a device is configured.
@@ -270,7 +269,7 @@ impl Daemon {
     }
 
     /// Settings, retention, then the local history: the snapshot replays it to each client.
-    async fn start(&mut self) -> Result<(), String> {
+    async fn start(&mut self) -> Result<()> {
         self.apply_publish(settings_out(&self.settings, self.addr()).await);
         if self.dev.is_none() {
             return Ok(());
@@ -280,7 +279,7 @@ impl Daemon {
         if let Some(n) = self.purge_old() {
             tracing::info!(rows = n, "history: retention applied");
         }
-        for o in need(self.dev.as_ref())?.history.load(HISTORY).map_err(|e| t!("history: {0}", e))? {
+        for o in need(self.dev.as_ref())?.history.load(HISTORY).map_err(|e| Error::History(Box::new(e.into())))? {
             self.state.apply(o.clone());
             self.hub.publish(o, true);
         }
@@ -431,22 +430,23 @@ impl Daemon {
             Cmd::Older { key, before, limit } => self.read(reply.as_ref(), Job::Older { key, before, limit: usize::try_from(limit).unwrap_or(usize::MAX) }),
             Cmd::ClearHistory => self.clear_history(),
             Cmd::Export { key } => {
-                if let (Err(msg), Some(reply)) = (self.export(key, reply.as_ref()), reply.as_ref()) {
-                    let _ = reply.try_send(Out::ExportFailed { msg });
+                if let (Err(e), Some(reply)) = (self.export(key, reply.as_ref()), reply.as_ref()) {
+                    let _ = reply.try_send(Out::ExportFailed { msg: e.to_string() });
                 }
                 Ok(())
             }
-            Cmd::Open { number } => open_window(number.as_deref(), &mut self.windows).map_err(|e| e.to_string()),
+            Cmd::Open { number } => open_window(number.as_deref(), &mut self.windows),
             Cmd::Window => {
                 if let Some(w) = reply.clone() {
                     self.windows.add(w, Instant::now());
                 }
                 Ok(())
             }
-            cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()).map_err(|e| e.to_string()),
-            cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd).map_err(|e| e.to_string())),
+            cmd if cmd.is_setup() => self.setup.submit(cmd, reply.clone()),
+            cmd => need(self.dev.as_ref()).and_then(|d| d.engine.submit(cmd)),
         };
-        if let Err(msg) = res {
+        if let Err(e) = res {
+            let msg = e.to_string();
             tracing::warn!("command rejected: {msg}");
             if let Some(reply) = reply {
                 let _ = reply.try_send(Out::Error { msg });
@@ -455,8 +455,8 @@ impl Daemon {
         None
     }
 
-    async fn mute(&mut self) -> Result<(), String> {
-        for f in toggle_mute(&mut self.state, &mut self.mic).await.map_err(|e| e.to_string())? {
+    async fn mute(&mut self) -> Result<()> {
+        for f in toggle_mute(&mut self.state, &mut self.mic).await? {
             let _ = self.fx_tx.send(f);
         }
         self.publish(Out::Muted { on: self.state.call.muted });
@@ -464,10 +464,10 @@ impl Daemon {
     }
 
     /// Only a known conversation, up to its last item at most: `reads` stays bounded.
-    fn mark_read(&mut self, key: String, until: String) -> Result<(), String> {
+    fn mark_read(&mut self, key: String, until: String) -> Result<()> {
         let dev = need(self.dev.as_ref())?;
         if self.state.conv(&key).is_none_or(|c| until.get(..15) > c.last_stamp().get(..15)) {
-            return Err(t!("mark as read: unknown conversation or future date").to_owned());
+            return Err(Error::Refused(Refusal::ReadMark));
         }
         if let Err(e) = dev.history.mark_read(&key, &until) {
             tracing::warn!("history (read): {e}");
@@ -477,29 +477,29 @@ impl Daemon {
     }
 
     /// `phase` stays `Idle` until the first HFP event: a recent dial also blocks.
-    fn dial(&mut self, cmd: Cmd) -> Result<(), String> {
+    fn dial(&mut self, cmd: Cmd) -> Result<()> {
         if !self.state.hfp_up || !self.state.call.is_idle() || self.dialing.is_some_and(|t| t.elapsed() < DIAL_GUARD) {
-            return Err(t!("cannot call: phone not linked or a call is already in progress").to_owned());
+            return Err(Error::Refused(Refusal::CallUnavailable));
         }
-        need(self.dev.as_ref())?.engine.submit(cmd).map_err(|e| e.to_string()).inspect(|()| self.dialing = Some(Instant::now()))
+        need(self.dev.as_ref())?.engine.submit(cmd).inspect(|()| self.dialing = Some(Instant::now()))
     }
 
     /// Only a known conversation can be flagged: `convs` stays bounded.
-    fn set_conv(&mut self, key: String, flags: ConvFlags) -> Result<(), String> {
+    fn set_conv(&mut self, key: String, flags: ConvFlags) -> Result<()> {
         let dev = need(self.dev.as_ref())?;
         if flags != ConvFlags::default() && self.state.conv(&key).is_none() {
-            return Err(t!("invalid conversation").to_owned());
+            return Err(Error::Invalid(Field::Conversation));
         }
         if let Err(e) = dev.history.set_conv(&key, flags) {
             tracing::warn!("history (conversation): {e}");
-            return Err(t!("cannot save the conversation state (history)").to_owned());
+            return Err(Error::NotSaved(Store::ConvState));
         }
         self.apply_publish(Out::Conv { key, flags });
         Ok(())
     }
 
     /// Local history only: nothing is erased on the iPhone.
-    fn delete(&mut self, key: String, item: Option<Item>) -> Result<(), String> {
+    fn delete(&mut self, key: String, item: Option<Item>) -> Result<()> {
         match need(self.dev.as_ref())?.history.delete(&key, item.as_ref()) {
             Ok(_) => {
                 self.apply_publish(Out::Deleted { key, item });
@@ -507,13 +507,13 @@ impl Daemon {
             }
             Err(e) => {
                 tracing::warn!("history (delete): {e}");
-                Err(t!("cannot delete (history)").to_owned())
+                Err(Error::NotSaved(Store::Delete))
             }
         }
     }
 
-    async fn set_settings(&mut self, new: Settings) -> Result<(), String> {
-        let new = new.rebase(&self.settings).map_err(|e| e.to_string())?;
+    async fn set_settings(&mut self, new: Settings) -> Result<()> {
+        let new = new.rebase(&self.settings)?;
         // Other country: conversations regrouped before anything changes; failure: settings refused.
         let old_home = self.state.home();
         let regrouped = self.rekey(numbering::home(new.country.as_deref(), new.lang.as_deref()))?;
@@ -522,7 +522,7 @@ impl Daemon {
             if regrouped {
                 let _ = self.rekey(old_home);
             }
-            return Err(t!("cannot save settings").to_owned());
+            return Err(Error::NotSaved(Store::Settings));
         }
         let purge = new.retention_days.is_some() && new.retention_days != self.settings.retention_days;
         if new.lang != self.settings.lang {
@@ -541,7 +541,7 @@ impl Daemon {
     }
 
     /// Grouping keys of the history aligned on the country `home` numbers are read with; `true` if they changed.
-    fn rekey(&mut self, home: Option<numbering::Id>) -> Result<bool, String> {
+    fn rekey(&mut self, home: Option<numbering::Id>) -> Result<bool> {
         let Some(dev) = self.dev.as_mut() else { return Ok(false) };
         match dev.history.rekey(home) {
             Ok(changed) => {
@@ -552,19 +552,19 @@ impl Daemon {
             }
             Err(e) => {
                 tracing::error!("history (keys): {e}");
-                Err(t!("history: {0}", e))
+                Err(Error::History(Box::new(e)))
             }
         }
     }
 
     /// Restarts the link in the background; the result goes to the requester only.
-    fn reconnect(&self, reply: Option<mpsc::Sender<Out>>) -> Result<(), String> {
+    fn reconnect(&self, reply: Option<mpsc::Sender<Out>>) -> Result<()> {
         let addr = need(self.addr())?.clone();
         if !self.state.call.is_idle() {
-            return Err(t!("not during a call").to_owned());
+            return Err(Error::Refused(Refusal::InCall));
         }
         if self.reconnecting.swap(true, Ordering::AcqRel) {
-            return Err(t!("reconnection already in progress").to_owned());
+            return Err(Error::Refused(Refusal::ReconnectRunning));
         }
         let running = Arc::clone(&self.reconnecting);
         tokio::spawn(async move {
@@ -585,40 +585,40 @@ impl Daemon {
     }
 
     /// Registers another paired iPhone; `Ok(true)`: the daemon must restart to follow it.
-    async fn set_device(&self, new: &BtAddr) -> Result<bool, String> {
+    async fn set_device(&self, new: &BtAddr) -> Result<bool> {
         if self.fixed_addr {
-            return Err(t!("address set on the command line").to_owned());
+            return Err(Error::Refused(Refusal::AddressFromCli));
         }
         if !self.state.call.is_idle() {
-            return Err(t!("not during a call").to_owned());
+            return Err(Error::Refused(Refusal::InCall));
         }
         let known = bluez::paired().await.is_ok_and(|d| d.iter().any(|d| d.addr == *new));
         if !known {
-            return Err(t!("unknown device (not paired)").to_owned());
+            return Err(Error::Refused(Refusal::UnknownDevice));
         }
         if self.addr() == Some(new) {
             return Ok(false);
         }
-        config::write_device(new).map_err(|e| t!("cannot save the device: {0}", e))?;
+        config::write_device(new).map_err(Error::DeviceNotSaved)?;
         tracing::info!("device changed: restarting");
         Ok(true)
     }
 
     /// Queues a slow read for the read task, which answers `reply`; from a notification (no reply), nothing to do.
-    fn read(&self, reply: Option<&mpsc::Sender<Out>>, job: Job) -> Result<(), String> {
+    fn read(&self, reply: Option<&mpsc::Sender<Out>>, job: Job) -> Result<()> {
         let dev = need(self.dev.as_ref())?;
         let Some(reply) = reply else { return Ok(()) };
-        dev.reads.submit(job, reply.clone()).map_err(|e| e.msg())
+        dev.reads.submit(job, reply.clone()).map_err(Error::Reads)
     }
 
     /// Writes the history to the download folder (home folder without one): never a path from the IPC.
     /// A refusal is answered as [`Out::ExportFailed`] by the caller.
-    fn export(&self, key: Option<String>, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
+    fn export(&self, key: Option<String>, reply: Option<&mpsc::Sender<Out>>) -> Result<()> {
         let dev = need(self.dev.as_ref())?;
         if key.as_deref().is_some_and(|k| self.state.conv(k).is_none()) {
-            return Err(t!("invalid conversation").to_owned());
+            return Err(Error::Invalid(Field::Conversation));
         }
-        let dir = dirs::download_dir().filter(|d| d.is_dir()).or_else(dirs::home_dir).ok_or_else(|| t!("HOME not set").to_owned())?;
+        let dir = dirs::download_dir().filter(|d| d.is_dir()).or_else(dirs::home_dir).ok_or(Error::NoHome)?;
         let Some(reply) = reply.cloned() else { return Ok(()) };
         let (reads, addr) = (dev.reads.clone(), dev.addr.clone());
         // Device name read from BlueZ away from the daemon loop (3 s at most).
@@ -631,7 +631,7 @@ impl Daemon {
         Ok(())
     }
 
-    fn purge_hidden(&mut self, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
+    fn purge_hidden(&mut self, reply: Option<&mpsc::Sender<Out>>) -> Result<()> {
         match need(self.dev.as_mut())?.history.purge_hidden() {
             Ok(n) => {
                 tracing::info!(rows = n, "history: deleted items purged");
@@ -642,12 +642,12 @@ impl Daemon {
             }
             Err(e) => {
                 tracing::warn!("history (purge): {e}");
-                Err(t!("cannot purge the history").to_owned())
+                Err(Error::NotSaved(Store::Purge))
             }
         }
     }
 
-    fn clear_history(&mut self) -> Result<(), String> {
+    fn clear_history(&mut self) -> Result<()> {
         match need(self.dev.as_mut())?.history.clear() {
             Ok(()) => {
                 tracing::info!("history cleared");
@@ -656,7 +656,7 @@ impl Daemon {
             }
             Err(e) => {
                 tracing::warn!("history (clear): {e}");
-                Err(t!("cannot clear the history").to_owned())
+                Err(Error::NotSaved(Store::Clear))
             }
         }
     }
@@ -1129,12 +1129,17 @@ fn show_environment() -> std::io::Result<Vec<u8>> {
         let r = stdout.take(SHOW_ENV_MAX).read_to_end(&mut out).map(|_| out);
         let _ = tx.send(r);
     });
-    let Ok(out) = rx.recv_timeout(SHOW_ENV_TIMEOUT) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(std::io::ErrorKind::TimedOut.into());
-    };
-    let out = out?;
+    let out = match rx.recv_timeout(SHOW_ENV_TIMEOUT) {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(match e {
+                std::sync::mpsc::RecvTimeoutError::Timeout => std::io::ErrorKind::TimedOut.into(),
+                std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::other("reader thread ended"),
+            });
+        }
+    }?;
     if out.len() as u64 == SHOW_ENV_MAX {
         // Output cut at the cap: `systemctl` may block on a full pipe.
         let _ = child.kill();

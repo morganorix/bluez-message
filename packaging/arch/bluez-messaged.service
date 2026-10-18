@@ -22,6 +22,8 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 RestrictNamespaces=yes
 SystemCallArchitectures=native
+# UNIX: D-Bus, PipeWire, Wayland; INET/NETLINK: link previews of the window started from here.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=default.target

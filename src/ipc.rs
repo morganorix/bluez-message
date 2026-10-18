@@ -40,6 +40,8 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const BROADCAST: usize = 4096;
 /// Conversations whose read mark is replayed; beyond it the oldest mark is dropped.
 const MAX_READS: usize = 4096;
+/// Read marks dropped together once [`MAX_READS`] is reached.
+const EVICT: usize = MAX_READS / 4;
 
 /// What a connecting client must replay. Entries are shared (`Arc`): the replay taken under
 /// the hub lock copies pointers, not the phonebook.
@@ -117,11 +119,14 @@ impl Snapshot {
                 self.reads.clear();
             }
             Out::Read { key, until } => {
-                if self.reads.len() >= MAX_READS
-                    && !self.reads.contains_key(key)
-                    && let Some(oldest) = self.reads.iter().min_by(|a, b| a.1.cmp(b.1)).map(|(k, _)| k.clone())
-                {
-                    self.reads.remove(&oldest);
+                if self.reads.len() >= MAX_READS && !self.reads.contains_key(key) {
+                    // Oldest quarter at once: one linear pass per `MAX_READS / 4` new conversations.
+                    let mut marks: Vec<(&String, &String)> = self.reads.iter().map(|(k, v)| (v, k)).collect();
+                    marks.select_nth_unstable(EVICT);
+                    let old: Vec<String> = marks[..EVICT].iter().map(|(_, k)| (*k).clone()).collect();
+                    for k in &old {
+                        self.reads.remove(k);
+                    }
                 }
                 let r = self.reads.entry(key.clone()).or_default();
                 if until > r {
@@ -652,11 +657,14 @@ mod tests {
             s.record(&read(k, "20260601T000000"), true);
         }
         s.record(&read(MAX_READS, "20260701T000000"), true);
-        assert_eq!(s.reads.len(), MAX_READS);
+        assert_eq!(s.reads.len(), MAX_READS - EVICT + 1);
         assert!(!s.reads.contains_key("+33612340000"), "oldest mark dropped");
+        assert!(s.reads.contains_key(&format!("+3361234{MAX_READS:04}")), "new mark kept");
         // Updating a known conversation never evicts.
-        s.record(&read(1, "20260801T000000"), true);
-        assert_eq!(s.reads.len(), MAX_READS);
+        let len = s.reads.len();
+        let known = s.reads.keys().next().cloned().unwrap();
+        s.record(&Out::Read { key: known, until: "20260801T000000".into() }, true);
+        assert_eq!(s.reads.len(), len);
     }
 
     #[test]
