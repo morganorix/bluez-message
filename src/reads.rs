@@ -20,8 +20,8 @@ const REPLY_WAIT: Duration = Duration::from_secs(2);
 pub enum Job {
     Search { query: String, before: Option<Cursor> },
     Older { key: String, before: Cursor, limit: usize },
-    /// Into `dir`, chosen by the daemon (never a path from the IPC).
-    Export { key: Option<String>, dir: PathBuf },
+    /// Into `dir`, chosen by the daemon (never a path from the IPC), headed by the `device` name.
+    Export { key: Option<String>, dir: PathBuf, device: Option<String> },
 }
 
 /// Why a read was not queued.
@@ -98,7 +98,7 @@ fn run(reader: &Reader, job: Job) -> Out {
             Ok((items, next)) => Out::Older { key, items, next },
             Err(e) => failed("older", &e),
         },
-        Job::Export { key, dir } => match reader.export_to(&dir, key.as_deref()) {
+        Job::Export { key, dir, device } => match reader.export_to(&dir, key.as_deref(), device.as_deref()) {
             Ok(path) => {
                 tracing::info!("history exported");
                 Out::Exported { path: path.display().to_string() }
@@ -167,7 +167,7 @@ mod tests {
         let h = history();
         let reads = Reads::spawn(h.reader().unwrap());
         let (tx, mut rx) = mpsc::channel(1);
-        reads.submit(Job::Export { key: None, dir: "/nonexistent/bluez-message".into() }, tx).unwrap();
+        reads.submit(Job::Export { key: None, dir: "/nonexistent/bluez-message".into(), device: None }, tx).unwrap();
         assert!(matches!(rx.recv().await, Some(Out::ExportFailed { .. })));
     }
 }

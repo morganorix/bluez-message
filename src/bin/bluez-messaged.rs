@@ -610,12 +610,21 @@ impl Daemon {
     /// Writes the history to the download folder (home folder without one): never a path from the IPC.
     /// A refusal is answered as [`Out::ExportFailed`] by the caller.
     fn export(&self, key: Option<String>, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {
-        need(self.dev.as_ref())?;
+        let dev = need(self.dev.as_ref())?;
         if key.as_deref().is_some_and(|k| self.state.conv(k).is_none()) {
             return Err(t!("invalid conversation").to_owned());
         }
         let dir = dirs::download_dir().filter(|d| d.is_dir()).or_else(dirs::home_dir).ok_or_else(|| t!("HOME not set").to_owned())?;
-        self.read(reply, Job::Export { key, dir })
+        let Some(reply) = reply.cloned() else { return Ok(()) };
+        let (reads, addr) = (dev.reads.clone(), dev.addr.clone());
+        // Device name read from BlueZ away from the daemon loop (3 s at most).
+        tokio::spawn(async move {
+            let device = bluez::alias(&addr).await;
+            if let Err(e) = reads.submit(Job::Export { key, dir, device }, reply.clone()) {
+                let _ = reply.try_send(Out::ExportFailed { msg: e.msg() });
+            }
+        });
+        Ok(())
     }
 
     fn purge_hidden(&mut self, reply: Option<&mpsc::Sender<Out>>) -> Result<(), String> {

@@ -591,15 +591,19 @@ impl Reader {
     }
 
     /// Writes the history of the active device as one JSON object (format 1): its contacts, SMS
-    /// (deleted ones left out) and calls, oldest first, restricted to conversation `key` if given.
-    /// Read in one transaction (consistent snapshot), streamed row by row; no device address.
+    /// (deleted ones left out) and calls, oldest first, restricted to conversation `key` if given,
+    /// headed by the `device` name if known. Read in one transaction (consistent snapshot), streamed
+    /// row by row; no device address.
     ///
     /// # Errors
     /// SQLite or write error.
-    pub fn export(&self, key: Option<&str>, w: &mut impl std::io::Write) -> crate::error::Result<()> {
+    pub fn export(&self, key: Option<&str>, device: Option<&str>, w: &mut impl std::io::Write) -> crate::error::Result<()> {
         let tx = self.db.unchecked_transaction()?;
         let p = params![self.device, key];
-        let head = serde_json::json!({ "format": 1, "exported": stamp::now(), "conversation": key });
+        let mut head = serde_json::json!({ "format": 1, "exported": stamp::now(), "conversation": key });
+        if let Some(d) = device {
+            head["device"] = d.into();
+        }
         let head = serde_json::to_string(&head).map_err(std::io::Error::from)?;
         // `{...}` without its closing brace, the three arrays follow.
         write!(w, "{},\"contacts\":", &head[..head.len() - 1])?;
@@ -631,12 +635,12 @@ impl Reader {
     ///
     /// # Errors
     /// SQLite or file error, or the file already exists.
-    pub fn export_to(&self, dir: &Path, key: Option<&str>) -> crate::error::Result<PathBuf> {
-        self.export_at(dir, key, &stamp::now())
+    pub fn export_to(&self, dir: &Path, key: Option<&str>, device: Option<&str>) -> crate::error::Result<PathBuf> {
+        self.export_at(dir, key, device, &stamp::now())
     }
 
     /// [`Reader::export_to`] stamped `ts`: a name already taken gets `-2` to `-9`, then the export is refused.
-    fn export_at(&self, dir: &Path, key: Option<&str>, ts: &str) -> crate::error::Result<PathBuf> {
+    fn export_at(&self, dir: &Path, key: Option<&str>, device: Option<&str>, ts: &str) -> crate::error::Result<PathBuf> {
         let mut name = format!("bluez-message-{}", ts.replace('T', "-"));
         if let Some(k) = key {
             name.push('-');
@@ -645,7 +649,7 @@ impl Reader {
         // `tempfile` creates it 0600; its errors name the path, kept out of the logs.
         let tmp = tempfile::Builder::new().prefix(".bluez-message-").suffix(".part").tempfile_in(dir).map_err(|e| std::io::Error::from(e.kind()))?;
         let mut w = std::io::BufWriter::new(tmp);
-        self.export(key, &mut w)?;
+        self.export(key, device, &mut w)?;
         let mut tmp = w.into_inner().map_err(std::io::IntoInnerError::into_error)?;
         tmp.as_file().sync_all()?;
         for n in 1..=9 {
@@ -1283,20 +1287,21 @@ mod tests {
         h.delete("600000001", Some(&item)).unwrap();
 
         let mut all = vec![];
-        h.reader().unwrap().export(None, &mut all).unwrap();
+        h.reader().unwrap().export(None, Some("Phone"), &mut all).unwrap();
         let all = String::from_utf8(all).unwrap();
         assert!(all.ends_with("}\n"));
         assert!(!all.contains(DEV) && !all.contains(OTHER), "no device address");
         let v: serde_json::Value = serde_json::from_str(&all).unwrap();
         assert_eq!(v["format"], 1);
         assert!(v["conversation"].is_null());
+        assert_eq!(v["device"], "Phone");
         let names: Vec<_> = v["contacts"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["Alice", "Bob"]);
         let texts: Vec<_> = v["messages"].as_array().unwrap().iter().map(|m| (m["direction"].as_str().unwrap(), m["text"].as_str().unwrap())).collect();
         assert_eq!(texts, [("in", "a \"quoted\"\nline"), ("out", "b"), ("in", "c")], "oldest first, hidden and other device left out");
         assert_eq!(v["calls"][0], serde_json::json!({ "timestamp": "20261015T120000", "number": "+33600000001", "kind": "missed", "secs": 0 }));
 
-        let path = h.reader().unwrap().export_to(&dir, Some("600000002")).unwrap();
+        let path = h.reader().unwrap().export_to(&dir, Some("600000002"), None).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("bluez-message-2") && name.ends_with("-600000002.json"), "{name}");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
@@ -1307,15 +1312,15 @@ mod tests {
         assert!(v["calls"].as_array().unwrap().is_empty());
         // Existing file not overwritten; no temporary file left behind.
         let size = std::fs::metadata(&path).unwrap().len();
-        let next = h.reader().unwrap().export_to(&dir, Some("600000002")).unwrap();
+        let next = h.reader().unwrap().export_to(&dir, Some("600000002"), None).unwrap();
         assert_ne!(next, path);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
         // Same second: `-2` to `-9`, then refused.
         let r = h.reader().unwrap();
-        let names: Vec<_> = (0..9).map(|_| r.export_at(&dir, None, "20261018T120000").unwrap().file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<_> = (0..9).map(|_| r.export_at(&dir, None, None, "20261018T120000").unwrap().file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names[..3], ["bluez-message-20261018-120000.json", "bluez-message-20261018-120000-2.json", "bluez-message-20261018-120000-3.json"]);
         assert_eq!(names[8], "bluez-message-20261018-120000-9.json");
-        assert!(r.export_at(&dir, None, "20261018T120000").is_err());
+        assert!(r.export_at(&dir, None, None, "20261018T120000").is_err());
         assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part")));
         std::fs::remove_dir_all(&dir).unwrap();
     }

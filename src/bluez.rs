@@ -54,6 +54,8 @@ pub(crate) trait Device {
     #[zbus(property)]
     fn services_resolved(&self) -> zbus::Result<bool>;
     #[zbus(property)]
+    fn alias(&self) -> zbus::Result<String>;
+    #[zbus(property)]
     fn set_trusted(&self, v: bool) -> zbus::Result<()>;
 }
 
@@ -203,6 +205,26 @@ impl Phone {
     }
 }
 
+/// Longest device name kept by [`alias`] (BlueZ allows 248 bytes).
+const ALIAS_MAX: usize = 64;
+
+/// Name of device `addr` (`Alias`, filled by BlueZ from `Name`), at most [`ALIAS_MAX`] characters;
+/// `None` if unreadable within 3 s or if it is only the address (no name known).
+pub async fn alias(addr: &BtAddr) -> Option<String> {
+    let read = async {
+        let conn = Connection::system().await?;
+        Ok::<_, Error>(device(&conn, addr).await?.alias().await?)
+    };
+    // The error may name the device path: not logged.
+    bounded(Duration::from_secs(3), read).await.ok().and_then(|a| named(&a))
+}
+
+/// `alias` trimmed and bounded, unless empty or an address (BlueZ falls back to `XX-XX-…`).
+fn named(alias: &str) -> Option<String> {
+    let a = alias.trim();
+    (!a.is_empty() && a.replace('-', ":").parse::<BtAddr>().is_err()).then(|| a.chars().take(ALIAS_MAX).collect())
+}
+
 /// HFP Audio Gateway, MAP Message Server.
 const PHONE_UUIDS: [&str; 2] = ["0000111f-0000-1000-8000-00805f9b34fb", "00001132-0000-1000-8000-00805f9b34fb"];
 
@@ -293,5 +315,14 @@ mod tests {
         assert_eq!(name(&props(&[("Alias", Value::from("A")), ("Name", Value::from("N"))]), &addr), "A");
         assert_eq!(name(&props(&[("Name", Value::from("N"))]), &addr), "N");
         assert_eq!(name(&props(&[]), &addr), addr.to_string());
+    }
+
+    #[test]
+    fn alias_never_an_address() {
+        assert_eq!(named(" Phone "), Some("Phone".into()));
+        assert_eq!(named("00-11-22-AA-BB-CC"), None);
+        assert_eq!(named("00:11:22:aa:bb:cc"), None);
+        assert_eq!(named(""), None);
+        assert_eq!(named(&"é".repeat(100)).unwrap().chars().count(), ALIAS_MAX);
     }
 }
