@@ -29,6 +29,8 @@ const REDIRECTS: u32 = 3;
 /// Read of the page, stopped earlier at `</head>`.
 const HTML_MAX: u64 = 512 * 1024;
 const IMAGE_MAX: u64 = 2 * 1024 * 1024;
+/// oEmbed answer (a few hundred bytes in practice).
+const OEMBED_MAX: u64 = 16 * 1024;
 /// Decoded image: side and memory.
 const IMAGE_SIDE: u32 = 4096;
 const IMAGE_ALLOC: u64 = 64 * 1024 * 1024;
@@ -74,6 +76,8 @@ enum Fail {
     NotImage,
     #[error("no title")]
     NoTitle,
+    #[error("invalid oEmbed answer")]
+    OEmbed(#[from] serde_json::Error),
 }
 
 /// Requests to the fetching thread (URLs) and its results (URL, card data or failure).
@@ -194,7 +198,11 @@ fn agent() -> Agent {
 
 fn fetch(agent: &Agent, url: &str) -> Option<Fetched> {
     let domain = domain(url)?;
-    match page(agent, url) {
+    let got = match youtube(url) {
+        Some(id) => video(agent, id),
+        None => page(agent, url),
+    };
+    match got {
         Ok((meta, image)) => Some(Fetched { meta, domain, image }),
         Err(e) => {
             tracing::debug!(%domain, "link preview: {e}");
@@ -216,14 +224,66 @@ fn page(agent: &Agent, url: &str) -> Result<(Meta, Option<egui::ColorImage>), Fa
     if meta.title.is_empty() {
         return Err(Fail::NoTitle);
     }
-    let image = meta.image.as_deref().and_then(|i| absolute(&base, i)).and_then(|i| match picture(agent, &i) {
-        Ok(img) => Some(img),
-        Err(e) => {
-            tracing::debug!("link preview image: {e}");
-            None
-        }
-    });
+    let image = meta.image.as_deref().and_then(|i| absolute(&base, i)).and_then(|i| thumbnail(agent, &i));
     Ok((meta, image))
+}
+
+/// Id of a `YouTube` video link (`youtu.be/ID`, `watch?v=ID`, `shorts/ID`, `live/ID`, `embed/ID`).
+fn youtube(url: &str) -> Option<&str> {
+    let rest = url.get(8..).filter(|_| https(url))?;
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.to_ascii_lowercase();
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    let path = path.split('#').next().unwrap_or_default();
+    let id = match host.as_str() {
+        "youtu.be" => path.split('/').next(),
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" => match path.split_once('/') {
+            Some(("shorts" | "live" | "embed", id)) => id.split('/').next(),
+            None if path == "watch" => {
+                query.split('#').next().unwrap_or_default().split('&').find_map(|kv| kv.strip_prefix("v="))
+            }
+            _ => None,
+        },
+        _ => None,
+    }?;
+    (id.len() == 11 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).then_some(id)
+}
+
+/// `YouTube` answers its watch pages with an anti-bot page, or puts the title past [`HTML_MAX`]:
+/// its oEmbed endpoint gives the title and the thumbnail in a few hundred bytes.
+fn video(agent: &Agent, id: &str) -> Result<(Meta, Option<egui::ColorImage>), Fail> {
+    // `id` is checked by `youtube`: nothing to encode in it.
+    let url = format!("https://www.youtube.com/oembed?format=json&url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{id}");
+    let body = agent.get(&url).call()?.body_mut().with_config().limit(OEMBED_MAX).read_to_string()?;
+    let meta = oembed(&body)?;
+    if meta.title.is_empty() {
+        return Err(Fail::NoTitle);
+    }
+    let image = meta.image.as_deref().filter(|i| https(i)).and_then(|i| thumbnail(agent, i));
+    Ok((meta, image))
+}
+
+/// Title, channel (as description) and thumbnail of an oEmbed answer.
+fn oembed(body: &str) -> Result<Meta, Fail> {
+    #[derive(serde::Deserialize)]
+    struct OEmbed {
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        author_name: String,
+        thumbnail_url: Option<String>,
+    }
+    let o: OEmbed = serde_json::from_str(body)?;
+    Ok(Meta {
+        title: tidy(&o.title, TITLE_MAX),
+        description: tidy(&o.author_name, DESCRIPTION_MAX),
+        image: o.thumbnail_url.map(|i| i.trim().to_owned()),
+    })
+}
+
+/// Image of a preview; a failing one leaves the preview without it.
+fn thumbnail(agent: &Agent, url: &str) -> Option<egui::ColorImage> {
+    picture(agent, url).map_err(|e| tracing::debug!("link preview image: {e}")).ok()
 }
 
 fn picture(agent: &Agent, url: &str) -> Result<egui::ColorImage, Fail> {
@@ -454,6 +514,47 @@ mod tests {
             title </TITLE><meta name="Description" content="Desc"></head>"#;
         assert_eq!(parse(plain), Meta { title: "Only title".into(), description: "Desc".into(), image: None });
         assert_eq!(parse("not html at all"), Meta::default());
+    }
+
+    #[test]
+    fn youtube_links_use_oembed() {
+        let id = Some("abcdEFGH_-1");
+        for url in [
+            "https://youtu.be/abcdEFGH_-1?si=abc",
+            "https://www.youtube.com/watch?feature=share&v=abcdEFGH_-1#t=3",
+            "https://M.YouTube.com/watch?v=abcdEFGH_-1",
+            "https://youtube.com/shorts/abcdEFGH_-1",
+            "https://www.youtube.com/live/abcdEFGH_-1?x=1",
+        ] {
+            assert_eq!(youtube(url), id, "{url}");
+        }
+        for url in [
+            "http://youtu.be/abcdEFGH_-1",
+            "https://youtu.be/short",
+            "https://youtu.be/abcdEFGH_-1%2F",
+            "https://www.youtube.com/watch?v=abcdEFGH_&x",
+            "https://www.youtube.com/@channel",
+            "https://youtube.com.example.org/watch?v=abcdEFGH_-1",
+            "https://example.org/watch?v=abcdEFGH_-1",
+        ] {
+            assert_eq!(youtube(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn reads_oembed() {
+        let body = r#"{"title":"A &amp; B\u202e  video","author_name":"Chan","type":"video",
+            "thumbnail_url":"https://i.ytimg.com/vi/abcdEFGH_-1/hqdefault.jpg","html":"<iframe>"}"#;
+        assert_eq!(
+            oembed(body).unwrap(),
+            Meta {
+                title: "A & B video".into(),
+                description: "Chan".into(),
+                image: Some("https://i.ytimg.com/vi/abcdEFGH_-1/hqdefault.jpg".into())
+            }
+        );
+        assert_eq!(oembed("{}").unwrap(), Meta::default());
+        assert!(oembed("<html>").is_err());
     }
 
     #[test]
