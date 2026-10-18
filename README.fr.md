@@ -176,7 +176,7 @@ bluez-message --open <numéro>                          # fenêtre sur cette con
 | `~/.config/bluez-message/device` | Adresse Bluetooth de l'iPhone (0600). |
 | `~/.config/bluez-message/settings.json` | Réglages (écrits par le démon seul). |
 | `~/.config/bluez-message/locales/<lang>.json` | Traductions personnelles. |
-| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak` (format des clés) ou `history.db.v<N>.bak` (schéma). Export : `bluez-message-<date>[-<numéro>][-<n>].json` dans le dossier Téléchargements (`-2`…`-9` si le nom est pris). |
+| `~/.local/share/bluez-message/history.db` | Historique SQLite (SMS, appels, contacts, lectures). Numéros indexés au format international ; une base plus ancienne est migrée au démarrage, après copie dans `history.db.bak` (format des clés) ou `history.db.v<N>.bak` (schéma). Export : `bluez-message-<date>[-<n>].json` dans le dossier Téléchargements (`-2`…`-9` si le nom est pris). |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Socket du démon (JSON lignes). |
 | `~/.config/control-bar/colors.plm` | Optionnel : palette de couleurs (template matugen), rechargée à chaud. |
 

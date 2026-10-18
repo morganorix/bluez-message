@@ -13,6 +13,13 @@ fn level(raw: Option<&str>) -> Result<LevelFilter, ()> {
     raw.map_or(Ok(LevelFilter::INFO), |v| v.trim().parse().map_err(|_| ()))
 }
 
+/// Last 4 characters only (`****5601`): numbers and invalid input in logs and errors.
+#[must_use]
+pub fn mask(value: &str) -> String {
+    let tail: String = value.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("****{tail}")
+}
+
 /// Replaces each `AA:BB:CC:DD:EE:FF` or `AA_BB_CC_DD_EE_FF` address with `XX…`, same separator.
 fn redact(s: &str) -> String {
     let b = s.as_bytes();

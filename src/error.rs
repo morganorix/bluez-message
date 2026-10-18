@@ -28,8 +28,8 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::InvalidNumber(n) => t!("invalid number: {0}", format!("{n:?}")),
-            Self::InvalidAddress(a) => t!("invalid Bluetooth address: {0}", format!("{a:?}")),
+            Self::InvalidNumber(n) => t!("invalid number: {0}", crate::log::mask(n)),
+            Self::InvalidAddress(a) => t!("invalid Bluetooth address: {0}", crate::log::mask(a)),
             Self::InvalidFolder(d) => t!("invalid MAP folder: {0}", format!("{d:?}")),
             Self::NoHome => t!("HOME not set").to_owned(),
             Self::TransferFailed => t!("OBEX transfer failed").to_owned(),
@@ -48,3 +48,16 @@ impl fmt::Display for Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn invalid_input_masked() {
+        let n = Error::InvalidNumber("+33600000001x".into()).to_string();
+        assert!(!n.contains("33600000") && n.ends_with("****001x"), "{n}");
+        let a = Error::InvalidAddress("AA:BB:CC:DD:EE:FG".into()).to_string();
+        assert!(!a.contains("AA:BB") && a.ends_with("****E:FG"), "{a}");
+    }
+}

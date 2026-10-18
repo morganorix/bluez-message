@@ -172,7 +172,7 @@ bluez-message --open <number>                          # window on that conversa
 | `~/.config/bluez-message/device` | iPhone Bluetooth address (0600). |
 | `~/.config/bluez-message/settings.json` | Settings (written by the daemon only). |
 | `~/.config/bluez-message/locales/<lang>.json` | Your own translations. |
-| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak` (key format) or `history.db.v<N>.bak` (schema). Export: `bluez-message-<date>[-<number>][-<n>].json` in the Downloads folder (`-2`…`-9` if the name is taken). |
+| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak` (key format) or `history.db.v<N>.bak` (schema). Export: `bluez-message-<date>[-<n>].json` in the Downloads folder (`-2`…`-9` if the name is taken). |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Daemon socket (JSON lines). |
 | `~/.config/control-bar/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
 

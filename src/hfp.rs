@@ -157,11 +157,7 @@ fn parse_indicator_names(s: &str) -> Vec<Indicator> {
     s.split('"').skip(1).step_by(2).map(Indicator::from).collect()
 }
 
-#[must_use]
-pub fn mask(number: &str) -> String {
-    let tail: String = number.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-    format!("****{tail}")
-}
+pub use crate::log::mask;
 
 struct Agent {
     device_suffix: String,

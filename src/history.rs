@@ -632,7 +632,7 @@ impl Reader {
         Ok(())
     }
 
-    /// [`Reader::export`] to a new file of `dir`, `bluez-message-<date>[-<key>].json` (mode 0600),
+    /// [`Reader::export`] to a new file of `dir`, `bluez-message-<date>.json` (mode 0600),
     /// written beside it then renamed: never a partial file, never an existing one overwritten.
     ///
     /// # Errors
@@ -643,11 +643,8 @@ impl Reader {
 
     /// [`Reader::export_to`] stamped `ts`: a name already taken gets `-2` to `-9`, then the export is refused.
     fn export_at(&self, dir: &Path, key: Option<&str>, device: Option<&str>, ts: &str) -> crate::error::Result<PathBuf> {
-        let mut name = format!("bluez-message-{}", ts.replace('T', "-"));
-        if let Some(k) = key {
-            name.push('-');
-            name.extend(k.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '+').take(32));
-        }
+        // No key in the name: a number would leak through the Downloads listing.
+        let name = format!("bluez-message-{}", ts.replace('T', "-"));
         // `tempfile` creates it 0600; its errors name the path, kept out of the logs.
         let tmp = tempfile::Builder::new().prefix(".bluez-message-").suffix(".part").tempfile_in(dir).map_err(|e| std::io::Error::from(e.kind()))?;
         let mut w = std::io::BufWriter::new(tmp);
@@ -1305,7 +1302,7 @@ mod tests {
 
         let path = h.reader().unwrap().export_to(&dir, Some("600000002"), None).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with("bluez-message-2") && name.ends_with("-600000002.json"), "{name}");
+        assert!(name.starts_with("bluez-message-2") && !name.contains("600000002"), "{name}");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(v["conversation"], "600000002");
