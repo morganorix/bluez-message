@@ -145,6 +145,14 @@ impl Wizard {
             }
         }
 
+        // Removes the pairing from BlueZ too (the phone's own "forget" leaves a stale key on this side).
+        if let Some(a) = chosen.as_ref().filter(|a| device != Some(*a) && devices.iter().any(|d| d.addr == **a))
+            && w::button(ui, pal, t!("UNPAIR"), w::Tone::Danger).clicked()
+        {
+            cmds.push(Cmd::Forget { addr: a.clone() });
+            self.chosen = None;
+        }
+
         section(ui, pal, t!("Nearby devices"));
         let searching = p.adapter.is_some_and(|a| a.discovering);
         ui.horizontal(|ui| {

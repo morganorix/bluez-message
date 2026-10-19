@@ -425,6 +425,7 @@ impl Daemon {
                 Ok(false) => Ok(()),
                 Err(e) => Err(e),
             },
+            Cmd::Forget { addr } => self.forget(&addr).await,
             Cmd::PurgeHidden => self.purge_hidden(reply.as_ref()),
             Cmd::Search { query, before } => self.read(reply.as_ref(), Job::Search { query, before }),
             Cmd::Older { key, before, limit } => self.read(reply.as_ref(), Job::Older { key, before, limit: usize::try_from(limit).unwrap_or(usize::MAX) }),
@@ -585,6 +586,22 @@ impl Daemon {
     }
 
     /// Registers another paired iPhone; `Ok(true)`: the daemon must restart to follow it.
+    /// Removes a paired device from BlueZ; the configured one is refused. Paired devices republished.
+    async fn forget(&mut self, addr: &BtAddr) -> Result<()> {
+        if self.addr() == Some(addr) {
+            return Err(Error::Refused(Refusal::DeviceInUse));
+        }
+        let known = bluez::paired().await.is_ok_and(|d| d.iter().any(|d| d.addr == *addr));
+        if !known {
+            return Err(Error::Refused(Refusal::UnknownDevice));
+        }
+        let conn = zbus::Connection::system().await?;
+        bluez::remove_device(&conn, addr).await?;
+        tracing::info!("device removed from BlueZ");
+        self.apply_publish(settings_out(&self.settings, self.addr()).await);
+        Ok(())
+    }
+
     async fn set_device(&self, new: &BtAddr) -> Result<bool> {
         if self.fixed_addr {
             return Err(Error::Refused(Refusal::AddressFromCli));

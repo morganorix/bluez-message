@@ -58,6 +58,21 @@ pub(crate) trait Device {
     fn set_trusted(&self, v: bool) -> zbus::Result<()>;
 }
 
+#[proxy(interface = "org.bluez.Adapter1", default_service = "org.bluez", default_path = "/org/bluez/hci0")]
+trait AdapterRemove {
+    fn remove_device(&self, device: &zbus::ObjectPath<'_>) -> zbus::Result<()>;
+}
+
+/// Removes `addr` from BlueZ (pairing and keys): the next pairing starts from scratch.
+///
+/// # Errors
+/// D-Bus path refused, call failed or timeout exceeded.
+pub async fn remove_device(conn: &Connection, addr: &BtAddr) -> Result<()> {
+    let path = OwnedObjectPath::try_from(addr.path())?;
+    let adapter = AdapterRemoveProxy::new(conn).await?;
+    bounded(Duration::from_secs(5), adapter.remove_device(&path)).await
+}
+
 /// `Device1` proxy of `addr` on `conn`, without property cache (reread at each check).
 ///
 /// # Errors

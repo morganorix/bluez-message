@@ -69,6 +69,8 @@ pub enum Refusal {
     AddressFromCli,
     /// Address not among the paired devices.
     UnknownDevice,
+    /// Device configured in the daemon: it cannot be removed.
+    DeviceInUse,
 }
 
 /// Data named by [`Error::NotSaved`].
@@ -158,6 +160,7 @@ impl fmt::Display for Error {
             Self::Refused(Refusal::ReconnectRunning) => t!("reconnection already in progress").to_owned(),
             Self::Refused(Refusal::AddressFromCli) => t!("address set on the command line").to_owned(),
             Self::Refused(Refusal::UnknownDevice) => t!("unknown device (not paired)").to_owned(),
+            Self::Refused(Refusal::DeviceInUse) => t!("device in use: choose another one first").to_owned(),
             Self::NotSaved(Store::ConvState) => t!("cannot save the conversation state (history)").to_owned(),
             Self::NotSaved(Store::Delete) => t!("cannot delete (history)").to_owned(),
             Self::NotSaved(Store::Settings) => t!("cannot save settings").to_owned(),

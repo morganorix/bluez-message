@@ -79,7 +79,7 @@ impl Setup {
     /// Agent path refused by the object server.
     pub async fn start(conn: Connection, out: mpsc::UnboundedSender<Out>, clients: Clients) -> Result<Self> {
         let pairing = Shared::default();
-        conn.object_server().at(AGENT_PATH, Agent { pairing: pairing.clone(), out: out.clone() }).await?;
+        conn.object_server().at(AGENT_PATH, Agent { pairing: pairing.clone(), out: out.clone(), rt: tokio::runtime::Handle::current() }).await?;
         let adapter = AdapterProxy::builder(&conn).path(ADAPTER).cache_properties(zbus::proxy::CacheProperties::No).build().await?;
         let (tx, rx) = mpsc::channel(QUEUE);
         let actor = Actor { conn, adapter, out, clients, pairing, agent: false, search: None, adapter_state: None, found: None };
@@ -354,6 +354,8 @@ fn rejected() -> AgentError {
 struct Agent {
     pairing: Shared,
     out: mpsc::UnboundedSender<Out>,
+    /// zbus dispatches handlers on its own executor: tokio timers must run on this handle.
+    rt: tokio::runtime::Handle,
 }
 
 impl Agent {
@@ -377,12 +379,10 @@ impl Agent {
             let _ = self.out.send(ask);
             rx
         };
-        let answer = tokio::time::timeout(ANSWER, rx).await;
+        let confirmed = self.rt.spawn(async move { matches!(tokio::time::timeout(ANSWER, rx).await, Ok(Ok(true))) });
+        let confirmed = confirmed.await.unwrap_or(false);
         lock(&self.pairing).answer = None;
-        match answer {
-            Ok(Ok(true)) => Ok(()),
-            _ => Err(rejected()),
-        }
+        if confirmed { Ok(()) } else { Err(rejected()) }
     }
 
     async fn request_authorization(&self, device: ObjectPath<'_>) -> std::result::Result<(), AgentError> {

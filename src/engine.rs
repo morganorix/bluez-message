@@ -94,6 +94,8 @@ pub enum Cmd {
     Confirm { ok: bool },
     /// Connects a paired device: handled by the daemon (setup).
     Connect { addr: BtAddr },
+    /// Removes a paired device from BlueZ (not the one in use): handled by the daemon.
+    Forget { addr: BtAddr },
     /// Searches the SMS of the history (accents and case ignored), newest first, page after `before`:
     /// handled by the daemon, answered to the requester only ([`Out::Hits`]).
     Search {
@@ -548,6 +550,7 @@ impl Engine {
             | Cmd::Pair { .. }
             | Cmd::Confirm { .. }
             | Cmd::Connect { .. }
+            | Cmd::Forget { .. }
             | Cmd::Search { .. }
             | Cmd::Older { .. }
             | Cmd::ConvFlags { .. }
@@ -777,6 +780,7 @@ mod tests {
         assert_eq!(parse_cmd(r#"{"cmd":"discover","on":false}"#).ok(), Some(Cmd::Discover { on: false }));
         assert_eq!(parse_cmd(r#"{"cmd":"confirm","ok":true}"#).ok(), Some(Cmd::Confirm { ok: true }));
         assert_eq!(parse_cmd(r#"{"cmd":"pair","addr":"00:11:22:33:44:55"}"#).ok(), Some(Cmd::Pair { addr: addr.clone() }));
+        assert_eq!(parse_cmd(r#"{"cmd":"forget","addr":"00:11:22:33:44:55"}"#).ok(), Some(Cmd::Forget { addr: addr.clone() }));
         assert_eq!(parse_cmd(r#"{"cmd":"connect","addr":"00:11:22:33:44:55"}"#).ok(), Some(Cmd::Connect { addr }));
         for a in ["", "00:11:22:33:44", "00:11:22:33:44:GG", "../../x", "00:11:22:33:44:55:66"] {
             assert!(parse_cmd(&format!(r#"{{"cmd":"pair","addr":"{a}"}}"#)).is_err(), "{a}");
