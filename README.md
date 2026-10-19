@@ -142,4 +142,146 @@ over HFP (around -34 dBFS at peak). To change it, copy the script to
       already paired one, or type its address.
    3. **Phone settings**: on iPhone, in Settings > Bluetooth > (i) next to the PC, enable **Show
       Notifications** (MAP) and **Sync Contacts** (PBAP); on Android, allow access to messages and contacts
-      for the PC in
+      for the PC in the pairing prompt or the Bluetooth device settings; the Calls (HFP), Messages (MAP) and Contacts (PBAP) lights
+      turn green. iOS also asks for permission on first access.
+   4. **Done**.
+
+   Manual equivalent: pair with `bluetoothctl` (`pair`, `trust`, `connect <address>`), write the address
+   `AA:BB:CC:DD:EE:FF` to `~/.config/bluez-message/device`, then `systemctl --user restart bluez-messaged`.
+
+## Usage
+
+### Main window
+
+- Left column, "Contacts": **SMS** and **Calls** tabs (half width each). Landlines only appear in Calls,
+  under the contact name when they are in the address book. "Search" field (accents ignored, local or `+33…` format;
+  Enter opens the first result). From 2 characters it also searches the text of every message
+  ("Messages" section, accents and case ignored): a click opens the conversation on that message.
+- Right-click on a conversation: Mute (no SMS notification, calls still ring), Archive (moved to the
+  collapsible "Archived (N)" section until the next incoming SMS), Delete.
+- Thread: send, emoji button, call button in the header; "Older messages" at the top loads the rest
+  of the history. Web links (http/https) are clickable.
+- Right-click on a bubble: reaction, Resend, Copy, Delete (local deletion only, never on the iPhone).
+- A pending message shows a progress bar; if sending fails, a button resends it.
+- Header: Calls (HFP), Messages (MAP) and Contacts (PBAP) lights, and the iPhone battery level (red
+  below 20 %).
+- New SMS notification: **Reply** opens the window on the conversation (started if closed).
+
+Shortcuts: `↑`/`↓` + `Enter` in the list, `Esc`, `Ctrl+F` (search), `Ctrl+,` (settings).
+
+### Calls
+
+When the phone rings, a notification offers **Answer** / **Decline**, plus, for a mobile number,
+**QUICK REPLY**: it declines and opens the conversation (the window is started if needed), with the quick
+replies as chips above the input: a click fills it, nothing is sent automatically. In the window, the call
+banner offers the same choices. Once the call is up, the
+`bluez-msg-call` window shows the duration and the Mute, Hold, Hang up buttons (plus Answer / Decline /
+Swap during call waiting). It closes by itself when the call ends.
+
+### Settings
+
+Tabs:
+- **General**: language (applied live), phone number country (Automatic: from the language or the
+  locale; used to recognise landlines and to group a number written as `06…` or `+33…`), Link previews
+  (off by default: title and image under a link, fetched by the window over https, which reveals your
+  IP address to the linked site; private addresses refused).
+- **Notifications**: new SMS, incoming calls, hide message text.
+- **Devices**: Bluetooth device, Connect automatically, Set up a device.
+- **History**: retention (30 / 90 / 365 days), Export history (JSON file in the Downloads folder,
+  or the home folder, readable by you only, the only export in the window; deleted messages left out), purge deleted messages, Clear history (double
+  confirmation, contacts are kept).
+- **Replies**: quick replies offered as chips after **QUICK REPLY** (5 at most, 160 characters each).
+
+### Command line
+
+```sh
+bluez-msg list <address> [inbox|sent|outbox|deleted]   # JSON, one message per line
+bluez-msg send <address> <number> "<text>"
+bluez-msg watch <address> [--interval 5]
+bluez-msg serve <address>                              # engine driven by JSON over stdin/stdout
+bluez-msg hfp <address> [--answer]                     # raw RFCOMM HFP, no audio (hfp_hf disabled)
+bluez-msg export [--key <number>]                     # via the daemon: whole history or one conversation
+bluez-msg locale template | check <file>
+bluez-message --open <number>                          # window on that conversation
+```
+
+## Files
+
+| Path | Content |
+|---|---|
+| `~/.config/bluez-message/device` | iPhone Bluetooth address (0600). |
+| `~/.config/bluez-message/settings.json` | Settings (written by the daemon only). |
+| `~/.config/bluez-message/locales/<lang>.json` | Your own translations. |
+| `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak` (key format) or `history.db.v<N>.bak` (schema). Export: `bluez-message-<date>[-<n>].json` in the Downloads folder (`-2`…`-9` if the name is taken). |
+| `$XDG_RUNTIME_DIR/bluez-message.sock` | Daemon socket (JSON lines). |
+| `~/.config/control-bar/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
+
+`BLUEZ_MESSAGE_LANG` variable: forces the language (`fr`, `en`…).
+`BLUEZ_MESSAGE_LOG` variable: log level (`info` by default, without numbers, names, texts or addresses;
+`debug` for troubleshooting, e.g. `systemctl --user edit bluez-messaged` → `Environment=BLUEZ_MESSAGE_LOG=debug`).
+
+### Hyprland (optional)
+
+Window classes: `bluez-message` (main; suggested: floating, centred, 900×640) and `bluez-msg-call`
+(call; suggested: floating, pinned, 420×150, top of the screen).
+When a notification opens a conversation, the window is focused with `hyprctl dispatch` (Lua syntax).
+
+## Translations
+
+Texts are written in English in the code and translated at run time from JSON files.
+To add a language, see [`locales/README.md`](locales/README.md).
+
+## Code layout
+
+```
+src/
+├── main.rs              bluez-msg CLI
+├── bin/
+│   ├── bluez-messaged.rs        daemon: engine, notifications, history, socket, link watch
+│   ├── bluez-message/           main window (ui, convs, thread, composer, prefs, setup assistant)
+│   └── bluez-msg-call/          call window
+├── engine.rs            shared engine: MAP polling, sending, calls (Cmd commands / Out events)
+├── map.rs, obex.rs      MAP client over bluez-obex (D-Bus)
+├── bmsg.rs              bMessage encoding/decoding (SMS)
+├── pbap.rs              contacts (vCard)
+├── telephony.rs         org.pipewire.Telephony D-Bus client (calls, HFP audio held by PipeWire)
+├── hfp.rs               raw RFCOMM hands-free unit (AT commands, CLI only)
+├── bluez.rs             device state and reconnection (org.bluez)
+├── ipc.rs               JSON-lines protocol daemon ↔ clients
+├── history.rs, reads.rs SQLite database (user_version migrations), slow reads (search, pages, export)
+├── setup.rs             pairing agent and adapter control (setup assistant)
+├── serve.rs, log.rs     JSON-lines engine on stdin/stdout, logs with masked addresses
+├── settings.rs, config.rs, i18n.rs, phone.rs, numbering.rs, stamp.rs, addr.rs, error.rs
+├── app/                 shared state (conversations, call), notifications, reactions
+└── gui/                 theme, widgets, icons (MDI), emojis (Twemoji), link previews, egui startup
+assets/mdi/              Material Design Icons SVG (white), LICENSE, NOTICE
+locales/                 fr.json (embedded), template.json, README
+packaging/arch/          PKGBUILD, systemd service, .desktop, icon, WirePlumber config
+packaging/aur/           AUR PKGBUILD (sources from the GitHub tag)
+```
+
+## Development
+
+```sh
+cargo build --all-features
+cargo test --all-features
+cargo clippy --all-features --all-targets -- -D warnings
+```
+
+Every new `t!("…")` string must be added to `locales/template.json` (checked by the
+`template_matches_sources` test).
+
+## About this project
+
+"Vibe coded": the code was written by an AI ([Claude Code](https://claude.com/claude-code))
+under the direction of the author, who set its structural, optimisation and security guidelines and
+tested it on his own hardware (iPhone 11 and an Android phone, Arch Linux, Hyprland).
+Bug reports and feedback are welcome in [issues](https://github.com/morganorix/bluez-message/issues).
+
+## License
+
+[MIT](LICENSE)
+
+Embedded assets:
+- [Material Design Icons](https://pictogrammers.com/library/mdi/) (Apache-2.0), recoloured, see [assets/mdi/NOTICE](assets/mdi/NOTICE).
+- [Twemoji](https://github.com/jdecked/twemoji) graphics (CC-BY 4.0) through the `twemoji-assets` crate.
