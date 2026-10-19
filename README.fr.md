@@ -2,15 +2,16 @@
 
 [English](README.md) · **Français**
 
-SMS et appels de l'iPhone sur un PC Linux, par Bluetooth uniquement : aucun serveur tiers, aucun compte
-Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egui.
+SMS et appels de l'iPhone et d'Android sur un PC Linux, par Bluetooth uniquement : aucun serveur tiers,
+aucun compte Apple ou Google, aucune app à installer sur le téléphone. Écrit en Rust, interface egui.
 
 > **Projet « vibe codé »** : le code a été écrit par une IA ([Claude Code](https://claude.com/claude-code)),
 > sous la direction de l'auteur, qui en a fixé les orientations de structure, d'optimisation et de
-> sécurité, et l'a testé sur son propre matériel (iPhone 11, Arch Linux, Hyprland).
+> sécurité, et l'a testé sur son propre matériel (iPhone 11 et un téléphone Android, Arch Linux, Hyprland).
 
-- **Assistant de configuration** : allume l'adaptateur Bluetooth, trouve et appaire l'iPhone (code confirmé
-  des deux côtés), puis vérifie les réglages de l'iPhone ; plusieurs appareils, chacun avec son historique.
+- **Assistant de configuration** : allume l'adaptateur Bluetooth, trouve et appaire le téléphone (code confirmé
+  des deux côtés), puis indique quoi activer dessus ; dissociation depuis l'assistant ; plusieurs appareils,
+  chacun avec son historique.
 - **SMS** : lecture et envoi par le profil Bluetooth MAP (via `bluez-obex`), emojis en couleur,
   réactions, liens cliquables avec aperçus optionnels (titre et image), renvoi en cas d'échec.
 - **Conversations** : onglets SMS et Appels, recherche dans les noms et dans le texte de tous les messages,
@@ -30,6 +31,11 @@ Apple, aucune app à installer sur le téléphone. Écrit en Rust, interface egu
 > Limites connues : iOS n'expose pas les iMessage par MAP (seulement les SMS/MMS texte) ; les dossiers
 > MAP `sent`/`outbox` sont vides côté iPhone, les envois de l'app sont donc consignés localement ; les
 > réactions (tapbacks) sont envoyées sous forme de SMS texte (« Liked “…” »).
+>
+> Compatibilité : iPhone (iOS) et Android. Sous Android, SMS, appels et contacts fonctionnent ; autoriser
+> le PC à accéder aux messages et aux contacts quand le téléphone le demande (le service MAP n'apparaît
+> qu'une fois le partage autorisé). Si un téléphone oublie le PC, le dissocier aussi depuis l'assistant
+> avant de réappairer.
 
 ## Composants
 
@@ -115,10 +121,12 @@ puis `systemctl --user restart wireplumber` et reconnecter l'iPhone.
 1. Ouvrir **bmessage** depuis le menu. Sans appareil configuré, l'assistant de configuration s'ouvre
    (aussi accessible par **Paramètres > Appareils > Configurer un appareil**) :
    1. **Adaptateur Bluetooth** : l'allumer si besoin.
-   2. **Appareil** : rechercher puis appairer l'iPhone (confirmer le même code des deux côtés), ou choisir
+   2. **Appareil** : rechercher puis appairer le téléphone (confirmer le même code des deux côtés), ou choisir
       un appareil déjà appairé, ou saisir son adresse.
-   3. **Réglages de l'iPhone** : dans Réglages > Bluetooth > (i) à côté du PC, activer **Afficher les
-      notifications** (MAP) et **Synchroniser les contacts** (PBAP) ; les voyants Appels (HFP), Messages
+   3. **Réglages du téléphone** : sur iPhone, dans Réglages > Bluetooth > (i) à côté du PC, activer
+      **Afficher les notifications** (MAP) et **Synchroniser les contacts** (PBAP) ; sur Android, autoriser
+      l'accès aux messages et aux contacts pour le PC (demande d'appairage ou réglages de l'appareil
+      Bluetooth) ; les voyants Appels (HFP), Messages
       (MAP) et Contacts (PBAP) passent au vert. iOS demande aussi l'autorisation au premier accès.
    4. **Terminé**.
 

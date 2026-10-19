@@ -2,15 +2,16 @@
 
 **English** · [Français](README.fr.md)
 
-iPhone texts and calls on a Linux PC, over Bluetooth only: no third-party server, no Apple account, no app
-to install on the phone. Written in Rust, egui interface.
+iPhone and Android texts and calls on a Linux PC, over Bluetooth only: no third-party server, no Apple or
+Google account, no app to install on the phone. Written in Rust, egui interface.
 
 > **"Vibe coded" project**: the code was written by an AI ([Claude Code](https://claude.com/claude-code))
 > under the direction of the author, who set its structural, optimisation and security guidelines and
-> tested it on his own hardware (iPhone 11, Arch Linux, Hyprland).
+> tested it on his own hardware (iPhone 11 and an Android phone, Arch Linux, Hyprland).
 
-- **Setup assistant**: turns the Bluetooth adapter on, finds and pairs the iPhone (code confirmed on
-  both sides), then checks the iPhone settings; several devices, each with its own history.
+- **Setup assistant**: turns the Bluetooth adapter on, finds and pairs the phone (code confirmed on
+  both sides), then tells you what to enable on it; unpair a device from the assistant; several devices,
+  each with its own history.
 - **Texts**: read and send through the Bluetooth MAP profile (via `bluez-obex`), colour emojis,
   reactions, clickable links with optional previews (title and image), resend on failure.
 - **Conversations**: SMS and Calls tabs, search in names and in the text of every message,
@@ -30,6 +31,10 @@ to install on the phone. Written in Rust, egui interface.
 > Known limits: iOS does not expose iMessage over MAP (only SMS/MMS text); the MAP `sent`/`outbox` folders
 > are empty on the iPhone, so messages sent from the app are recorded locally; reactions (tapbacks) are sent
 > as plain texts ("Liked “…”").
+>
+> Compatibility: iPhone (iOS) and Android. On Android, texts, calls and contacts work; allow the PC to
+> access messages and contacts when the phone asks (the MAP service only appears once sharing is allowed).
+> If a phone forgets the PC, unpair it from the assistant too before pairing again.
 
 ## Components
 
@@ -115,10 +120,11 @@ over HFP (around -34 dBFS at peak). To change it, copy the script to
 1. Open **bmessage** from the menu. Without a configured device, the setup assistant opens (also
    available from **Settings > Devices > Set up a device**):
    1. **Bluetooth adapter**: turn it on if needed.
-   2. **Device**: search, then pair the iPhone (confirm the same code on both sides), or pick an
+   2. **Device**: search, then pair the phone (confirm the same code on both sides), or pick an
       already paired one, or type its address.
-   3. **iPhone settings**: in Settings > Bluetooth > (i) next to the PC, enable **Show Notifications**
-      (MAP) and **Sync Contacts** (PBAP); the Calls (HFP), Messages (MAP) and Contacts (PBAP) lights
+   3. **Phone settings**: on iPhone, in Settings > Bluetooth > (i) next to the PC, enable **Show
+      Notifications** (MAP) and **Sync Contacts** (PBAP); on Android, allow access to messages and contacts
+      for the PC in the pairing prompt or the Bluetooth device settings; the Calls (HFP), Messages (MAP) and Contacts (PBAP) lights
       turn green. iOS also asks for permission on first access.
    4. **Done**.
 
