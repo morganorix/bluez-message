@@ -1,6 +1,6 @@
 [package]
 name = "bluez-message"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.91"
 description = "iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
