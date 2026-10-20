@@ -69,12 +69,6 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 
 ### Arch Linux
 
-AUR : <!-- TODO : une fois publié -->
-
-```sh
-yay -S bluez-message
-```
-
 Paquet précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
 signé avec la clé `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Une seule fois, faire confiance à la clé :
 
