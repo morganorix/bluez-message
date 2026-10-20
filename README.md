@@ -69,12 +69,6 @@ profiles (MAP, PBAP, HFP). Works with **iPhone** as well as Android.
 
 ### Arch Linux
 
-AUR: <!-- TODO: once published -->
-
-```sh
-yay -S bluez-message
-```
-
 Prebuilt package (x86_64) from the [releases](https://github.com/morganorix/bluez-message/releases),
 signed with key `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Once, trust the key:
 
