@@ -356,6 +356,8 @@ assets/mdi/              Material Design Icons SVG (white), LICENSE, NOTICE
 locales/                 fr.json (embedded), template.json, README
 packaging/arch/          PKGBUILD, systemd service, .desktop, icon, WirePlumber config
 packaging/aur/           AUR PKGBUILD (sources from the GitHub tag)
+packaging/debian/        .deb maintainer scripts (enable the user service)
+.github/workflows/       CI (clippy/tests) and Packages (signed .deb/.rpm/Arch on tags)
 ```
 
 ## Development
