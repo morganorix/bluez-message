@@ -33,6 +33,22 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 ![Conversation](docs/bmessage-conversation.png)
 ![Réglages](docs/bmessage-settings.png)
 
+## Sommaire
+
+- [Compatibilité](#compatibilité)
+- [Composants](#composants)
+- [Prérequis](#prérequis)
+- [Installation](#installation)
+- [Premiers pas](#premiers-pas)
+- [Utilisation](#utilisation)
+- [Fichiers](#fichiers)
+- [Couleurs (matugen)](#couleurs-matugen)
+- [Traductions](#traductions)
+- [Organisation du code](#organisation-du-code)
+- [Développement](#développement)
+- [À propos de ce projet](#à-propos-de-ce-projet)
+- [Licence](#licence)
+
 ## Compatibilité
 
 | | Statut |

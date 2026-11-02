@@ -33,6 +33,22 @@ profiles (MAP, PBAP, HFP). Works with **iPhone** as well as Android.
 ![Conversation](docs/bmessage-conversation.png)
 ![Settings](docs/bmessage-settings.png)
 
+## Contents
+
+- [Compatibility](#compatibility)
+- [Components](#components)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Usage](#usage)
+- [Files](#files)
+- [Colours (matugen)](#colours-matugen)
+- [Translations](#translations)
+- [Code layout](#code-layout)
+- [Development](#development)
+- [About this project](#about-this-project)
+- [License](#license)
+
 ## Compatibility
 
 | | Status |
