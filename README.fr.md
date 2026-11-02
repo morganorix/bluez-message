@@ -72,7 +72,12 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 Paquet précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
 signé avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`.
 
-**Compatible avec :** Arch Linux, Manjaro, EndeavourOS, Garuda — toute dérivée d'Arch basée sur systemd. (Sur un Arch sans systemd comme Artix, utiliser [la compilation source](#autres-distributions-compilation-source) avec le gestionnaire de services de ton init.)
+**Compatible avec :**
+![Arch Linux](https://img.shields.io/badge/Arch_Linux-1793D1?logo=archlinux&logoColor=white)
+![Manjaro](https://img.shields.io/badge/Manjaro-35BF5C?logo=manjaro&logoColor=white)
+![EndeavourOS](https://img.shields.io/badge/EndeavourOS-7F7FFF?logo=endeavouros&logoColor=white)
+![Garuda](https://img.shields.io/badge/Garuda-2974A8)
+— toute dérivée d'Arch basée sur systemd. (Sur un Arch sans systemd comme Artix, utiliser [la compilation source](#autres-distributions-compilation-source) avec le gestionnaire de services de ton init.)
 
 ```sh
 VER=1.1.1
@@ -103,7 +108,13 @@ Paquet `.deb` précompilé (x86_64) depuis les [releases](https://github.com/mor
 signé GPG avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Télécharge le paquet, sa
 signature et la clé publique, vérifie, puis installe :
 
-**Compatible avec :** Ubuntu 24.04+, Debian 13+, Linux Mint, Pop!_OS, elementary OS, Zorin OS, KDE neon, MX Linux (amd64).
+**Compatible avec :**
+![Ubuntu](https://img.shields.io/badge/Ubuntu_24.04+-E95420?logo=ubuntu&logoColor=white)
+![Debian](https://img.shields.io/badge/Debian_13+-A81D33?logo=debian&logoColor=white)
+![Linux Mint](https://img.shields.io/badge/Linux_Mint-87CF3E?logo=linuxmint&logoColor=white)
+![Pop!_OS](https://img.shields.io/badge/Pop!__OS-48B9C7?logo=popos&logoColor=white)
+![elementary OS](https://img.shields.io/badge/elementary_OS-64BAFF?logo=elementary&logoColor=white)
+— et autres dérivées Debian/Ubuntu (amd64).
 
 ```sh
 VER=1.1.1
@@ -125,7 +136,13 @@ sudo apt install "./bluez-message_${VER}-1_amd64.deb"
 Paquet `.rpm` précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
 signé GPG avec la même clé :
 
-**Compatible avec :** Fedora 40+, Nobara. (RHEL 9+, Rocky Linux, AlmaLinux : probablement — certaines dépendances peuvent nécessiter EPEL.)
+**Compatible avec :**
+![Fedora](https://img.shields.io/badge/Fedora_40+-51A2DA?logo=fedora&logoColor=white)
+![Nobara](https://img.shields.io/badge/Nobara-1E3A8A)
+![RHEL](https://img.shields.io/badge/RHEL_9+-EE0000?logo=redhat&logoColor=white)
+![Rocky Linux](https://img.shields.io/badge/Rocky_Linux-10B981?logo=rockylinux&logoColor=white)
+![AlmaLinux](https://img.shields.io/badge/AlmaLinux-0D597F?logo=almalinux&logoColor=white)
+— les clones RHEL nécessitent probablement EPEL pour certaines dépendances.
 
 ```sh
 VER=1.1.1

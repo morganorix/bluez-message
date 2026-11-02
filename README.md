@@ -72,7 +72,12 @@ profiles (MAP, PBAP, HFP). Works with **iPhone** as well as Android.
 Prebuilt package (x86_64) from the [releases](https://github.com/morganorix/bluez-message/releases),
 signed with key `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`.
 
-**Compatible with:** Arch Linux, Manjaro, EndeavourOS, Garuda — any systemd-based Arch derivative. (On non-systemd Arch systems such as Artix, use [build from source](#other-distributions-build-from-source) with your own init's service manager.)
+**Compatible with:**
+![Arch Linux](https://img.shields.io/badge/Arch_Linux-1793D1?logo=archlinux&logoColor=white)
+![Manjaro](https://img.shields.io/badge/Manjaro-35BF5C?logo=manjaro&logoColor=white)
+![EndeavourOS](https://img.shields.io/badge/EndeavourOS-7F7FFF?logo=endeavouros&logoColor=white)
+![Garuda](https://img.shields.io/badge/Garuda-2974A8)
+— any systemd-based Arch derivative. (On non-systemd Arch systems such as Artix, use [build from source](#other-distributions-build-from-source) with your own init's service manager.)
 
 ```sh
 VER=1.1.1
@@ -103,7 +108,13 @@ Prebuilt `.deb` (x86_64) from the [releases](https://github.com/morganorix/bluez
 GPG-signed with key `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Download the package, its
 signature and the public key, verify, then install:
 
-**Compatible with:** Ubuntu 24.04+, Debian 13+, Linux Mint, Pop!_OS, elementary OS, Zorin OS, KDE neon, MX Linux (amd64).
+**Compatible with:**
+![Ubuntu](https://img.shields.io/badge/Ubuntu_24.04+-E95420?logo=ubuntu&logoColor=white)
+![Debian](https://img.shields.io/badge/Debian_13+-A81D33?logo=debian&logoColor=white)
+![Linux Mint](https://img.shields.io/badge/Linux_Mint-87CF3E?logo=linuxmint&logoColor=white)
+![Pop!_OS](https://img.shields.io/badge/Pop!__OS-48B9C7?logo=popos&logoColor=white)
+![elementary OS](https://img.shields.io/badge/elementary_OS-64BAFF?logo=elementary&logoColor=white)
+— and other Debian/Ubuntu derivatives (amd64).
 
 ```sh
 VER=1.1.1
@@ -125,7 +136,13 @@ sudo apt install "./bluez-message_${VER}-1_amd64.deb"
 Prebuilt `.rpm` (x86_64) from the [releases](https://github.com/morganorix/bluez-message/releases),
 GPG-signed with the same key:
 
-**Compatible with:** Fedora 40+, Nobara. (RHEL 9+, Rocky Linux, AlmaLinux: likely — some dependencies may need EPEL.)
+**Compatible with:**
+![Fedora](https://img.shields.io/badge/Fedora_40+-51A2DA?logo=fedora&logoColor=white)
+![Nobara](https://img.shields.io/badge/Nobara-1E3A8A)
+![RHEL](https://img.shields.io/badge/RHEL_9+-EE0000?logo=redhat&logoColor=white)
+![Rocky Linux](https://img.shields.io/badge/Rocky_Linux-10B981?logo=rockylinux&logoColor=white)
+![AlmaLinux](https://img.shields.io/badge/AlmaLinux-0D597F?logo=almalinux&logoColor=white)
+— RHEL clones likely need EPEL for some dependencies.
 
 ```sh
 VER=1.1.1
