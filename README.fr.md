@@ -324,6 +324,51 @@ Classes de fenêtres : `bluez-message` (principale ; suggéré : flottante, cent
 (appel ; suggéré : flottante, épinglée, 420×150, haut de l'écran).
 Quand une notification ouvre une conversation, la fenêtre reçoit le focus via `hyprctl dispatch` (syntaxe Lua).
 
+## Couleurs (matugen)
+
+La fenêtre principale et la popup d'appel lisent leur palette depuis
+`~/.config/control-bar/colors.plm` et la **rechargent à chaud** (sous ~5 s) à chaque
+changement — elle peut donc suivre ton schéma Material You
+[matugen](https://github.com/InioX/matugen) (généré depuis ton fond d'écran).
+
+Le fichier est juste une liste de lignes `let <nom> = #RRGGBB`. Noms reconnus (le reste
+est ignoré ; un nom absent garde sa valeur par défaut) :
+
+| Nom | Rôle | Défaut |
+|-----|------|--------|
+| `accent` | accent principal | `#b0d18b` |
+| `on_accent` | texte/icônes sur l'accent | `#1e3702` |
+| `accent2` | accent secondaire | `#bfcbad` |
+| `fg` | texte de premier plan | `#e2e3d8` |
+| `bg` | fond | `#12140e` |
+| `danger` | erreurs / destructif | `#ffb4ab` |
+
+Pour le piloter depuis matugen, ajoute un template et dirige sa sortie vers ce fichier.
+
+`~/.config/matugen/templates/bluez-message.plm` :
+
+```
+library Colors {
+    let accent    = {{colors.primary.default.hex}}
+    let on_accent = {{colors.on_primary.default.hex}}
+    let accent2   = {{colors.secondary.default.hex}}
+    let fg        = {{colors.on_surface.default.hex}}
+    let bg        = {{colors.surface.default.hex}}
+    let danger    = {{colors.error.default.hex}}
+}
+```
+
+`~/.config/matugen/config.toml` :
+
+```toml
+[templates.bluez-message]
+input_path = "~/.config/matugen/templates/bluez-message.plm"
+output_path = "~/.config/control-bar/colors.plm"
+```
+
+Puis `matugen image /chemin/vers/fond.jpg` (à relancer à chaque changement de fond) :
+bmessage se repeint avec les nouvelles couleurs, sans redémarrage.
+
 ## Traductions
 
 Les textes sont écrits en anglais dans le code et traduits à l'exécution depuis des fichiers JSON.

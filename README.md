@@ -325,6 +325,51 @@ Window classes: `bluez-message` (main; suggested: floating, centred, 900×640) a
 (call; suggested: floating, pinned, 420×150, top of the screen).
 When a notification opens a conversation, the window is focused with `hyprctl dispatch` (Lua syntax).
 
+## Colours (matugen)
+
+The main window and the call popup read their palette from
+`~/.config/control-bar/colors.plm` and **reload it live** (within ~5 s) whenever it
+changes — so it can follow your [matugen](https://github.com/InioX/matugen) Material You
+scheme (generated from your wallpaper).
+
+The file is just a list of `let <name> = #RRGGBB` lines. Recognised names (anything else
+is ignored; a missing one keeps its default):
+
+| Name | Role | Default |
+|------|------|---------|
+| `accent` | primary accent | `#b0d18b` |
+| `on_accent` | text/icons on the accent | `#1e3702` |
+| `accent2` | secondary accent | `#bfcbad` |
+| `fg` | foreground text | `#e2e3d8` |
+| `bg` | background | `#12140e` |
+| `danger` | errors / destructive | `#ffb4ab` |
+
+To drive it from matugen, add a template and point its output at that file.
+
+`~/.config/matugen/templates/bluez-message.plm`:
+
+```
+library Colors {
+    let accent    = {{colors.primary.default.hex}}
+    let on_accent = {{colors.on_primary.default.hex}}
+    let accent2   = {{colors.secondary.default.hex}}
+    let fg        = {{colors.on_surface.default.hex}}
+    let bg        = {{colors.surface.default.hex}}
+    let danger    = {{colors.error.default.hex}}
+}
+```
+
+`~/.config/matugen/config.toml`:
+
+```toml
+[templates.bluez-message]
+input_path = "~/.config/matugen/templates/bluez-message.plm"
+output_path = "~/.config/control-bar/colors.plm"
+```
+
+Then `matugen image /path/to/wallpaper.jpg` (re-run on each wallpaper change): bmessage
+repaints itself with the new colours, no restart.
+
 ## Translations
 
 Texts are written in English in the code and translated at run time from JSON files.
