@@ -72,6 +72,8 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 Paquet précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
 signé avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`.
 
+**Compatible avec :** Arch Linux, Manjaro, EndeavourOS, Garuda — toute dérivée d'Arch basée sur systemd. (Sur un Arch sans systemd comme Artix, utiliser [la compilation source](#autres-distributions-compilation-source) avec le gestionnaire de services de ton init.)
+
 ```sh
 VER=1.1.1
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
@@ -101,6 +103,8 @@ Paquet `.deb` précompilé (x86_64) depuis les [releases](https://github.com/mor
 signé GPG avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Télécharge le paquet, sa
 signature et la clé publique, vérifie, puis installe :
 
+**Compatible avec :** Ubuntu 24.04+, Debian 13+, Linux Mint, Pop!_OS, elementary OS, Zorin OS, KDE neon, MX Linux (amd64).
+
 ```sh
 VER=1.1.1
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
@@ -120,6 +124,8 @@ sudo apt install "./bluez-message_${VER}-1_amd64.deb"
 
 Paquet `.rpm` précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
 signé GPG avec la même clé :
+
+**Compatible avec :** Fedora 40+, Nobara. (RHEL 9+, Rocky Linux, AlmaLinux : probablement — certaines dépendances peuvent nécessiter EPEL.)
 
 ```sh
 VER=1.1.1
@@ -163,7 +169,12 @@ cargo build --release --features gui && cargo generate-rpm   # -> target/generat
 > [Packages](.github/workflows/packages.yml)), pas sur un système rolling-release : un binaire
 > lié à une glibc très récente ne tournera pas sur Debian/Ubuntu/Fedora stable.
 
-### Autres distributions (manuel)
+### Autres distributions (compilation source)
+
+N'importe quelle distribution peut faire tourner bmessage en compilant depuis les
+sources — il faut Rust (édition 2024, via [`rustup`](https://rustup.rs)), les fichiers
+de développement `sqlite`, `wayland` et `libxkbcommon`, et les services `bluez` +
+`bluez-obex`, `pipewire` et `wireplumber`.
 
 ```sh
 cargo build --release --all-features
@@ -187,6 +198,12 @@ systemctl --user enable --now bluez-messaged
 ```
 
 Après le redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disconnect` puis `connect`).
+
+Noms des dépendances et notes par distribution :
+
+- **Gentoo** — `dev-db/sqlite`, `dev-libs/wayland`, `x11-libs/libxkbcommon`, `net-wireless/bluez` (avec le USE flag `obex`), `media-video/pipewire`, `media-video/wireplumber` ; Rust via `dev-lang/rust` ou rustup. Suivre les étapes ci-dessus.
+- **Alpine** — `apk add rust cargo sqlite-dev wayland-dev libxkbcommon-dev bluez bluez-obexd pipewire wireplumber`. Alpine est basée sur musl : le CLI (`bluez-msg`) compile sans souci ; le GUI (wgpu/winit) peut demander du travail, et `gcompat` si une dépendance attend la glibc. Alpine utilise OpenRC → lancer le démon avec ton propre superviseur plutôt que le service systemd.
+- **NixOS** — la structure immuable ne convient pas aux `install -D`. Empaqueter en dérivation Nix (`rustPlatform.buildRustPackage` avec `sqlite`, `wayland`, `libxkbcommon` dans `buildInputs`), activer `hardware.bluetooth`, `services.pipewire` et WirePlumber au niveau système, et lancer `bluez-messaged` en service utilisateur via Home Manager. (Un flake pourra être fourni plus tard.)
 
 ### Volume des appels
 
