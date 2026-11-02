@@ -20,7 +20,7 @@ optdepends=(
 )
 makedepends=('cargo')
 # GCC LTO bytecode in ring's C objects cannot be linked by rust-lld.
-options=('!lto')
+options=('!lto' '!debug')
 install=bluez-message.install
 
 _root="$startdir/../.."

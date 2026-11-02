@@ -120,13 +120,14 @@ jobs:
         run: |
           set -euo pipefail
           dir=/home/builder/pkg/packaging/arch
-          pkg=$(ls "$dir"/*.pkg.tar.zst)
           export GNUPGHOME=$(mktemp -d)
           chmod 700 "$GNUPGHOME"
           printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-              --local-user "$GPG_KEYID" --detach-sign "$pkg"
-          ( cd "$dir" && sha256sum "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
+          for pkg in "$dir"/*.pkg.tar.zst; do
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$GPG_KEYID" --detach-sign "$pkg"
+            ( cd "$dir" && sha256sum "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
+          done
           gpg --armor --export "$GPG_KEYID" > "$dir/morganorix.asc"
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$dir"/*.pkg.tar.zst "$dir"/*.pkg.tar.zst.sig "$dir"/*.pkg.tar.zst.sha256 "$dir/morganorix.asc" "$GITHUB_WORKSPACE/dist/"
