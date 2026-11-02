@@ -41,7 +41,7 @@ jobs:
     steps:
       - name: System build dependencies
         run: dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel rustup git findutils
-      - name: Rust toolchain (rustup: project needs a recent stable)
+      - name: Rust toolchain via rustup (recent stable)
         run: |
           rustup-init -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
