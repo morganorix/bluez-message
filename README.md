@@ -94,33 +94,74 @@ The package installs the four binaries, the `bluez-messaged` service (enabled fo
 session), the **bmessage** menu entry, the icon and the WirePlumber configuration. Details (French):
 [`packaging/arch/README.md`](packaging/arch/README.md).
 
-### Debian / Ubuntu (.deb) and Fedora (.rpm)
+### Debian / Ubuntu (.deb)
 
-Prebuilt `.deb` and `.rpm` packages (x86_64) are produced by the
-[Packages workflow](.github/workflows/packages.yml) and attached to each
-[release](https://github.com/morganorix/bluez-message/releases). Install with
-`sudo apt install ./bluez-message_*.deb` or `sudo dnf install ./bluez-message-*.rpm`.
-
-> Recommended baselines (for PipeWire Telephony / HFP calls): Ubuntu 24.04+,
-> Debian 13+, Fedora 40+. SMS (MAP) works on older releases; only the call
-> features need the newer PipeWire.
-
-To build the packages yourself (requires a recent Rust via `rustup`):
+Prebuilt `.deb` (x86_64) from the [releases](https://github.com/morganorix/bluez-message/releases),
+GPG-signed with key `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Download the package, its
+signature and the public key, verify, then install:
 
 ```sh
-# .deb  — build on the oldest target distro for glibc compatibility
-sudo apt-get install -y pkg-config libsqlite3-dev libxkbcommon-dev libwayland-dev
-cargo install cargo-deb && cargo deb            # -> target/debian/*.deb
+VER=1.1.1
+base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
+curl -LO "$base/bluez-message_${VER}-1_amd64.deb"
+curl -LO "$base/bluez-message_${VER}-1_amd64.deb.sig"
+curl -LO "$base/morganorix.asc"
 
-# .rpm  — build on Fedora
+# Verify (once: import the key)
+gpg --import morganorix.asc
+gpg --verify "bluez-message_${VER}-1_amd64.deb.sig" "bluez-message_${VER}-1_amd64.deb"
+
+# Install (apt pulls in bluez, bluez-obexd, pipewire, wireplumber…)
+sudo apt install "./bluez-message_${VER}-1_amd64.deb"
+```
+
+### Fedora (.rpm)
+
+Prebuilt `.rpm` (x86_64) from the [releases](https://github.com/morganorix/bluez-message/releases),
+GPG-signed with the same key:
+
+```sh
+VER=1.1.1
+base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
+curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm"
+curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm.sig"
+curl -LO "$base/morganorix.asc"
+
+# Verify (once: import the key)
+gpg --import morganorix.asc
+gpg --verify "bluez-message-${VER}-1.x86_64.rpm.sig" "bluez-message-${VER}-1.x86_64.rpm"
+
+# Install (dnf resolves bluez, bluez-obexd, pipewire, wireplumber…)
+sudo dnf install "./bluez-message-${VER}-1.x86_64.rpm"
+```
+
+Like the Arch package, the `.deb`/`.rpm` install the four binaries, enable the
+`bluez-messaged` user service for every user session, and add the **bmessage** menu
+entry, the icon and the WirePlumber configuration.
+
+> **Supported baselines** (for PipeWire Telephony / HFP calls): Ubuntu 24.04+,
+> Debian 13+, Fedora 40+. SMS (MAP) works on older releases; only the call features
+> need the newer PipeWire.
+
+#### Build the packages yourself
+
+Requires a recent Rust via [`rustup`](https://rustup.rs) (the project needs the 2024 edition):
+
+```sh
+# .deb — on Debian/Ubuntu
+sudo apt-get install -y pkg-config libsqlite3-dev libxkbcommon-dev libwayland-dev
+cargo install cargo-deb && cargo deb                         # -> target/debian/*.deb
+
+# .rpm — on Fedora
 sudo dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel
 cargo install cargo-generate-rpm
 cargo build --release --features gui && cargo generate-rpm   # -> target/generate-rpm/*.rpm
 ```
 
-> Build the distributable packages **on the target distribution** (or via the CI
-> workflow), not on a rolling-release system: a binary linked against a very
-> recent glibc will not run on stable Debian/Ubuntu/Fedora.
+> Build distributable packages **on the target distribution** (or via the CI
+> [Packages workflow](.github/workflows/packages.yml)), not on a rolling-release
+> system: a binary linked against a very recent glibc will not run on stable
+> Debian/Ubuntu/Fedora.
 
 ### Other distributions (manual)
 

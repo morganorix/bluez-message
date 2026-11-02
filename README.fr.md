@@ -94,6 +94,74 @@ Le paquet installe les quatre binaires, le service `bluez-messaged` (activé pou
 utilisateur), l'entrée de menu **bmessage**, l'icône et la configuration WirePlumber. Détails :
 [`packaging/arch/README.md`](packaging/arch/README.md).
 
+### Debian / Ubuntu (.deb)
+
+Paquet `.deb` précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
+signé GPG avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Télécharge le paquet, sa
+signature et la clé publique, vérifie, puis installe :
+
+```sh
+VER=1.1.1
+base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
+curl -LO "$base/bluez-message_${VER}-1_amd64.deb"
+curl -LO "$base/bluez-message_${VER}-1_amd64.deb.sig"
+curl -LO "$base/morganorix.asc"
+
+# Vérification (une fois : importer la clé)
+gpg --import morganorix.asc
+gpg --verify "bluez-message_${VER}-1_amd64.deb.sig" "bluez-message_${VER}-1_amd64.deb"
+
+# Installation (apt tire bluez, bluez-obexd, pipewire, wireplumber…)
+sudo apt install "./bluez-message_${VER}-1_amd64.deb"
+```
+
+### Fedora (.rpm)
+
+Paquet `.rpm` précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
+signé GPG avec la même clé :
+
+```sh
+VER=1.1.1
+base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
+curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm"
+curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm.sig"
+curl -LO "$base/morganorix.asc"
+
+# Vérification (une fois : importer la clé)
+gpg --import morganorix.asc
+gpg --verify "bluez-message-${VER}-1.x86_64.rpm.sig" "bluez-message-${VER}-1.x86_64.rpm"
+
+# Installation (dnf résout bluez, bluez-obexd, pipewire, wireplumber…)
+sudo dnf install "./bluez-message-${VER}-1.x86_64.rpm"
+```
+
+Comme le paquet Arch, les `.deb`/`.rpm` installent les quatre binaires, activent le service
+utilisateur `bluez-messaged` pour chaque session, et ajoutent l'entrée de menu **bmessage**,
+l'icône et la configuration WirePlumber.
+
+> **Versions recommandées** (pour PipeWire Telephony / appels HFP) : Ubuntu 24.04+,
+> Debian 13+, Fedora 40+. Les SMS (MAP) fonctionnent sur des versions plus anciennes ;
+> seuls les appels nécessitent le PipeWire récent.
+
+#### Construire les paquets soi-même
+
+Nécessite un Rust récent via [`rustup`](https://rustup.rs) (le projet utilise l'édition 2024) :
+
+```sh
+# .deb — sur Debian/Ubuntu
+sudo apt-get install -y pkg-config libsqlite3-dev libxkbcommon-dev libwayland-dev
+cargo install cargo-deb && cargo deb                         # -> target/debian/*.deb
+
+# .rpm — sur Fedora
+sudo dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel
+cargo install cargo-generate-rpm
+cargo build --release --features gui && cargo generate-rpm   # -> target/generate-rpm/*.rpm
+```
+
+> Construis les paquets distribuables **sur la distribution cible** (ou via le workflow CI
+> [Packages](.github/workflows/packages.yml)), pas sur un système rolling-release : un binaire
+> lié à une glibc très récente ne tournera pas sur Debian/Ubuntu/Fedora stable.
+
 ### Autres distributions (manuel)
 
 ```sh
