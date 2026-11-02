@@ -8,6 +8,11 @@ ignore = [
     { id = "RUSTSEC-2023-0089", reason = "unmaintained, no known vulnerability; build-time only, through phonenumber" },
     # ttf-parser: unmaintained (no vulnerability), pulled by winit -> sctk-adwaita (CSD title bar font); no upgrade yet.
     { id = "RUSTSEC-2026-0192", reason = "unmaintained, no known vulnerability; transitive through winit/sctk-adwaita" },
+    # webpki-roots: bundled CA set that trusts distrusted emSign intermediates. Only reachable through the
+    # optional "link previews" feature (ureq/rustls HTTPS metadata fetch; private addresses already refused).
+    # Proper fix: `cargo update -p webpki-roots` to a pruned release, then drop these two ignores.
+    { id = "RUSTSEC-2026-0381", reason = "bundled CA roots; optional link-preview HTTPS only; resolve by updating webpki-roots" },
+    { id = "RUSTSEC-2026-0382", reason = "bundled CA roots; optional link-preview HTTPS only; resolve by updating webpki-roots" },
 ]
 
 [licenses]

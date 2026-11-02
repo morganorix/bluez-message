@@ -12,6 +12,8 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 
 [![Licence : MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/morganorix/bluez-message)](https://github.com/morganorix/bluez-message/releases)
+[![CI](https://github.com/morganorix/bluez-message/actions/workflows/ci.yml/badge.svg)](https://github.com/morganorix/bluez-message/actions/workflows/ci.yml)
+[![Packages](https://github.com/morganorix/bluez-message/actions/workflows/packages.yml/badge.svg)](https://github.com/morganorix/bluez-message/actions/workflows/packages.yml)
 
 - **Assistant de configuration** : active l'adaptateur Bluetooth, trouve et appaire le téléphone (code confirmé
   des deux côtés), puis indique ce qu'il faut activer sur celui-ci ; désappairage d'un appareil depuis l'assistant ;
@@ -39,7 +41,7 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 | iPhone (iOS) | SMS/MMS, appels, contacts. **Pas d'iMessage** (non exposé par MAP). |
 | Android | SMS, appels, contacts. Autoriser le PC à accéder aux messages et aux contacts quand le téléphone le demande (le service MAP n'apparaît qu'une fois le partage autorisé). |
 | Testé sur | Arch Linux, Hyprland, iPhone 11 et un téléphone Android |
-| Autres distributions / bureaux | Non testé, retours bienvenus <!-- TODO : lister les configurations confirmées --> |
+| Autres distributions / bureaux | Paquets `.deb` / `.rpm` / Arch signés fournis ; tests communautaires bienvenus <!-- TODO : lister les configurations confirmées --> |
 
 ### Limites connues
 
