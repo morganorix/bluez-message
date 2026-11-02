@@ -23,16 +23,30 @@ jobs:
         run: cargo install cargo-deb --locked
       - name: Build package
         run: cargo deb
+      - name: Sign and checksum
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEYID: E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+        run: |
+          set -euo pipefail
+          export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          for f in target/debian/*.deb; do
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$GPG_KEYID" --detach-sign "$f"
+            ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256" )
+          done
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: deb
-          path: target/debian/*.deb
+          path: target/debian/*.deb*
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/debian/*.deb
+          files: target/debian/*.deb*
 
   rpm:
     name: Build .rpm (Fedora)
@@ -40,7 +54,7 @@ jobs:
     container: fedora:40
     steps:
       - name: System build dependencies
-        run: dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel rustup git findutils
+        run: dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel rustup git findutils gnupg2
       - name: Rust toolchain via rustup (recent stable)
         run: |
           rustup-init -y --default-toolchain stable --profile minimal
@@ -54,13 +68,75 @@ jobs:
         run: strip -s target/release/bluez-msg target/release/bluez-messaged target/release/bluez-message target/release/bluez-msg-call || true
       - name: Build package
         run: cargo generate-rpm
+      - name: Sign and checksum
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEYID: E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+        run: |
+          set -euo pipefail
+          export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          for f in target/generate-rpm/*.rpm; do
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$GPG_KEYID" --detach-sign "$f"
+            ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256" )
+          done
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rpm
-          path: target/generate-rpm/*.rpm
+          path: target/generate-rpm/*.rpm*
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/generate-rpm/*.rpm
+          files: target/generate-rpm/*.rpm*
+
+  arch:
+    name: Build .pkg.tar.zst (Arch, signed)
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: System dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git sudo rust \
+            sqlite bluez bluez-utils bluez-obex pipewire wireplumber \
+            vulkan-icd-loader libxkbcommon wayland libx11 libxcursor libxi libxrandr
+      - uses: actions/checkout@v4
+      - name: Prepare build user (makepkg refuses root)
+        run: |
+          useradd -m builder
+          cp -a "$GITHUB_WORKSPACE" /home/builder/pkg
+          chown -R builder:builder /home/builder/pkg
+      - name: Build package (makepkg, unsigned)
+        run: |
+          sudo -u builder bash -lc 'cd /home/builder/pkg/packaging/arch && makepkg --noconfirm --nocheck'
+      - name: Sign, checksum and export public key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEYID: E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+        run: |
+          set -euo pipefail
+          dir=/home/builder/pkg/packaging/arch
+          pkg=$(ls "$dir"/*.pkg.tar.zst)
+          export GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              --local-user "$GPG_KEYID" --detach-sign "$pkg"
+          ( cd "$dir" && sha256sum "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
+          gpg --armor --export "$GPG_KEYID" > "$dir/morganorix.asc"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$dir"/*.pkg.tar.zst "$dir"/*.pkg.tar.zst.sig "$dir"/*.pkg.tar.zst.sha256 "$dir/morganorix.asc" "$GITHUB_WORKSPACE/dist/"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/*
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
