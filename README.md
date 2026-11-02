@@ -94,6 +94,34 @@ The package installs the four binaries, the `bluez-messaged` service (enabled fo
 session), the **bmessage** menu entry, the icon and the WirePlumber configuration. Details (French):
 [`packaging/arch/README.md`](packaging/arch/README.md).
 
+### Debian / Ubuntu (.deb) and Fedora (.rpm)
+
+Prebuilt `.deb` and `.rpm` packages (x86_64) are produced by the
+[Packages workflow](.github/workflows/packages.yml) and attached to each
+[release](https://github.com/morganorix/bluez-message/releases). Install with
+`sudo apt install ./bluez-message_*.deb` or `sudo dnf install ./bluez-message-*.rpm`.
+
+> Recommended baselines (for PipeWire Telephony / HFP calls): Ubuntu 24.04+,
+> Debian 13+, Fedora 40+. SMS (MAP) works on older releases; only the call
+> features need the newer PipeWire.
+
+To build the packages yourself (requires a recent Rust via `rustup`):
+
+```sh
+# .deb  — build on the oldest target distro for glibc compatibility
+sudo apt-get install -y pkg-config libsqlite3-dev libxkbcommon-dev libwayland-dev
+cargo install cargo-deb && cargo deb            # -> target/debian/*.deb
+
+# .rpm  — build on Fedora
+sudo dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel
+cargo install cargo-generate-rpm
+cargo build --release --features gui && cargo generate-rpm   # -> target/generate-rpm/*.rpm
+```
+
+> Build the distributable packages **on the target distribution** (or via the CI
+> workflow), not on a rolling-release system: a binary linked against a very
+> recent glibc will not run on stable Debian/Ubuntu/Fedora.
+
 ### Other distributions (manual)
 
 ```sh

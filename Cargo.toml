@@ -98,3 +98,94 @@ required-features = ["gui"]
 name = "bluez-messaged"
 path = "src/bin/bluez-messaged.rs"
 required-features = ["notify"]
+
+# ============================================================
+# Packaging — Debian/Ubuntu (.deb via `cargo deb`)
+# ============================================================
+[package.metadata.deb]
+maintainer = "morganorix <4254819+morganorix@users.noreply.github.com>"
+copyright = "2026 morganorix"
+license-file = ["LICENSE", "0"]
+section = "net"
+priority = "optional"
+# Build all four binaries (gui feature also enables `notify`).
+features = ["gui"]
+extended-description = "iPhone SMS and calls on Linux over Bluetooth, using the BlueZ MAP/PBAP/HFP profiles (via bluez-obex and PipeWire Telephony). egui desktop UI plus a background user daemon."
+# `$auto` keeps cargo-deb's auto-detected shared-lib deps (libsqlite3, libc, ...);
+# the rest are dlopen'd (winit/wgpu) or runtime services, invisible to the scanner.
+depends = "$auto, bluez, bluez-obexd, pipewire, wireplumber, libxkbcommon0, libwayland-client0, libvulkan1, libx11-6, libxcursor1, libxi6, libxrandr2"
+recommends = "mesa-vulkan-drivers"
+maintainer-scripts = "packaging/debian/"
+assets = [
+  ["target/release/bluez-msg",        "usr/bin/",                                                       "755"],
+  ["target/release/bluez-messaged",   "usr/bin/",                                                       "755"],
+  ["target/release/bluez-message",    "usr/bin/",                                                       "755"],
+  ["target/release/bluez-msg-call",   "usr/bin/",                                                       "755"],
+  ["packaging/arch/bluez-messaged.service",        "usr/lib/systemd/user/bluez-messaged.service",                    "644"],
+  ["packaging/arch/bluez-message.desktop",         "usr/share/applications/bluez-message.desktop",                   "644"],
+  ["packaging/arch/bluez-message.svg",             "usr/share/icons/hicolor/scalable/apps/bluez-message.svg",        "644"],
+  ["packaging/arch/52-bluez-message-roles.conf",   "usr/share/wireplumber/wireplumber.conf.d/52-bluez-message-roles.conf",     "644"],
+  ["packaging/arch/53-bluez-message-call-gain.conf","usr/share/wireplumber/wireplumber.conf.d/53-bluez-message-call-gain.conf","644"],
+  ["packaging/arch/bluez-message-call-gain.lua",   "usr/share/wireplumber/scripts/bluez-message-call-gain.lua",      "644"],
+  ["assets/mdi/LICENSE",     "usr/share/doc/bluez-message/mdi/LICENSE",     "644"],
+  ["assets/mdi/NOTICE",      "usr/share/doc/bluez-message/mdi/NOTICE",      "644"],
+  ["assets/twemoji/NOTICE",  "usr/share/doc/bluez-message/twemoji/NOTICE",  "644"],
+  ["README.md",              "usr/share/doc/bluez-message/README.md",       "644"],
+]
+
+# ============================================================
+# Packaging — Fedora/RHEL (.rpm via `cargo generate-rpm`)
+# Build first:  cargo build --release --features gui
+# ============================================================
+[package.metadata.generate-rpm]
+summary = "iPhone SMS and calls on Linux over Bluetooth (BlueZ MAP/PBAP/HFP)"
+# Linked libs (libsqlite3, libc) are auto-detected; these are the dlopen'd libs
+# and the runtime services the scanner cannot see.
+requires = { bluez = "*", "bluez-obexd" = "*", pipewire = "*", wireplumber = "*", libxkbcommon = "*", "libwayland-client" = "*", "vulkan-loader" = "*", libX11 = "*", libXcursor = "*", libXi = "*", libXrandr = "*" }
+post_install_script = "systemctl --global enable bluez-messaged.service >/dev/null 2>&1 || true"
+pre_uninstall_script = "[ \"$1\" = 0 ] && systemctl --global disable bluez-messaged.service >/dev/null 2>&1 || true"
+
+[[package.metadata.generate-rpm.assets]]
+source = "target/release/bluez-msg"
+dest = "/usr/bin/bluez-msg"
+mode = "755"
+[[package.metadata.generate-rpm.assets]]
+source = "target/release/bluez-messaged"
+dest = "/usr/bin/bluez-messaged"
+mode = "755"
+[[package.metadata.generate-rpm.assets]]
+source = "target/release/bluez-message"
+dest = "/usr/bin/bluez-message"
+mode = "755"
+[[package.metadata.generate-rpm.assets]]
+source = "target/release/bluez-msg-call"
+dest = "/usr/bin/bluez-msg-call"
+mode = "755"
+[[package.metadata.generate-rpm.assets]]
+source = "packaging/arch/bluez-messaged.service"
+dest = "/usr/lib/systemd/user/bluez-messaged.service"
+mode = "644"
+[[package.metadata.generate-rpm.assets]]
+source = "packaging/arch/bluez-message.desktop"
+dest = "/usr/share/applications/bluez-message.desktop"
+mode = "644"
+[[package.metadata.generate-rpm.assets]]
+source = "packaging/arch/bluez-message.svg"
+dest = "/usr/share/icons/hicolor/scalable/apps/bluez-message.svg"
+mode = "644"
+[[package.metadata.generate-rpm.assets]]
+source = "packaging/arch/52-bluez-message-roles.conf"
+dest = "/usr/share/wireplumber/wireplumber.conf.d/52-bluez-message-roles.conf"
+mode = "644"
+[[package.metadata.generate-rpm.assets]]
+source = "packaging/arch/53-bluez-message-call-gain.conf"
+dest = "/usr/share/wireplumber/wireplumber.conf.d/53-bluez-message-call-gain.conf"
+mode = "644"
+[[package.metadata.generate-rpm.assets]]
+source = "packaging/arch/bluez-message-call-gain.lua"
+dest = "/usr/share/wireplumber/scripts/bluez-message-call-gain.lua"
+mode = "644"
+[[package.metadata.generate-rpm.assets]]
+source = "LICENSE"
+dest = "/usr/share/licenses/bluez-message/LICENSE"
+mode = "644"

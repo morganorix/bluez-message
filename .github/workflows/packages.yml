@@ -1,0 +1,66 @@
+name: Packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    name: Build .deb (Debian/Ubuntu)
+    # Oldest reasonable baseline for glibc forward-compatibility.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libsqlite3-dev libxkbcommon-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Build package
+        run: cargo deb
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/debian/*.deb
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/debian/*.deb
+
+  rpm:
+    name: Build .rpm (Fedora)
+    runs-on: ubuntu-latest
+    container: fedora:40
+    steps:
+      - name: System build dependencies
+        run: dnf install -y gcc pkgconf-pkg-config sqlite-devel libxkbcommon-devel wayland-devel rustup git findutils
+      - name: Rust toolchain (rustup: project needs a recent stable)
+        run: |
+          rustup-init -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm --locked
+      - name: Build (release, gui)
+        run: cargo build --release --features gui
+      - name: Strip binaries
+        run: strip -s target/release/bluez-msg target/release/bluez-messaged target/release/bluez-message target/release/bluez-msg-call || true
+      - name: Build package
+        run: cargo generate-rpm
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: target/generate-rpm/*.rpm
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/generate-rpm/*.rpm

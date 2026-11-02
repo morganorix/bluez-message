@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+# Enable the user daemon for every user (opt out: systemctl --user mask bluez-messaged).
+if [ "$1" = "configure" ]; then
+    systemctl --global enable bluez-messaged.service >/dev/null 2>&1 || true
+fi
