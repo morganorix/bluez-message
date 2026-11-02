@@ -81,7 +81,7 @@ signed with key `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`.
 — any systemd-based Arch derivative. (On non-systemd Arch systems such as Artix, use [build from source](#other-distributions-build-from-source) with your own init's service manager.)
 
 ```sh
-VER=1.1.2
+VER=1.1.3
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
 
 # Once: trust the signing key
@@ -118,7 +118,7 @@ signature and the public key, verify, then install:
 — and other Debian/Ubuntu derivatives (amd64).
 
 ```sh
-VER=1.1.2
+VER=1.1.3
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
 curl -LO "$base/bluez-message_${VER}-1_amd64.deb"
 curl -LO "$base/bluez-message_${VER}-1_amd64.deb.sig"
@@ -146,7 +146,7 @@ GPG-signed with the same key:
 — RHEL clones likely need EPEL for some dependencies.
 
 ```sh
-VER=1.1.2
+VER=1.1.3
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
 curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm"
 curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm.sig"
@@ -313,7 +313,7 @@ bluez-message --open <number>                          # window on that conversa
 | `~/.config/bluez-message/locales/<lang>.json` | Your own translations. |
 | `~/.local/share/bluez-message/history.db` | SQLite history (texts, calls, contacts, read marks). Numbers are keyed in international format; an older database is migrated at startup, after a copy to `history.db.bak` (key format) or `history.db.v<N>.bak` (schema). Export: `bluez-message-<date>[-<n>].json` in the Downloads folder (`-2`…`-9` if the name is taken). |
 | `$XDG_RUNTIME_DIR/bluez-message.sock` | Daemon socket (JSON lines). |
-| `~/.config/control-bar/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
+| `~/.config/bluez-message/colors.plm` | Optional: colour palette (matugen template), reloaded live. |
 
 `BLUEZ_MESSAGE_LANG` variable: forces the language (`fr`, `en`…).
 `BLUEZ_MESSAGE_LOG` variable: log level (`info` by default, without numbers, names, texts or addresses;
@@ -328,7 +328,7 @@ When a notification opens a conversation, the window is focused with `hyprctl di
 ## Colours (matugen)
 
 The main window and the call popup read their palette from
-`~/.config/control-bar/colors.plm` and **reload it live** (within ~5 s) whenever it
+`~/.config/bluez-message/colors.plm` and **reload it live** (within ~5 s) whenever it
 changes — so it can follow your [matugen](https://github.com/InioX/matugen) Material You
 scheme (generated from your wallpaper).
 
@@ -364,7 +364,7 @@ library Colors {
 ```toml
 [templates.bluez-message]
 input_path = "~/.config/matugen/templates/bluez-message.plm"
-output_path = "~/.config/control-bar/colors.plm"
+output_path = "~/.config/bluez-message/colors.plm"
 ```
 
 Then `matugen image /path/to/wallpaper.jpg` (re-run on each wallpaper change): bmessage

@@ -202,10 +202,10 @@ fn style(s: &mut egui::Style) {
     s.spacing.scroll.floating = true;
 }
 
-/// The bar's `colors.plm` (output of the matugen `control-bar` template).
+/// Live colour palette, matugen-friendly: `~/.config/bluez-message/colors.plm`.
 #[must_use]
 pub fn colors_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join("control-bar/colors.plm"))
+    crate::config::config_dir().map(|d| d.join("bluez-message/colors.plm"))
 }
 
 /// Watches `colors.plm`: when matugen regenerates it (new wallpaper, new scheme), the colours
