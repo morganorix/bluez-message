@@ -218,9 +218,9 @@ Après le redémarrage de WirePlumber, reconnecter l'iPhone (`bluetoothctl disco
 
 Noms des dépendances et notes par distribution :
 
-- **Gentoo** — `dev-db/sqlite`, `dev-libs/wayland`, `x11-libs/libxkbcommon`, `net-wireless/bluez` (avec le USE flag `obex`), `media-video/pipewire`, `media-video/wireplumber` ; Rust via `dev-lang/rust` ou rustup. Suivre les étapes ci-dessus.
-- **Alpine** — `apk add rust cargo sqlite-dev wayland-dev libxkbcommon-dev bluez bluez-obexd pipewire wireplumber`. Alpine est basée sur musl : le CLI (`bluez-msg`) compile sans souci ; le GUI (wgpu/winit) peut demander du travail, et `gcompat` si une dépendance attend la glibc. Alpine utilise OpenRC → lancer le démon avec ton propre superviseur plutôt que le service systemd.
-- **NixOS** — la structure immuable ne convient pas aux `install -D`. Empaqueter en dérivation Nix (`rustPlatform.buildRustPackage` avec `sqlite`, `wayland`, `libxkbcommon` dans `buildInputs`), activer `hardware.bluetooth`, `services.pipewire` et WirePlumber au niveau système, et lancer `bluez-messaged` en service utilisateur via Home Manager. (Un flake pourra être fourni plus tard.)
+- ![Gentoo](https://img.shields.io/badge/Gentoo-54487A?logo=gentoo&logoColor=white) — `dev-db/sqlite`, `dev-libs/wayland`, `x11-libs/libxkbcommon`, `net-wireless/bluez` (avec le USE flag `obex`), `media-video/pipewire`, `media-video/wireplumber` ; Rust via `dev-lang/rust` ou rustup. Suivre les étapes ci-dessus.
+- ![Alpine](https://img.shields.io/badge/Alpine_Linux-0D597F?logo=alpinelinux&logoColor=white) — `apk add rust cargo sqlite-dev wayland-dev libxkbcommon-dev bluez bluez-obexd pipewire wireplumber`. Alpine est basée sur musl : le CLI (`bluez-msg`) compile sans souci ; le GUI (wgpu/winit) peut demander du travail, et `gcompat` si une dépendance attend la glibc. Alpine utilise OpenRC → lancer le démon avec ton propre superviseur plutôt que le service systemd.
+- ![NixOS](https://img.shields.io/badge/NixOS-5277C3?logo=nixos&logoColor=white) — la structure immuable ne convient pas aux `install -D`. Empaqueter en dérivation Nix (`rustPlatform.buildRustPackage` avec `sqlite`, `wayland`, `libxkbcommon` dans `buildInputs`), activer `hardware.bluetooth`, `services.pipewire` et WirePlumber au niveau système, et lancer `bluez-messaged` en service utilisateur via Home Manager. (Un flake pourra être fourni plus tard.)
 
 ### Volume des appels
 
