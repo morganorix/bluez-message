@@ -70,11 +70,11 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 ### Arch Linux
 
 Paquet précompilé (x86_64) depuis les [releases](https://github.com/morganorix/bluez-message/releases),
-signé avec la clé `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Une seule fois, faire confiance à la clé :
+signé avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Une seule fois, faire confiance à la clé :
 
 ```sh
 curl -sL https://github.com/morganorix/bluez-message/releases/download/v1.0.0/morganorix.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+sudo pacman-key --lsign-key 0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0
 ```
 
 Puis installer :

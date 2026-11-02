@@ -70,11 +70,11 @@ profiles (MAP, PBAP, HFP). Works with **iPhone** as well as Android.
 ### Arch Linux
 
 Prebuilt package (x86_64) from the [releases](https://github.com/morganorix/bluez-message/releases),
-signed with key `E12F0EA82A218B98A786F25C6BF70F0B266A6EB9`. Once, trust the key:
+signed with key `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`. Once, trust the key:
 
 ```sh
 curl -sL https://github.com/morganorix/bluez-message/releases/download/v1.0.0/morganorix.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+sudo pacman-key --lsign-key 0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0
 ```
 
 Then install:

@@ -27,7 +27,7 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          GPG_KEYID: E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+          GPG_KEYID: 0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0
         run: |
           set -euo pipefail
           export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
@@ -72,7 +72,7 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          GPG_KEYID: E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+          GPG_KEYID: 0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0
         run: |
           set -euo pipefail
           export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
@@ -116,7 +116,7 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          GPG_KEYID: E12F0EA82A218B98A786F25C6BF70F0B266A6EB9
+          GPG_KEYID: 0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0
         run: |
           set -euo pipefail
           dir=/home/builder/pkg/packaging/arch
