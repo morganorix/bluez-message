@@ -13,7 +13,6 @@ Bluetooth standards (MAP, PBAP, HFP). Fonctionne avec l'**iPhone** comme avec An
 [![Licence : MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/morganorix/bluez-message)](https://github.com/morganorix/bluez-message/releases)
 [![CI](https://github.com/morganorix/bluez-message/actions/workflows/ci.yml/badge.svg)](https://github.com/morganorix/bluez-message/actions/workflows/ci.yml)
-[![Packages](https://github.com/morganorix/bluez-message/actions/workflows/packages.yml/badge.svg)](https://github.com/morganorix/bluez-message/actions/workflows/packages.yml)
 
 - **Assistant de configuration** : active l'adaptateur Bluetooth, trouve et appaire le téléphone (code confirmé
   des deux côtés), puis indique ce qu'il faut activer sur celui-ci ; désappairage d'un appareil depuis l'assistant ;
@@ -82,11 +81,11 @@ signé avec la clé `0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0`.
 — toute dérivée d'Arch basée sur systemd. (Sur un Arch sans systemd comme Artix, utiliser [la compilation source](#autres-distributions-compilation-source) avec le gestionnaire de services de ton init.)
 
 ```sh
-VER=1.1.1
+VER=1.1.2
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
 
 # Une seule fois : faire confiance à la clé de signature
-curl -sL "$base/morganorix.asc" | sudo pacman-key --add -
+curl -sL "$base/bluez-message.asc" | sudo pacman-key --add -
 sudo pacman-key --lsign-key 0FC9047F715A691A8C0F1BFDCB996B67A2CEA2E0
 
 # Installer
@@ -119,14 +118,14 @@ signature et la clé publique, vérifie, puis installe :
 — et autres dérivées Debian/Ubuntu (amd64).
 
 ```sh
-VER=1.1.1
+VER=1.1.2
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
 curl -LO "$base/bluez-message_${VER}-1_amd64.deb"
 curl -LO "$base/bluez-message_${VER}-1_amd64.deb.sig"
-curl -LO "$base/morganorix.asc"
+curl -LO "$base/bluez-message.asc"
 
 # Vérification (une fois : importer la clé)
-gpg --import morganorix.asc
+gpg --import bluez-message.asc
 gpg --verify "bluez-message_${VER}-1_amd64.deb.sig" "bluez-message_${VER}-1_amd64.deb"
 
 # Installation (apt tire bluez, bluez-obexd, pipewire, wireplumber…)
@@ -147,14 +146,14 @@ signé GPG avec la même clé :
 — les clones RHEL nécessitent probablement EPEL pour certaines dépendances.
 
 ```sh
-VER=1.1.1
+VER=1.1.2
 base="https://github.com/morganorix/bluez-message/releases/download/v$VER"
 curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm"
 curl -LO "$base/bluez-message-${VER}-1.x86_64.rpm.sig"
-curl -LO "$base/morganorix.asc"
+curl -LO "$base/bluez-message.asc"
 
 # Vérification (une fois : importer la clé)
-gpg --import morganorix.asc
+gpg --import bluez-message.asc
 gpg --verify "bluez-message-${VER}-1.x86_64.rpm.sig" "bluez-message-${VER}-1.x86_64.rpm"
 
 # Installation (dnf résout bluez, bluez-obexd, pipewire, wireplumber…)

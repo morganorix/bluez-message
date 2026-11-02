@@ -128,9 +128,9 @@ jobs:
                 --local-user "$GPG_KEYID" --detach-sign "$pkg"
             ( cd "$dir" && sha256sum "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
           done
-          gpg --armor --export "$GPG_KEYID" > "$dir/morganorix.asc"
+          gpg --armor --export "$GPG_KEYID" > "$dir/bluez-message.asc"
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$dir"/*.pkg.tar.zst "$dir"/*.pkg.tar.zst.sig "$dir"/*.pkg.tar.zst.sha256 "$dir/morganorix.asc" "$GITHUB_WORKSPACE/dist/"
+          cp "$dir"/*.pkg.tar.zst "$dir"/*.pkg.tar.zst.sig "$dir"/*.pkg.tar.zst.sha256 "$dir/bluez-message.asc" "$GITHUB_WORKSPACE/dist/"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
